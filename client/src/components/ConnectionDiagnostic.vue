@@ -286,19 +286,19 @@ onMounted(async () => {
   background: var(--surface);
 }
 .advice-ok {
-  border-color: rgba(61, 220, 151, 0.3);
+  border-color: var(--link-line);
   background: var(--ok-bg);
 }
 .advice-warn {
-  border-color: rgba(255, 200, 74, 0.3);
+  border-color: var(--warn-line);
   background: var(--warn-bg);
 }
 .advice-danger {
-  border-color: rgba(255, 107, 107, 0.3);
+  border-color: var(--fault-line);
   background: var(--danger-bg);
 }
 .advice-info {
-  border-color: rgba(92, 200, 255, 0.28);
+  border-color: var(--sky-line);
   background: var(--info-bg);
 }
 .err-detail {

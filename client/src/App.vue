@@ -8,26 +8,20 @@
  * 导航是一个小栈：主页 / 房间 / 设置 / 日志。**返回不会断开房间**——
  * 房间连接是常驻的，返回只是不看那个页面；主页顶部会留一条"正在联机"的窄条。
  * ESC 返回上一页（与 MCTier 的习惯一致）。
- *
- * 迷你窗（`?mini=1`）复用同一份产物，但只渲染 MiniWindow：它不 bootstrap，
- * 不需要登录态与本地核心控制，只读 localStorage 里的房间信息。
  */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { copyText } from './lib/clipboard.ts';
 import { bootstrap, clearError, clearKicked, clientState, hasRoom, isOnline } from './lib/store.ts';
 import { onboardingVisible } from './lib/onboarding.ts';
-import { isMiniRenderer } from './lib/mini.ts';
 import TitleBar from './components/TitleBar.vue';
 import LoginPage from './pages/LoginPage.vue';
 import CreateJoin from './components/CreateJoin.vue';
 import RoomPage from './pages/RoomPage.vue';
 import SettingsPage from './pages/SettingsPage.vue';
 import LogPanel from './components/LogPanel.vue';
-import MiniWindow from './components/MiniWindow.vue';
 import OnboardingWizard from './components/OnboardingWizard.vue';
 
 type View = 'home' | 'room' | 'settings' | 'logs';
-
-const isMini = isMiniRenderer();
 
 const view = ref<View>('home');
 const booting = ref(true);
@@ -70,20 +64,22 @@ function onKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape' && view.value !== 'home') view.value = 'home';
 }
 
-// 房间关闭/退出后若正停在房间页，退回主页，避免留在一个空页面上
+/**
+ * 房间进出时的落点：
+ *   · 进房 → 直接落到房间页。玩家接下来的动作一定是「把联机地址发给朋友」，
+ *     停在主页还要先点一下「返回房间」才能看到地址，是白多一步；
+ *   · 退房/被踢 → 若正停在房间页，退回主页，避免留在一个空页面上。
+ */
 watch(hasRoom, (value) => {
-  if (!value && view.value === 'room') view.value = 'home';
+  if (value) view.value = 'room';
+  else if (view.value === 'room') view.value = 'home';
 });
 
 function copy(text: string): void {
-  void navigator.clipboard.writeText(text);
+  void copyText(text);
 }
 
 onMounted(async () => {
-  if (isMini) {
-    booting.value = false;
-    return;
-  }
   window.addEventListener('keydown', onKeydown);
   const info = await window.mclink.info();
   appVersion.value = info.version;
@@ -95,10 +91,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown));
 </script>
 
 <template>
-  <!-- 迷你窗：只画一块置顶小牌 -->
-  <MiniWindow v-if="isMini" />
-
-  <div v-else class="app-shell">
+  <div class="app-shell">
     <TitleBar :state="coreState" :label="statusLabel" />
 
     <div v-if="booting" class="boot">
@@ -192,7 +185,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown));
   gap: var(--s-2);
   width: 100%;
   padding: 7px var(--s-3);
-  border: 1px solid rgba(143, 191, 106, 0.34);
+  border: 1px solid var(--link-line);
   border-radius: var(--r-sm);
   background: var(--link-wash);
   color: var(--paper);
@@ -231,7 +224,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown));
 }
 .foot-tab:hover:not(:disabled) {
   color: var(--paper);
-  background: rgba(245, 240, 231, 0.04);
+  background: var(--surface-hair);
 }
 .foot-tab.active {
   color: var(--signal);

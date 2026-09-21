@@ -18,6 +18,7 @@ import {
   updateRoomPolicy,
 } from '../lib/store.ts';
 import { MASTER_URL, friendlyError } from '../lib/api.ts';
+import { copyText } from '../lib/clipboard.ts';
 import { isFavorite, shortcutsRevision, toggleFavorite } from '../lib/shortcuts.ts';
 import ChatPanel from '../components/ChatPanel.vue';
 import ConnectionDiagnostic from '../components/ConnectionDiagnostic.vue';
@@ -69,17 +70,16 @@ const inviteText = computed(() => {
 });
 
 function copy(text: string, tag: string): void {
-  void navigator.clipboard.writeText(text).then(
-    () => {
-      copied.value = tag;
-      setTimeout(() => {
-        if (copied.value === tag) copied.value = '';
-      }, 1800);
-    },
-    () => {
-      error.value = '复制失败，请手动选择文本复制';
-    },
-  );
+  void copyText(text).then((ok) => {
+    if (!ok) {
+      error.value = '复制失败：请按住鼠标选中地址后按 Ctrl+C';
+      return;
+    }
+    copied.value = tag;
+    setTimeout(() => {
+      if (copied.value === tag) copied.value = '';
+    }, 1800);
+  });
 }
 
 function openPolicy(): void {
@@ -110,11 +110,11 @@ function toggleFav(): void {
   });
 }
 
-/** 打开置顶迷你窗，把联机地址钉在屏幕上 */
-async function openMini(): Promise<void> {
-  error.value = '';
-  const res = await window.mclink.mini.open();
-  if (!res.ok) error.value = res.error ?? '迷你窗打开失败';
+/** 联机地址是玩家最常要发出去的东西：点整块就能复制，不用瞄准按钮 */
+function copyAddress(): void {
+  const value = shareAddress.value;
+  if (!value) return;
+  copy(value, 'addr');
 }
 
 async function savePolicy(): Promise<void> {
@@ -220,7 +220,6 @@ async function doClose(): Promise<void> {
           <button class="btn btn-sm" :title="favorite ? '取消收藏' : '收藏这个房间'" @click="toggleFav()">
             {{ favorite ? '★ 已收藏' : '☆ 收藏' }}
           </button>
-          <button class="btn btn-sm" title="把联机地址钉在屏幕角落" @click="openMini()">迷你窗</button>
           <button v-if="isHost" class="btn btn-sm" @click="openPolicy()">房间规则</button>
           <button v-if="isHost" class="btn btn-sm" :disabled="busy" @click="doRotate()">轮换密钥</button>
           <button v-if="isHost" class="btn btn-sm btn-danger" :disabled="busy" @click="doClose()">关闭房间</button>
@@ -229,13 +228,15 @@ async function doClose(): Promise<void> {
       </div>
     </div>
 
-    <!-- 联机地址 -->
+    <!-- 联机地址：整块可点，点一下就复制 -->
     <div class="address">
-      <div class="grow">
-        <div class="faint" style="font-size: var(--fs-xs)">把下面这个地址发给朋友，让他们在游戏里「多人游戏 → 直接连接」中粘贴</div>
-        <div class="address-value">{{ shareAddress ?? '等待分配…' }}</div>
-      </div>
-      <button class="btn btn-primary" @click="copy(shareAddress ?? '', 'addr')">
+      <button class="address-hit grow" type="button" title="点击复制联机地址" @click="copyAddress()">
+        <span class="faint" style="font-size: var(--fs-xs)">
+          发给朋友，让他在游戏里「多人游戏 → 直接连接」粘贴（点一下即复制）
+        </span>
+        <span class="address-value">{{ shareAddress ?? '等待分配…' }}</span>
+      </button>
+      <button class="btn btn-primary" :disabled="!shareAddress" @click="copyAddress()">
         {{ copied === 'addr' ? '已复制' : '复制地址' }}
       </button>
       <button class="btn" @click="inviteOpen = true">邀请信息…</button>
@@ -435,8 +436,7 @@ async function doClose(): Promise<void> {
 .modal-mask {
   position: fixed;
   inset: 0;
-  background: rgba(2, 4, 10, 0.7);
-  backdrop-filter: blur(4px);
+  background: var(--scrim);
   display: grid;
   place-items: center;
   padding: var(--s-5);
@@ -452,7 +452,7 @@ async function doClose(): Promise<void> {
   padding: var(--s-3);
   border-radius: var(--r-sm);
   border: 1px solid var(--border);
-  background: rgba(0, 0, 0, 0.32);
+  background: var(--well);
   font-size: var(--fs-sm);
   line-height: 1.6;
   white-space: pre-wrap;

@@ -97,7 +97,7 @@ MCTier 的 `LICENSE` 是**自定义的 Source-Available 非商业许可**，作�
 | SOCKS5 / 端口转发 / 出口节点 | ⬜ P2（EasyTier 原生支持，属「暴露能力」而非「实现能力」） |
 | 物理设备绑定 | ⬜ P3（我们反而要**关掉** `bind_device` 以避免连不上中继，见 architecture.md） |
 | 全局快捷键 / 按键说话 | ⬜ P2（Electron 的 `globalShortcut`） |
-| 迷你悬浮窗 | ➕ `MiniWindow.vue`（无边框置顶小窗，常驻显示联机地址） |
+| 常驻显示联机地址 | ❌ 不做（产品决定：置顶小窗会挡游戏画面、还要多开一个窗口；改成地址铭牌整块可点即复制，见 `RoomPage.vue`） |
 | 系统托盘 | ✅ 客户端已实现（托盘菜单：显示主窗/断开/退出） |
 | 软件日志查看/导出 | ✅ 客户端日志面板 + 「打开日志目录」 |
 | 本地数据统计（时长/次数/活跃时段） | ⬜ P2（纯本地，价值中等） |
@@ -126,7 +126,10 @@ MCTier 的 `LICENSE` 是**自定义的 Source-Available 非商业许可**，作�
 * `PublicPlaza.vue` 公共广场
 * `RoomShortcuts.vue` 收藏 / 最近
 * `OnboardingWizard.vue` 首次使用向导
-* `MiniWindow.vue` + 主进程置顶迷你窗
+
+> 曾经实现过「主进程置顶迷你窗 + `MiniWindow.vue`」常驻显示联机地址，后按产品决定删除：
+> 多一个置顶窗口会挡游戏画面，而玩家的真实动作只是「把地址发给朋友」——
+> 现在 `RoomPage.vue` 的地址铭牌整块可点即复制，主进程不再有 `mini:*` IPC。
 
 ---
 

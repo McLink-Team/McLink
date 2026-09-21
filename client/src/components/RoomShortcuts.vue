@@ -7,6 +7,7 @@
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { formatRelativeTime } from '@mclink/shared';
+import { copyText } from '../lib/clipboard.ts';
 import { friendlyError } from '../lib/api.ts';
 import { reenterRoom } from '../lib/store.ts';
 import {
@@ -50,7 +51,8 @@ async function enter(entry: RoomShortcut): Promise<void> {
 async function copy(entry: RoomShortcut, tag: string): Promise<void> {
   if (!entry.lastAddress) return;
   try {
-    await navigator.clipboard.writeText(entry.lastAddress);
+    const ok = await copyText(entry.lastAddress);
+    if (!ok) throw new Error("剪贴板不可用");
     copied.value = tag;
     window.setTimeout(() => {
       if (copied.value === tag) copied.value = '';
@@ -156,6 +158,6 @@ onUnmounted(() => {
   padding: var(--s-2) var(--s-3);
   border-radius: var(--r-sm);
   border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--surface-hair);
 }
 </style>

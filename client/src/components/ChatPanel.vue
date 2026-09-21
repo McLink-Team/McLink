@@ -354,7 +354,7 @@ onUnmounted(() => {
   padding: var(--s-3);
   border-radius: var(--r-sm);
   border: 1px solid var(--border);
-  background: rgba(0, 0, 0, 0.24);
+  background: var(--well);
 }
 .chat-state {
   align-items: center;
@@ -391,11 +391,11 @@ onUnmounted(() => {
   word-break: break-word;
 }
 .chat-bubble-mine {
-  border-color: rgba(53, 224, 200, 0.32);
-  background: rgba(53, 224, 200, 0.09);
+  border-color: var(--signal-line);
+  background: var(--signal-wash);
 }
 .chat-bubble-theirs {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--surface-hair-strong);
 }
 .chat-meta {
   display: flex;
@@ -443,7 +443,7 @@ onUnmounted(() => {
   padding: var(--s-2);
   border-radius: var(--r-sm);
   border: 1px solid var(--border);
-  background: rgba(0, 0, 0, 0.24);
+  background: var(--well);
 }
 .chat-emoji-btn {
   width: 30px;

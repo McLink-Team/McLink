@@ -8,6 +8,7 @@
  */
 import { computed, onMounted, ref } from 'vue';
 import { REGIONS, regionLabel, Routes, type RegionDef, type Room } from '@mclink/shared';
+import { copyText } from '../lib/clipboard.ts';
 import { api, friendlyError } from '../lib/api.ts';
 import { clientState, joinRoom } from '../lib/store.ts';
 
@@ -74,7 +75,8 @@ function pick(room: Room): void {
 
 async function copyCode(code: string): Promise<void> {
   try {
-    await navigator.clipboard.writeText(code);
+    const ok = await copyText(code);
+    if (!ok) throw new Error("剪贴板不可用");
     copied.value = code;
     window.setTimeout(() => {
       if (copied.value === code) copied.value = '';
