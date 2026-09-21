@@ -422,6 +422,11 @@ textarea {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
+/* 数值列表头也要右对齐：`.table th` 的 (0,1,1) 会压过 `.table-num` 的 (0,1,0) */
+.table th.table-num,
+.table td.table-num {
+  text-align: right;
+}
 
 .empty {
   padding: var(--s-6);

@@ -655,6 +655,16 @@ dt + dd {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
+/*
+ * 数值列的**表头**也要右对齐。
+ * `.table th { text-align: left }` 的特异度是 (0,1,1)，会压过 `.table-num` 的 (0,1,0)，
+ * 于是表头靠左、数字靠右；列一宽（例如落地页区域表 1280px 下）两者能差半个屏，
+ * 看着就是"没对齐"。这里用同等特异度把它扳回来。
+ */
+.table th.table-num,
+.table td.table-num {
+  text-align: right;
+}
 
 /* 定义列表：规格书式排版，取代"卡片+图标"的功能陈列 */
 .spec {
