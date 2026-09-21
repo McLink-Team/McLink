@@ -5,7 +5,7 @@ import type { Router } from '../http/kit.ts';
 import { optBool, optInt, optStr, paging, parsePolicy, req, requireAuth } from './helpers.ts';
 import { HttpError } from '../util/errors.ts';
 import { logger } from '../logger.ts';
-import { toRoom } from '../db/rooms.ts';
+import { toPublicRoom, toRoom, toRoomForUser } from '../db/rooms.ts';
 import { hashRoomPassword } from '../services/rooms.ts';
 
 const log = logger('api:rooms');
@@ -47,15 +47,16 @@ export function registerRoomRoutes(router: Router, app: App): void {
   /** 我的房间（我建的 + 我加入的） */
   router.get(Routes.rooms, (ctx) => {
     const auth = requireAuth(ctx);
-    const hosted = app.rooms.listMine(auth.userId).map(toRoom);
+    // 网络名只对房主保留：成员本来就会在票据里拿到它，但在列表里没必要出现
+    const hosted = app.rooms.listMine(auth.userId).map((row) => toRoomForUser(row, auth.userId));
     const joined = app.rooms
       .listJoined(auth.userId)
       .filter((r) => r.host_user_id !== auth.userId)
-      .map(toRoom);
+      .map((row) => toRoomForUser(row, auth.userId));
     return { hosted, joined };
   }, { auth: true });
 
-  /** 公开房间大厅 */
+  /** 公开房间大厅（匿名可访问，必须剥掉网络名等凭证字段） */
   router.get(Routes.roomPublic, (ctx) => {
     const { limit, offset } = paging(ctx, 40);
     const result = app.rooms.listPublic({
@@ -64,7 +65,7 @@ export function registerRoomRoutes(router: Router, app: App): void {
       limit,
       offset,
     });
-    return { rooms: result.rows.map(toRoom), total: result.total };
+    return { rooms: result.rows.map(toPublicRoom), total: result.total };
   });
 
   /** 凭加入码进房 */
@@ -82,15 +83,17 @@ export function registerRoomRoutes(router: Router, app: App): void {
     return result;
   }, { auth: true });
 
-  /** 房间详情 */
+  /** 房间详情：必须是房间成员（或房主）才能看，否则任意登录用户都能拿到加入码与成员 IP */
   router.get('/rooms/:id', (ctx) => {
+    const auth = requireAuth(ctx);
     const roomId = ctx.params.id ?? '';
     const row = app.roomService.getRow(roomId);
+    app.roomService.assertMember(row, auth.userId);
     return {
-      room: toRoom(row),
+      room: toRoomForUser(row, auth.userId),
       members: app.roomService.members(roomId),
       usage: app.rooms.usage(roomId) ?? { rxBytes: 0, txBytes: 0, peers: 0 },
-      isHost: ctx.auth?.userId === row.host_user_id,
+      isHost: auth.userId === row.host_user_id,
     };
   }, { auth: true });
 
@@ -148,10 +151,12 @@ export function registerRoomRoutes(router: Router, app: App): void {
     };
   }, { auth: true });
 
-  /** 成员列表 */
+  /** 成员列表：同样只对房间成员开放 */
   router.get('/rooms/:id/members', (ctx) => {
-    requireAuth(ctx);
-    return app.roomService.members(ctx.params.id ?? '');
+    const auth = requireAuth(ctx);
+    const roomId = ctx.params.id ?? '';
+    app.roomService.assertMember(app.roomService.getRow(roomId), auth.userId);
+    return app.roomService.members(roomId);
   }, { auth: true });
 
   /** 房主：审批加入申请 */

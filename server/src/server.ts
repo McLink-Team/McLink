@@ -241,7 +241,10 @@ export function createServer(app: App): RunningServer {
       } satisfies AuthContext;
     },
     authorizeTopic: (client: WsClient, topic: string) => {
-      if (topic === Topics.platform || topic === Topics.traffic) return true;
+      // platform 只含聚合计数，落地页未登录也要显示在线数据，故匿名可订阅
+      if (topic === Topics.platform) return true;
+      // traffic 会按房间暴露流量与网络名映射，属于管理信息，必须管理员
+      if (topic === Topics.traffic) return client.auth?.role === 'admin';
       if (topic === Topics.nodes || topic === Topics.rooms) return client.auth?.role === 'admin';
       if (topic.startsWith('user:')) return topic === Topics.user(client.auth?.userId ?? '');
       if (topic.startsWith('room:')) {

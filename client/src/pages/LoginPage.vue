@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
-import { clientState, login, register, setDevice, setMaster } from '../lib/store.ts';
-import { friendlyError, getMasterUrl } from '../lib/api.ts';
+import { clientState, login, register, setDevice } from '../lib/store.ts';
+import { USING_DEV_MASTER, friendlyError, getMasterUrl } from '../lib/api.ts';
 import { passwordProblem } from '@mclink/shared';
 
 const mode = ref<'login' | 'register'>('login');
@@ -9,10 +9,13 @@ const username = ref('');
 const password = ref('');
 const password2 = ref('');
 const displayName = ref('');
-const master = ref(getMasterUrl());
 const device = ref(clientState.deviceName);
 const busy = ref(false);
 const error = ref('');
+
+/** 主控地址是编译期固定的，只展示不可编辑 */
+const master = computed(() => getMasterUrl());
+const isDevMaster = USING_DEV_MASTER;
 
 const canSubmit = computed(() => {
   if (busy.value) return false;
@@ -32,7 +35,6 @@ async function submit(): Promise<void> {
   error.value = '';
   busy.value = true;
   try {
-    setMaster(master.value);
     setDevice(device.value.trim() || device.value);
     if (mode.value === 'login') {
       await login(username.value.trim(), password.value);
@@ -64,9 +66,12 @@ async function submit(): Promise<void> {
       </div>
 
       <div class="field">
-        <label class="label">主控地址</label>
-        <input v-model="master" class="input mono" placeholder="http://your-master.example.com" />
-        <div class="hint">填写平台官网给出的地址；自建主控则填自己的地址。</div>
+        <label class="label">服务器</label>
+        <div class="server-line mono" :title="master">{{ master }}</div>
+        <div v-if="isDevMaster" class="hint" style="color: var(--warn)">
+          当前是本地开发地址（打包时未注入 VITE_MCLINK_MASTER），正式客户端会固定指向官方主控。
+        </div>
+        <div v-else class="hint">主控地址在客户端中固定，无需也不能修改。</div>
       </div>
 
       <div class="field">
@@ -110,3 +115,22 @@ async function submit(): Promise<void> {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* 只读的服务器地址：做成"铭牌"的样子，明确它不可编辑 */
+.server-line {
+  padding: 0 var(--s-3);
+  height: 36px;
+  display: flex;
+  align-items: center;
+  border-radius: var(--r-sm);
+  border: 1px dashed var(--border-strong);
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+</style>

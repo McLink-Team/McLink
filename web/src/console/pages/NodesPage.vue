@@ -14,7 +14,7 @@ import {
   type RelayNode,
 } from '@mclink/shared';
 import { api, friendlyError } from '../../lib/api.ts';
-import { copyText, formatDateTime, nodeLabel, nodeTone, reportError, toInt } from '../../lib/ui.ts';
+import { asArray, asStringList, copyText, formatDateTime, nodeLabel, nodeTone, reportError, toInt } from '../../lib/ui.ts';
 import { notifyOk } from '../../lib/toast.ts';
 import Badge from '../../components/Badge.vue';
 
@@ -75,8 +75,8 @@ async function load(): Promise<void> {
       api.get<RelayNode[]>(Routes.adminNodes, { query }),
       api.get<RegionAvailability[]>('/admin/nodes/regions'),
     ]);
-    nodes.value = list;
-    availability.value = regions;
+    nodes.value = asArray(list);
+    availability.value = asArray(regions);
     error.value = null;
   } catch (err) {
     error.value = friendlyError(err);
@@ -119,7 +119,7 @@ async function openEnroll(): Promise<void> {
 async function loadEnrollKeys(): Promise<void> {
   enrollLoading.value = true;
   try {
-    enrollKeys.value = await api.get<EnrollKeyInfo[]>('/admin/nodes/enroll-keys');
+    enrollKeys.value = asArray(await api.get<EnrollKeyInfo[]>('/admin/nodes/enroll-keys'));
   } catch (err) {
     enrollError.value = friendlyError(err);
   } finally {
@@ -164,7 +164,7 @@ function openEdit(node: RelayNode): void {
   editForm.endpoint = node.endpoint;
   editForm.weight = String(node.weight);
   editForm.capacityPeers = String(node.capacityPeers);
-  editForm.tags = node.tags.join(', ');
+  editForm.tags = asStringList(node.tags).join(', ');
 }
 
 async function saveEdit(): Promise<void> {
@@ -353,8 +353,8 @@ async function removeNode(node: RelayNode): Promise<void> {
               <td class="table-num">{{ n.weight }}</td>
               <td class="muted" style="font-size: var(--fs-xs)">{{ formatRelativeTime(n.lastSeenAt) }}</td>
               <td>
-                <div v-if="n.tags.length > 0" class="row wrap" style="gap: 4px">
-                  <Badge v-for="t in n.tags" :key="t" tone="neutral">{{ t }}</Badge>
+                <div v-if="asStringList(n.tags).length > 0" class="row wrap" style="gap: 4px">
+                  <Badge v-for="t in asStringList(n.tags)" :key="t" tone="neutral">{{ t }}</Badge>
                 </div>
                 <span v-else class="faint">—</span>
               </td>
@@ -532,7 +532,7 @@ async function removeNode(node: RelayNode): Promise<void> {
   position: fixed;
   inset: 0;
   z-index: var(--z-modal);
-  background: rgba(3, 5, 12, 0.68);
+  background: color-mix(in srgb, var(--bg-0) 68%, transparent);
   backdrop-filter: blur(3px);
   display: grid;
   place-items: center;
@@ -556,14 +556,14 @@ async function removeNode(node: RelayNode): Promise<void> {
 .created-box {
   padding: var(--s-4);
   border-radius: var(--r-sm);
-  background: rgba(53, 224, 200, 0.07);
-  border: 1px solid rgba(53, 224, 200, 0.22);
+  background: color-mix(in srgb, var(--brand) 7%, transparent);
+  border: 1px solid color-mix(in srgb, var(--brand) 22%, transparent);
 }
 .code-block {
   margin: 0;
   padding: var(--s-3);
   border-radius: var(--r-sm);
-  background: rgba(4, 7, 16, 0.6);
+  background: color-mix(in srgb, var(--bg-0) 60%, transparent);
   border: 1px solid var(--border);
   color: var(--text-dim);
   font-size: var(--fs-xs);
@@ -575,8 +575,8 @@ async function removeNode(node: RelayNode): Promise<void> {
   padding: var(--s-3);
   border-radius: var(--r-sm);
   background: var(--danger-bg);
-  border: 1px solid rgba(255, 107, 107, 0.3);
-  color: #ffc9c9;
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  color: var(--danger);
   font-size: var(--fs-xs);
   word-break: break-word;
 }

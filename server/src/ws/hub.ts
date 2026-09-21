@@ -125,11 +125,18 @@ export class WsHub {
       const auth = this.#options.resolveToken(token);
       if (auth) {
         client.auth = auth;
-        // 默认订阅自己的私有话题与平台话题
+        // 已登录：额外订阅自己的私有话题（踢人/ACL 等定向通知）
         client.topics.add(Topics.user(auth.userId));
-        client.topics.add(Topics.platform);
       }
     }
+    /**
+     * platform 话题只承载**聚合计数**（在线节点数、开放房间数、在线玩家数等），
+     * 落地页在未登录状态下也要显示这些数字，因此匿名连接也订阅它。
+     * 注意：逐房间的名称与带宽**不得**放进这个话题的载荷里 ——
+     * 那等于绕过话题鉴权把房间信息泄露给所有匿名访客。
+     * 逐房间明细只走 `traffic` 话题（仅管理员）。
+     */
+    client.topics.add(Topics.platform);
 
     this.#clients.set(client.id, client);
 

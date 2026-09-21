@@ -59,6 +59,58 @@ export function toFloat(value: string | number | null | undefined, fallback = 0)
   return Number.isFinite(n) ? n : fallback;
 }
 
+/* --------------------------------------------------------- 字段归一化 */
+
+/**
+ * 保险：本应是数组的字段（旧版主控可能漏给或给成别的类型）统一成数组。
+ * 只在渲染路径上使用，避免一个字段的类型漂移把整个页面渲染成白屏。
+ */
+export function asArray<T>(value: T[] | null | undefined): T[] {
+  return Array.isArray(value) ? value : [];
+}
+
+/** 把「可能是数组、可能是单值、可能缺失」的字段归一成字符串数组（不做拆分） */
+export function asStringList(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map((item) => String(item));
+  if (typeof value === 'string') return value.length > 0 ? [value] : [];
+  return [];
+}
+
+/**
+ * 归一化「模式列表」类字段。
+ *
+ * 注意服务端 `easytier.relayNetworkWhitelist` 的**类型是字符串**（例如 `mclink-room-*`，
+ * 多个模式时以空格分隔），不是数组——直接 `.join()` 会在渲染期抛
+ * `TypeError: ... .join is not a function` 并让整页白屏。这里统一成数组。
+ */
+export function asPatternList(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item)).filter((item) => item.length > 0);
+  }
+  if (typeof value === 'string') return value.split(/\s+/).filter(Boolean);
+  return [];
+}
+
+/**
+ * 中继网络白名单：优先用新版的 `whitelistPatterns: string[]`，
+ * 否则回退到可能是空格分隔字符串的 `whitelist`。两版主控都要能跑。
+ */
+export function relayWhitelist(
+  source: { whitelist?: unknown; whitelistPatterns?: unknown } | null | undefined,
+): string[] {
+  if (!source) return [];
+  const patterns = asPatternList(source.whitelistPatterns);
+  if (patterns.length > 0) return patterns;
+  return asPatternList(source.whitelist);
+}
+
+/** 复用 base.css 的 `.kv` 布局时用：把值安全地转成可渲染文本 */
+export function asText(value: unknown, fallback = '—'): string {
+  if (typeof value === 'string') return value.length > 0 ? value : fallback;
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return fallback;
+}
+
 /* ------------------------------------------------------------ 状态徽章 */
 
 export function nodeTone(status: NodeStatus): BadgeTone {

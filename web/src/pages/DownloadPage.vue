@@ -8,7 +8,7 @@ import { computed, onMounted, ref } from 'vue';
 import { RouterLink } from 'vue-router';
 import { Routes, formatBytes } from '@mclink/shared';
 import { api, friendlyError } from '../lib/api.ts';
-import { copyText } from '../lib/ui.ts';
+import { asArray, copyText } from '../lib/ui.ts';
 
 interface DownloadArtifact {
   id: string;
@@ -50,17 +50,16 @@ onMounted(() => {
   void load();
 });
 
-const artifacts = computed<DownloadArtifact[]>(() => data.value?.artifacts ?? []);
+const artifacts = computed<DownloadArtifact[]>(() => asArray(data.value?.artifacts));
 
 const windowsArtifacts = computed(() => artifacts.value.filter((a) => a.platform === 'windows'));
 const otherArtifacts = computed(() => artifacts.value.filter((a) => a.platform !== 'windows'));
 
-/** 主按钮目标：优先 setup.exe，其次任意 Windows 产物，最后退回平台登记的下载地址 */
-const primaryArtifact = computed<DownloadArtifact | null>(() => {
-  const list = windowsArtifacts.value;
-  const setup = list.find((a) => /setup/i.test(a.filename));
-  return setup ?? list[0] ?? null;
-});
+/**
+ * 主按钮目标：服务端已把与设置里 `clientDownloadUrl` 同名的主产物排在最前，
+ * 所以直接用 `artifacts[0]`；没有产物时才退回平台登记的下载地址。
+ */
+const primaryArtifact = computed<DownloadArtifact | null>(() => artifacts.value[0] ?? null);
 
 const primaryUrl = computed(() => primaryArtifact.value?.url ?? data.value?.primary ?? '/downloads/');
 
@@ -114,13 +113,20 @@ const requirements: Array<{ label: string; value: string }> = [
             EasyTier 官方发布页
           </a>
         </div>
-        <p v-if="primaryArtifact" class="hint">
-          文件大小 {{ formatBytes(primaryArtifact.size) }} ·
-          {{ primaryArtifact.arch }} ·
-          {{ primaryArtifact.sha256 ? `SHA-256 ${primaryArtifact.sha256}` : '本平台未登记该文件校验值' }}
+        <p v-if="primaryArtifact" class="hint hero-hint">
+          <span>文件大小 {{ formatBytes(primaryArtifact.size) }} · {{ primaryArtifact.arch }}</span>
+          <template v-if="primaryArtifact.sha256">
+            <span class="mono truncate" style="max-width: 320px" :title="primaryArtifact.sha256">
+              SHA-256 {{ primaryArtifact.sha256 }}
+            </span>
+            <button class="btn btn-sm btn-ghost" type="button" @click="copyText(primaryArtifact.sha256, 'SHA-256')">
+              复制校验值
+            </button>
+          </template>
+          <span v-else>· 本平台未登记该文件校验值</span>
         </p>
         <p v-else-if="!loading" class="hint">
-          未在下载目录中发现 Windows 安装包，主按钮指向平台配置的地址：{{ data?.primary }}
+          下载目录中还没有任何产物，主按钮指向平台配置的地址：{{ data?.primary }}
         </p>
       </div>
     </section>
@@ -192,7 +198,14 @@ const requirements: Array<{ label: string; value: string }> = [
                     <td class="muted">{{ a.arch }}</td>
                     <td class="table-num">{{ formatBytes(a.size) }}</td>
                     <td>
-                      <span v-if="a.sha256" class="mono" style="font-size: var(--fs-xs)">{{ a.sha256 }}</span>
+                      <div v-if="a.sha256" class="row" style="gap: var(--s-2)">
+                        <span class="mono truncate" style="font-size: var(--fs-xs); max-width: 260px" :title="a.sha256">
+                          {{ a.sha256 }}
+                        </span>
+                        <button class="btn btn-sm btn-ghost" type="button" @click="copyText(a.sha256, 'SHA-256')">
+                          复制
+                        </button>
+                      </div>
                       <span v-else class="faint" style="font-size: var(--fs-xs)">未登记</span>
                     </td>
                     <td style="text-align: right">
@@ -241,8 +254,8 @@ const requirements: Array<{ label: string; value: string }> = [
             <p class="muted" style="font-size: var(--fs-sm)">Linux / macOS 上：</p>
             <pre class="code">sha256sum mclink-client-setup.exe</pre>
             <p class="hint">
-              与平台登记的 SHA-256（控制台「平台设置」中的 clientSha256）不一致时不要安装，
-              并联系管理员确认来源。
+              与「可用产物」里该文件显示的 SHA-256 不一致时不要安装，
+              并联系管理员确认来源（校验值由管理员在控制台「平台设置」的 clientSha256 中登记）。
             </p>
             <button class="btn btn-sm" type="button" @click="copyText(primaryUrl, '下载地址')">
               复制下载地址
@@ -291,7 +304,7 @@ const requirements: Array<{ label: string; value: string }> = [
   top: 0;
   z-index: var(--z-header);
   backdrop-filter: blur(14px);
-  background: rgba(5, 7, 15, 0.72);
+  background: color-mix(in srgb, var(--bg-0) 72%, transparent);
   border-bottom: 1px solid var(--border);
 }
 .nav-inner {
@@ -314,7 +327,7 @@ const requirements: Array<{ label: string; value: string }> = [
   place-items: center;
   border-radius: var(--r-sm);
   background: var(--grad-brand);
-  color: #04121a;
+  color: var(--bg-0);
 }
 .brand-mark svg {
   width: 19px;
@@ -344,6 +357,12 @@ const requirements: Array<{ label: string; value: string }> = [
 }
 .head p {
   max-width: 60em;
+}
+.hero-hint {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
 }
 .cta-row {
   display: flex;
@@ -376,7 +395,7 @@ const requirements: Array<{ label: string; value: string }> = [
   margin: 0;
   padding: var(--s-3);
   border-radius: var(--r-sm);
-  background: rgba(4, 7, 16, 0.6);
+  background: color-mix(in srgb, var(--bg-0) 60%, transparent);
   border: 1px solid var(--border);
   color: var(--text-dim);
   overflow-x: auto;

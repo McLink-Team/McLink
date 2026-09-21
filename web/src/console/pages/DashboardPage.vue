@@ -2,9 +2,11 @@
 /**
  * 仪表盘：平台概览 + 中继运行状态 + 节点/房间速览 + 审计时间线。
  *
- * 注意一个接口细节：`/admin/overview` 里的 `nodes` 与 `rooms` 被服务端**覆盖成了数组**
- * （原本是状态计数对象），所以节点状态分布与房间数改用公开的 `/stats` 补齐，
- * 这样 StatCard 的数字才是全量精确值而不是「前 12 条」的统计。
+ * 数据只来自 `/admin/overview`：
+ *   - `nodes` / `rooms` 是**计数对象**（状态分布、开放房间数、在线玩家数）；
+ *   - `recentNodes` / `recentRooms` 是「前 12」列表，用于两张速览表格。
+ * 白名单在旧版主控里是空格分隔字符串（新版额外给 `whitelistPatterns`），
+ * 渲染前必须归一化，否则 `.join()` 会直接让整页白屏。
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { RouterLink } from 'vue-router';
@@ -24,14 +26,25 @@ import {
 } from '@mclink/shared';
 import { api, friendlyError } from '../../lib/api.ts';
 import { RealtimeClient } from '../../lib/realtime.ts';
-import { formatDateTime, nodeLabel, nodeTone, roomLabel, roomTone } from '../../lib/ui.ts';
+import {
+  asArray,
+  asStringList,
+  formatDateTime,
+  nodeLabel,
+  nodeTone,
+  relayWhitelist,
+  roomLabel,
+  roomTone,
+} from '../../lib/ui.ts';
 import StatCard from '../../components/StatCard.vue';
 import Badge from '../../components/Badge.vue';
 
 interface AdminRelayRuntime extends RelayRuntime {
   version: string | null;
   cliAvailable: boolean;
-  whitelist: string[];
+  /** 旧版主控给的是空格分隔字符串；新版额外给 whitelistPatterns */
+  whitelist: string | string[];
+  whitelistPatterns?: string | string[];
   port: number;
   rpcPortal: string;
   binary: string;
@@ -39,13 +52,27 @@ interface AdminRelayRuntime extends RelayRuntime {
   configFile: string;
 }
 
+interface NodeCounts {
+  total: number;
+  online: number;
+  degraded: number;
+  offline: number;
+  pending: number;
+}
+
+interface RoomCounts {
+  open: number;
+  total: number;
+  onlinePlayers: number;
+}
+
 interface AdminOverview {
   serverTime: string;
   version: string;
   easytierVersion: string | null;
   uptimeSeconds: number;
-  nodes: RelayNode[];
-  rooms: Room[];
+  nodes: NodeCounts;
+  rooms: RoomCounts;
   users: { total: number; online: number };
   traffic: { rxBps: number; txBps: number; rxBytesToday: number; txBytesToday: number };
   relay: AdminRelayRuntime | null;
@@ -57,31 +84,19 @@ interface AdminOverview {
     pid: number;
     memoryMb: number;
   };
+  recentNodes: RelayNode[];
+  recentRooms: Room[];
   recentAudit: AuditEntry[];
   warnings: string[];
 }
 
-interface PlatformStats {
-  serverTime: string;
-  nodes: { total: number; online: number; degraded: number; offline: number; pending: number };
-  rooms: { open: number; total: number; onlinePlayers: number };
-  users: { total: number; online: number };
-  traffic: { rxBps: number; txBps: number; rxBytesToday: number; txBytesToday: number };
-}
-
 const overview = ref<AdminOverview | null>(null);
-const stats = ref<PlatformStats | null>(null);
 const loading = ref(true);
 const error = ref<string | null>(null);
 
 async function load(): Promise<void> {
   try {
-    const [ov, st] = await Promise.all([
-      api.get<AdminOverview>(Routes.adminOverview),
-      api.get<PlatformStats>(Routes.stats),
-    ]);
-    overview.value = ov;
-    stats.value = st;
+    overview.value = await api.get<AdminOverview>(Routes.adminOverview);
     error.value = null;
   } catch (err) {
     error.value = friendlyError(err);
@@ -123,37 +138,53 @@ onUnmounted(() => {
 /* --------------------------------------------------------------- 派生 */
 
 const relay = computed(() => overview.value?.relay ?? null);
+/** 白名单在旧版主控是空格分隔字符串，这里必须归一化后再渲染 */
+const whitelistPatterns = computed(() => relayWhitelist(relay.value));
+
+/* 字段缺失时的兜底值：宁可显示 0 也不要让渲染中断 */
+const EMPTY_NODE_COUNTS: NodeCounts = { total: 0, online: 0, degraded: 0, offline: 0, pending: 0 };
+const EMPTY_ROOM_COUNTS: RoomCounts = { open: 0, total: 0, onlinePlayers: 0 };
+const EMPTY_TRAFFIC = { rxBps: 0, txBps: 0, rxBytesToday: 0, txBytesToday: 0 };
 
 const cards = computed(() => {
-  const s = stats.value;
   const ov = overview.value;
+  if (!ov) return [];
+  // 旧版/异常响应可能缺块，逐块兜底而不是让它把整页带走
+  const n = ov.nodes ?? EMPTY_NODE_COUNTS;
+  const r = ov.rooms ?? EMPTY_ROOM_COUNTS;
+  const traffic = ov.traffic ?? EMPTY_TRAFFIC;
   return [
-    { label: '在线节点', value: s ? s.nodes.online : '—', hint: s ? `共 ${s.nodes.total} 个` : '', accent: 'ok' as const },
-    { label: '降级节点', value: s ? s.nodes.degraded : '—', hint: '接近容量上限', accent: 'warn' as const },
-    { label: '离线节点', value: s ? s.nodes.offline : '—', hint: '心跳超时', accent: 'danger' as const },
-    { label: '待审核节点', value: s ? s.nodes.pending : '—', hint: '等待首次心跳', accent: 'accent' as const },
-    { label: '开放房间', value: s ? s.rooms.open : '—', hint: s ? `累计 ${s.rooms.total} 个` : '', accent: 'brand' as const },
-    { label: '在线玩家', value: s ? s.rooms.onlinePlayers : '—', hint: '90 秒内有心跳', accent: 'brand' as const },
-    { label: '注册用户', value: s ? s.users.total : '—', hint: '含管理员', accent: 'accent' as const },
+    { label: '在线节点', value: n.online, hint: `共 ${n.total} 个`, accent: 'ok' as const },
+    { label: '降级节点', value: n.degraded, hint: '接近容量上限', accent: 'warn' as const },
+    { label: '离线节点', value: n.offline, hint: '心跳超时', accent: 'danger' as const },
+    { label: '待审核节点', value: n.pending, hint: '等待首次心跳', accent: 'accent' as const },
+    { label: '开放房间', value: r.open, hint: `累计 ${r.total} 个`, accent: 'brand' as const },
+    { label: '在线玩家', value: r.onlinePlayers, hint: '90 秒内有心跳', accent: 'brand' as const },
+    {
+      label: '注册用户',
+      value: ov.users?.total ?? 0,
+      hint: `WebSocket 在线 ${ov.users?.online ?? 0}`,
+      accent: 'accent' as const,
+    },
     {
       label: '实时接收',
-      value: ov ? formatBitrate(ov.traffic.rxBps) : '—',
-      hint: ov ? `今日 ${formatBytes(ov.traffic.rxBytesToday)}` : '',
+      value: formatBitrate(traffic.rxBps),
+      hint: `今日 ${formatBytes(traffic.rxBytesToday)}`,
       accent: 'violet' as const,
     },
     {
       label: '实时发送',
-      value: ov ? formatBitrate(ov.traffic.txBps) : '—',
-      hint: ov ? `今日 ${formatBytes(ov.traffic.txBytesToday)}` : '',
+      value: formatBitrate(traffic.txBps),
+      hint: `今日 ${formatBytes(traffic.txBytesToday)}`,
       accent: 'violet' as const,
     },
   ];
 });
 
-const nodeRows = computed(() => overview.value?.nodes ?? []);
-const roomRows = computed(() => overview.value?.rooms ?? []);
-const auditRows = computed(() => overview.value?.recentAudit ?? []);
-const warnings = computed(() => overview.value?.warnings ?? []);
+const nodeRows = computed(() => asArray(overview.value?.recentNodes));
+const roomRows = computed(() => asArray(overview.value?.recentRooms));
+const auditRows = computed(() => asArray(overview.value?.recentAudit));
+const warnings = computed(() => asStringList(overview.value?.warnings));
 </script>
 
 <template>
@@ -227,8 +258,8 @@ const warnings = computed(() => overview.value?.warnings ?? []);
               <span class="kv-k">监听地址</span><span class="kv-v mono">{{ relay.listen }}</span>
               <span class="kv-k">网络名</span><span class="kv-v mono">{{ relay.networkName }}</span>
               <span class="kv-k">白名单</span>
-              <span class="kv-v mono truncate" :title="relay.whitelist.join(', ')">
-                {{ relay.whitelist.length > 0 ? relay.whitelist.join(', ') : '（未配置）' }}
+              <span class="kv-v mono truncate" :title="whitelistPatterns.join(', ')">
+                {{ whitelistPatterns.length > 0 ? whitelistPatterns.join(', ') : '（未配置）' }}
               </span>
               <span class="kv-k">CLI 版本</span>
               <span class="kv-v mono">
@@ -272,13 +303,13 @@ const warnings = computed(() => overview.value?.warnings ?? []);
             <span class="kv-k">平台版本</span><span class="kv-v mono">{{ overview.version }}</span>
             <span class="kv-k">EasyTier 核心</span>
             <span class="kv-v mono">{{ overview.easytierVersion ?? '未探测' }}</span>
-            <span class="kv-k">Node 版本</span><span class="kv-v mono">{{ overview.system.nodeVersion }}</span>
-            <span class="kv-k">运行平台</span><span class="kv-v mono">{{ overview.system.platform }}</span>
-            <span class="kv-k">Schema 版本</span><span class="kv-v mono">{{ overview.system.schemaVersion }}</span>
+            <span class="kv-k">Node 版本</span><span class="kv-v mono">{{ overview.system?.nodeVersion ?? '—' }}</span>
+            <span class="kv-k">运行平台</span><span class="kv-v mono">{{ overview.system?.platform ?? '—' }}</span>
+            <span class="kv-k">Schema 版本</span><span class="kv-v mono">{{ overview.system?.schemaVersion ?? '—' }}</span>
             <span class="kv-k">数据库</span>
-            <span class="kv-v mono truncate" :title="overview.system.dbFile">{{ overview.system.dbFile }}</span>
-            <span class="kv-k">进程 PID</span><span class="kv-v mono">{{ overview.system.pid }}</span>
-            <span class="kv-k">内存占用</span><span class="kv-v mono">{{ overview.system.memoryMb }} MB</span>
+            <span class="kv-v mono truncate" :title="overview.system?.dbFile ?? ''">{{ overview.system?.dbFile ?? '—' }}</span>
+            <span class="kv-k">进程 PID</span><span class="kv-v mono">{{ overview.system?.pid ?? '—' }}</span>
+            <span class="kv-k">内存占用</span><span class="kv-v mono">{{ overview.system?.memoryMb ?? '—' }} MB</span>
             <span class="kv-k">服务端时间</span><span class="kv-v mono">{{ formatDateTime(overview.serverTime) }}</span>
             <span class="kv-k">已运行</span><span class="kv-v">{{ formatDuration(overview.uptimeSeconds) }}</span>
           </div>
@@ -419,7 +450,7 @@ const warnings = computed(() => overview.value?.warnings ?? []);
   padding: var(--s-4);
   border-radius: var(--r-md);
   background: var(--warn-bg);
-  border: 1px solid rgba(255, 200, 74, 0.28);
+  border: 1px solid color-mix(in srgb, var(--warn) 28%, transparent);
 }
 .warn-list {
   margin: 0;
@@ -452,8 +483,8 @@ const warnings = computed(() => overview.value?.warnings ?? []);
   padding: var(--s-3);
   border-radius: var(--r-sm);
   background: var(--danger-bg);
-  border: 1px solid rgba(255, 107, 107, 0.3);
-  color: #ffc9c9;
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  color: var(--danger);
   font-size: var(--fs-xs);
   word-break: break-word;
 }
@@ -477,7 +508,7 @@ const warnings = computed(() => overview.value?.warnings ?? []);
   background: var(--brand);
   margin-top: 6px;
   flex: none;
-  box-shadow: 0 0 0 3px rgba(53, 224, 200, 0.14);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 14%, transparent);
 }
 .tl-body {
   min-width: 0;

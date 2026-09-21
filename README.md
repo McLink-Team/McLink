@@ -1,0 +1,233 @@
+# mclink
+
+**基于 [EasyTier](https://github.com/EasyTier/EasyTier) 的《我的世界》联机平台。**
+一台主控、一个端口，把分散在各地的玩家拉进同一个虚拟局域网里开黑——不需要公网 IP、不需要端口映射、
+不需要玩家装任何组网工具。
+
+```
+玩家 A（上海）──┐
+玩家 B（广州）──┼──► 主控 :11010（一个端口，承载所有房间）──► 各房间彼此隔离
+玩家 C（成都）──┘        + 可选：各区域子节点中继
+```
+
+---
+
+## 它是什么
+
+mclink = **主控（Master）** + **区域子节点（Relay）** + **Windows 客户端** + **管理控制台**。
+
+* **主控**负责账号、房间编排、票据签发、子节点调度、流量账本与实时推送；
+* **子节点**是部署在各区域的公共中继，让玩家就近接入；
+* **客户端**在玩家本地托管一个 `easytier-core`，用主控下发的票据加入房间的虚拟网络；
+* 每个房间是一个**独立的 EasyTier 网络**，网络名与密钥随机生成，彼此无法互相发现。
+
+核心工程结论（也是本项目最大的设计点）：**主控只监听一个端口即可承载所有房间**——
+中继按网络名（`relay_network_whitelist = "mclink-room-*"`，wildmatch）决定是否为某个网络转发，
+所以新建/关闭房间都不需要重启中继进程，也不需要额外的端口。原理与边界见
+[docs/architecture.md](docs/architecture.md)。
+
+---
+
+## 功能特性
+
+### 面向玩家
+
+* **一键建房/进房**：建房得到 6 位加入码，朋友输入即可进；可选「密码加入」或「房主审批」。
+* **自动就近中继**：按区域调度中继节点（华东/华南/华北/华中/西南/西北/东北/香港/海外），
+  自动选择延迟更低的路径；区域没有节点时全局兜底，单机部署时用主控自带中继。
+* **局域网广播透传**：开启后 Minecraft「多人游戏」列表里能直接看到房间，不用手抄 IP。
+* **P2P 优先**：允许成员间直连（可关闭以强制走中继，便于控制流量与可观测）。
+* **零配置客户端**：客户端只需要登录——网络身份、虚拟地址、中继列表、启动参数全部由主控下发。
+* **实时状态**：房间成员、延迟、P2P 直连状态、房间流量一目了然。
+* **房主控制权**：审批进房、踢人、轮换密钥、房间策略（人数上限、端口白名单、包速率限制、公告）。
+
+### 面向管理员
+
+* **一键部署**：Debian 12 上 `install-server.sh` 一条命令装完（Node、依赖、前端构建、EasyTier、systemd）。
+* **一键扩区域**：管理台签发一次性注册密钥 → 区域服务器跑 `install-node.sh`，节点自动上线参与调度。
+* **节点管理**：上下线、权重、容量、区域、标签、停用；节点 `pending → online` 自动流转，超时自动判离线。
+* **房间与用户管理**：强制关房、改策略、封禁/解封、角色、流量配额、房间数上限。
+* **流量监控**：平台级/房间级/节点级收发速率与累计用量，72 小时时序曲线，中继外来网络明细。
+* **中继控制**：查看生成的 EasyTier 配置与实时日志、重启中继、下发 ACL、手动重采样。
+* **审计日志**：登录、注册、建房、加入、审批、踢人、轮换密钥、所有管理员操作全部落库。
+* **安全默认值**：scrypt 口令哈希、令牌只存 sha256、会话可吊销、按 IP 限流、房间票据短时效。
+
+---
+
+## 架构简图
+
+```
+                    ┌──────────────────────────────────────────────┐
+   浏览器（玩家/管理员）│  主控 Master   node server/src/index.ts :8787 │
+   HTTP + WebSocket   │  REST API · WS Hub · 静态托管(前端) · SQLite  │
+                    └───────────────┬──────────────────────────────┘
+                                    │ spawn + easytier-cli(RPC 15888)
+                    ┌───────────────▼──────────────┐
+                    │ easytier-core  :11010 TCP+UDP │  ← 单端口共享中继
+                    │ relay_network_whitelist =     │
+                    │   "mclink-room-*"             │
+                    └───┬───────────────┬───────────┘
+              ┌─────────▼──────┐  ┌─────▼──────────┐
+              │ 子节点 cn-east │  │ 子节点 hk      │   ← 各区域就近中继
+              │ agent + core   │  │ agent + core   │
+              └─────────┬──────┘  └─────┬──────────┘
+                        └───────┬───────┘
+          ┌─────────────────────┴─────────────────────┐
+     ┌────▼─────┐            ┌──────────┐        ┌────▼─────┐
+     │ 房主客户端│            │ 成员客户端│        │ 成员客户端│
+     │10.200.7.1│            │10.200.7.2│        │10.200.7.3│
+     └──────────┘            └──────────┘        └──────────┘
+      同一个房间 = 同一个 EasyTier 网络（网络名由 32 位随机密钥派生）
+```
+
+---
+
+## 快速开始
+
+### 本机开发（3 条命令）
+
+```bash
+pnpm install          # 安装依赖
+pnpm fetch:easytier   # 下载 EasyTier 到 vendor/easytier/
+pnpm dev:server       # 主控启动：http://127.0.0.1:8787
+```
+
+需要 **Node.js ≥ 22.6**（推荐 24）与 pnpm 10。首次启动会自动生成
+`server/data/secrets.json`（JWT / 中继密钥 / 初始管理员密码）并创建管理员账号，
+密码会打印在启动日志里。想固定密码：
+
+```bash
+MCLINK_ADMIN_PASSWORD='请替换成强密码' pnpm dev:server
+```
+
+前端热更新另开一个终端（已配好 API/WS 代理）：
+
+```bash
+pnpm dev:web          # http://127.0.0.1:5173
+```
+
+端到端实验（会**真的**拉起 easytier-core 进程，验证房间隔离、子节点调度与流量统计）：
+
+```bash
+pnpm lab
+```
+
+详见 [docs/development.md](docs/development.md)。
+
+### Debian 部署（1 条命令）
+
+```bash
+git clone <仓库地址> /opt/src/mclink && cd /opt/src/mclink
+sudo bash deploy/install-server.sh --public-url https://mclink.example.com
+```
+
+脚本会装 Node、装依赖、构建前端、下载 EasyTier、写 `/etc/mclink/mclink.env`、
+安装并启动 systemd 服务、按需放行 ufw，最后打印**只显示一次**的初始管理员密码。
+
+加一个区域子节点（先在管理台签发注册密钥）：
+
+```bash
+sudo bash deploy/install-node.sh \
+  --master https://mclink.example.com \
+  --key <注册密钥> \
+  --region cn-east \
+  --endpoint relay-sh.example.com:11010 \
+  --name relay-sh
+```
+
+* 端口清单：**8787**（HTTP，建议只给反代）、**11010 TCP+UDP**（中继，必须公网）。
+* 反代与证书：`deploy/nginx.conf.example`（`/ws` 必须单独配置，文件里写了原因）。
+* 速查：[deploy/README.md](deploy/README.md)；完整手册：[docs/deployment.md](docs/deployment.md)。
+
+---
+
+## 技术栈与选型理由
+
+| 层 | 选型 | 理由 |
+| --- | --- | --- |
+| 运行时 | **Node.js 24** + TypeScript | 见下 |
+| 后端 | Node 原生 TS 剥离直接跑 `.ts`（**无需构建**）+ 自研极简 HTTP 路由 | 去掉构建步骤与框架依赖，改完即生效；路由/鉴权/错误码完全可控 |
+| 数据库 | 内置 **`node:sqlite`**（WAL） | **零原生依赖**：不需要 node-gyp/MSVC/编译工具链，Debian 上不需要装 build-essential |
+| 实时 | `ws` + 话题订阅（platform/nodes/rooms/traffic/room:\<id\>/user:\<id\>） | 一个 WebSocket 覆盖落地页、房间页与管理台 |
+| 前端 | Vite + Vue 3（产物输出到 `server/public`） | 主控**一个进程**同时提供 API、控制台与落地页，生产只需要一个 systemd 服务 |
+| 客户端 | Electron（Windows） | 需要托管本地 `easytier-core` 子进程并与虚拟网卡交互，浏览器沙箱做不到 |
+| 组网 | EasyTier（子进程调用，未修改其代码） | 成熟的 P2P/中继组网，支持 wildmatch 中继白名单与 ACL |
+
+### 为什么是 Node.js 而不是 Rust
+
+本项目的**原设计文档首选 Rust**（性能与单二进制部署）。实际落地时改成了
+**Node.js 24 + TypeScript**，原因是统一工具链、降低部署复杂度：
+
+1. **web 前端与 Electron 客户端本来就依赖 Node**——再引入 Rust 意味着维护两套工具链、
+   两套 CI、两套依赖锁定；
+2. **后端零原生依赖**：`node:sqlite` + Node 原生 TS 剥离，使得服务端**不需要构建步骤**，
+   `node server/src/index.ts` 直接跑，也不用在目标机上装编译工具链；
+   Rust 方案虽然产物是单个二进制，但要为每个目标平台做交叉编译与产物分发；
+3. **性能不是瓶颈**：主控只做编排与采样（每 5 秒一次 CLI 调用），真正的转发与加密
+   由 EasyTier（Rust 编写）承担；
+4. **排障与二次开发成本更低**：服务端代码即运行时代码，运维可以直接读、直接改。
+
+代价与边界也如实记录：[docs/security.md](docs/security.md) 列出了当前实现的已知弱点，
+[docs/api.md](docs/api.md) 文末列出了协议里"已定义但尚未实现"的部分。
+
+---
+
+## 目录结构
+
+```
+server/                主控后端（Node + TS，直接运行）
+  src/api/             REST 路由：public / auth / rooms / agent / admin
+  src/services/        业务：auth / rooms / nodes / settings
+  src/easytier/        EasyTier 封装：TOML 生成、子进程托管、CLI、ACL、中继管理
+  src/db/              SQLite 仓储与迁移
+  src/ws/              WebSocket 推送中心
+web/                   官网页 + 管理员控制台（Vite + Vue3）
+client/                Windows 客户端（Electron）
+packages/shared/       服务端/网页/客户端共用的类型与线协议
+deploy/                安装脚本、systemd 单元、子节点 agent、nginx 示例
+docs/                  架构、API、部署、开发、安全、排障文档
+scripts/               fetch-easytier / lab / capture 辅助脚本
+```
+
+---
+
+## 文档索引
+
+| 文档 | 内容 |
+| --- | --- |
+| [docs/architecture.md](docs/architecture.md) | 组件图、**单端口多房间隔离的原理与边界**、房主/成员体系、票据机制、虚拟地址规划、调度策略、流量与限速的落地位置、已核实的技术事实 |
+| [docs/api.md](docs/api.md) | REST API 全量参考（真实路由/鉴权/请求响应/错误码）+ WebSocket 协议 + 与实现不一致的已知点 |
+| [docs/deployment.md](docs/deployment.md) | 生产部署手册：容量规划、Debian 从零部署、systemd 运维、备份（WAL 注意事项）、日志、监控、扩容、环境变量全表、上线检查清单 |
+| [docs/development.md](docs/development.md) | 本地开发：环境、命令、端到端实验、代码结构导览、如何加新 API、如何改房间策略 |
+| [docs/security.md](docs/security.md) | **安全模型与已知边界**：网络名即准入凭证的来龙去脉、已实测限制、加固措施、弱点清单、合规 |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | 排障手册：症状 → 原因 → 处置 |
+| [deploy/README.md](deploy/README.md) | 部署速查：单机最小部署、多区域子节点、升级流程、故障速查表、`bind_device` 的坑 |
+| [deploy/nginx.conf.example](deploy/nginx.conf.example) | TLS 反代示例（含 WebSocket 必需配置与 certbot 提示） |
+
+---
+
+## 安全提示（务必先读）
+
+* **单端口共享中继架构下，EasyTier 网络名就是准入凭证**——`network_secret` 只在
+  `private_mode` 开启时校验，而共享中继不能开 `private_mode`。
+  因此平台把网络名设计为由房间密钥派生的 128 bit 不可猜测令牌；6 位加入码只走主控 API。
+* **已实测边界**：攻击者若已拿到网络名但密钥错误，EasyTier v2.6.4 仍会把它接入房间的 peer 网表
+  （能看到成员虚拟 IP）；主控侧准入与**密钥轮换**仍然有效。需要更强成员认证时建议改用
+  EasyTier 的 secure mode + credential（当前未实现）。
+* 默认 **不要对公网直接暴露 8787**，用反向代理做 TLS；中继端口 11010 必须放行 **TCP+UDP**。
+* 完整限制清单（含待修复项）见 [docs/security.md](docs/security.md)。
+
+---
+
+## 许可证与合规
+
+* **EasyTier 采用 LGPL-3.0**。本项目**通过子进程调用** `easytier-core` / `easytier-cli`
+  （`spawn`，配置文件与命令行参数由主控生成），**未修改其代码、未链接、未再分发修改版**，
+  因此不构成衍生作品；部署时下载的二进制来自 EasyTier 官方 Release，请遵守其许可证。
+* 本项目自身代码以根目录 `package.json` 声明的 **AGPL-3.0-or-later** 发布。
+* **《我的世界》（Minecraft）及其相关商标、素材、游戏内容归 Mojang Studios / Microsoft 所有。**
+  本项目是独立的第三方联机工具，与 Mojang 无任何关联，也不包含任何游戏资源。
+* **仅供合法联机用途**。请勿用于规避游戏授权、绕过服务器规则或任何违法用途；
+  使用者需自行遵守所在地区法律与游戏服务条款。
+* 平台会记录账号、IP 与流量数据用于运维与审计（流量明细默认保留 72 小时），
+  部署方应按当地法规在隐私政策中告知用户并设定保留期限。

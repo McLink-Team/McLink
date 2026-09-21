@@ -8,6 +8,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { RouterLink } from 'vue-router';
 import { REGIONS, Routes, Topics, type ServerEvent } from '@mclink/shared';
 import { api, friendlyError } from '../lib/api.ts';
+import { asArray } from '../lib/ui.ts';
 import { RealtimeClient } from '../lib/realtime.ts';
 
 /** GET /meta */
@@ -66,7 +67,7 @@ async function loadMeta(): Promise<void> {
 
 async function loadRegions(): Promise<void> {
   try {
-    regions.value = await api.get<RegionAvailability[]>(Routes.regions);
+    regions.value = asArray(await api.get<RegionAvailability[]>(Routes.regions));
     regionsError.value = null;
   } catch (err) {
     regionsError.value = friendlyError(err);
@@ -449,7 +450,7 @@ const showErrorBanner = computed(() => metaError.value !== null || regionsError.
   top: 0;
   z-index: var(--z-header);
   backdrop-filter: blur(14px);
-  background: rgba(5, 7, 15, 0.72);
+  background: color-mix(in srgb, var(--bg-0) 72%, transparent);
   border-bottom: 1px solid var(--border);
 }
 .nav-inner {
@@ -471,7 +472,7 @@ const showErrorBanner = computed(() => metaError.value !== null || regionsError.
   place-items: center;
   border-radius: var(--r-sm);
   background: var(--grad-brand);
-  color: #04121a;
+  color: var(--bg-0);
 }
 .brand-mark svg {
   width: 19px;
@@ -544,7 +545,7 @@ const showErrorBanner = computed(() => metaError.value !== null || regionsError.
 }
 .stat-tile {
   padding: var(--s-4);
-  background: rgba(10, 15, 30, 0.62);
+  background: color-mix(in srgb, var(--bg-1) 62%, transparent);
 }
 .stat-tile-label {
   font-size: var(--fs-xs);
@@ -568,14 +569,14 @@ const showErrorBanner = computed(() => metaError.value !== null || regionsError.
   display: flex;
   align-items: center;
   gap: var(--s-3);
-  border-color: rgba(92, 200, 255, 0.3);
+  border-color: color-mix(in srgb, var(--info) 30%, transparent);
 }
 .warn-bar {
   margin-top: var(--s-4);
   padding: var(--s-3) var(--s-4);
   border-radius: var(--r-md);
   background: var(--warn-bg);
-  border: 1px solid rgba(255, 200, 74, 0.28);
+  border: 1px solid color-mix(in srgb, var(--warn) 28%, transparent);
   color: var(--text);
   font-size: var(--fs-sm);
 }
@@ -644,8 +645,8 @@ const showErrorBanner = computed(() => metaError.value !== null || regionsError.
   display: grid;
   place-items: center;
   color: var(--brand);
-  background: rgba(53, 224, 200, 0.12);
-  border: 1px solid rgba(53, 224, 200, 0.24);
+  background: color-mix(in srgb, var(--brand) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--brand) 24%, transparent);
 }
 
 .region-grid {

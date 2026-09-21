@@ -35,11 +35,9 @@ export const Routes = {
   roomAcl: (id: string) => `/rooms/${id}/acl`,
 
   /* ---------- 子节点 agent ---------- */
-  agentEnroll: '/agent/enroll',
   agentRegister: '/agent/register',
   agentHeartbeat: '/agent/heartbeat',
   agentConfig: '/agent/config',
-  agentReport: '/agent/report',
 
   /* ---------- 管理台 ---------- */
   adminLogin: '/admin/login',
@@ -57,7 +55,6 @@ export const Routes = {
   adminRelay: '/admin/relay',
   adminRelayAcl: '/admin/relay/acl',
   adminRelayRestart: '/admin/relay/restart',
-  adminRoomsLive: '/admin/rooms/live',
 } as const;
 
 /* ---------------------------------------------------------- WebSocket */
@@ -174,12 +171,21 @@ export interface AgentEnrollRequest {
 }
 
 export interface AgentEnrollResponse {
-  nodeId: string;
+  /** 节点信息（含 nodeId、区域、endpoint、状态等） */
+  node: {
+    id: string;
+    name: string;
+    region: string;
+    endpoint: string;
+    status: string;
+    capacityPeers: number;
+  };
   /** 长期有效的节点令牌，之后所有 agent 请求携带 */
   nodeToken: string;
   relayConfigToml: string;
   /** 启动 easytier-core 的参数，`%CONFIG%` 替换为配置文件绝对路径 */
   launchArgs: string[];
+  /** 建议的心跳间隔（秒），与主控的判活超时配套 */
   heartbeatIntervalSeconds: number;
 }
 

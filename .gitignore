@@ -51,3 +51,9 @@ desktop.ini
 # 娴嬭瘯涓存椂鐩綍
 .tmp/
 tmp/
+
+# 客户端打包时的环境变量（含真实域名，不入库）
+client/.env
+client/.env.local
+web/.env
+web/.env.local

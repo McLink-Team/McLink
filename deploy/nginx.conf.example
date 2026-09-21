@@ -1,0 +1,136 @@
+# =============================================================================
+# mclink 反向代理示例（nginx + Let's Encrypt）
+#
+# 放到 /etc/nginx/conf.d/mclink.conf 或 sites-available/mclink 并自行 enable。
+#
+# 申请证书（先让 80 端口可达，再执行；certbot 会自动改写本文件的 ssl 段）：
+#   sudo apt-get install -y certbot python3-certbot-nginx
+#   sudo certbot --nginx -d mclink.example.com
+#   # 仅签证书（不自动改配置）：
+#   sudo certbot certonly --nginx -d mclink.example.com
+# 续期：certbot 自带 systemd timer（systemctl list-timers | grep certbot），
+# 手动验证续期用 `sudo certbot renew --dry-run`。
+#
+# =============================================================================
+# 为什么 WebSocket（/ws）必须单独配置？（约 6 行关键点）
+#   1) WebSocket 握手是一次标准的 HTTP/1.1 GET + `Upgrade: websocket` 请求，
+#      要求代理**原样透传** Upgrade / Connection 头，并且必须使用 HTTP/1.1。
+#   2) nginx 默认（proxy_http_version 1.0）会剥掉 Upgrade 头，握手直接失败，
+#      前端只能反复重连，表现为「实时状态一直不刷新」。
+#   3) 连接一旦升级成功就会长期空闲，而 proxy_read_timeout 默认只有 60s，
+#      会把空闲的 WS 连接当作超时切断 —— 必须调大到 3600s。
+#   4) 平台自身的 WS 心跳是 30 秒一次 ping，3600s 留足了余量。
+#   5) 若同时开启 proxy_buffering，会让升级响应被缓冲，务必 keep 关闭。
+#   6) 注意：EasyTier 的中继端口（默认 11010 TCP+UDP）是**裸 TCP/UDP**，
+#      不经过这里；反代它需要 nginx 的 stream 模块（见文件末尾注释）。
+# =============================================================================
+
+upstream mclink_master {
+    server 127.0.0.1:8787;
+    keepalive 32;
+}
+
+# HTTP → HTTPS 跳转（certbot 申请的 http-01 校验也走这里）
+server {
+    listen 80;
+    listen [::]:80;
+    server_name mclink.example.com;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name mclink.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/mclink.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/mclink.example.com/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    # 客户端安装包可能有几十 MB，放宽到 2G；下载走的是流式转发
+    client_max_body_size 2048m;
+
+    # 通用代理头
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    # 主控用 X-Forwarded-For 识别真实 IP（MCLINK_TRUST_PROXY=true），限流与审计依赖它
+
+    # ---------------------------------------------------------------- 前端与 API
+    location / {
+        proxy_pass http://mclink_master;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_read_timeout 120s;
+    }
+
+    location /api/ {
+        proxy_pass http://mclink_master;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_read_timeout 120s;
+
+        # 登录/注册是低频接口，按 IP 限流（主控自身也有滑动窗口限流，这里是第一道）
+        limit_req zone=mclink_login burst=10 nodelay;
+    }
+
+    # ---------------------------------------------------------------- WebSocket
+    location /ws {
+        proxy_pass http://mclink_master;
+        # 1) 必须 1.1 才能 Upgrade
+        proxy_http_version 1.1;
+        # 2) 透传升级头（Connection 必须显式写成 upgrade）
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        # 3) 空闲连接不能被 60s 默认超时切断
+        proxy_read_timeout  3600s;
+        proxy_send_timeout  3600s;
+        # 4) 升级响应不能被缓冲
+        proxy_buffering off;
+        # 5) WS 握手请求很小，超时给短一点即可
+        proxy_connect_timeout 10s;
+    }
+
+    # ---------------------------------------------------------------- 客户端下载
+    location /downloads/ {
+        proxy_pass http://mclink_master;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        # 断点续传（主控已支持 Range）
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_read_timeout 3600s;
+    }
+}
+
+# 登录接口限流区（放在 http {} 上下文；若本文件被 include 进 http 段则无需改动）
+limit_req_zone $binary_remote_addr zone=mclink_login:10m rate=30r/m;
+
+# =============================================================================
+# 如果需要通过反代暴露 EasyTier 中继端口（默认 11010，TCP+UDP 都要），
+# 用 stream 模块而不是 http 模块（同一端口同时代理 TCP 与 UDP 需要两个 listen）：
+#
+# stream {
+#     upstream mclink_relay_tcp { server 127.0.0.1:11010; }
+#     upstream mclink_relay_udp { server 127.0.0.1:11010; }
+#     server { listen 11010;       proxy_pass mclink_relay_tcp; proxy_timeout 600s; }
+#     server { listen 11010 udp;   proxy_pass mclink_relay_udp; proxy_timeout 600s; }
+# }
+#
+# 注意：
+#   * 中继是长连接隧道，proxy_timeout 要放大，且不要启用任何 7 层解析；
+#   * 更简单的做法是让主控直接监听 11010，不经过 nginx（少一跳，UDP 也更稳）；
+#   * 一定要在安全组/ufw 放行 11010 的 TCP **和** UDP，否则客户端只能建 TCP 隧道。
+# =============================================================================

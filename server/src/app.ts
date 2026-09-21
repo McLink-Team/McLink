@@ -44,6 +44,14 @@ export interface AppEvents {
 
 export type AppEventBus = EventEmitter<AppEvents>;
 
+/** 运行期由 index.ts 注入的访问器 */
+export interface AppRuntime {
+  /** 当前通过 WebSocket 在线的用户数 */
+  onlineUserCount?: () => number;
+  /** 当前 WebSocket 连接数 */
+  wsClientCount?: () => number;
+}
+
 export interface WebAssets {
   root: string;
   available: boolean;
@@ -59,6 +67,11 @@ export interface App {
   warnings: string[];
   /** 内部事件总线，见 AppEvents 的说明 */
   events: AppEventBus;
+  /**
+   * 由 index.ts 在 HTTP/WS 起来之后回填的运行时访问器。
+   * 这样路由层就能拿到「当前在线用户数」这类信息，而不必反向依赖 hub（会形成循环依赖）。
+   */
+  runtime: AppRuntime;
   db: Db;
   users: UserRepo;
   rooms: RoomRepo;
@@ -119,6 +132,7 @@ export function createApp(options: CreateAppOptions = {}): App {
     config,
     warnings: finalized.warnings,
     events,
+    runtime: {},
     db,
     users,
     rooms,

@@ -1,0 +1,286 @@
+# mclink 本地开发
+
+## 1. 环境要求
+
+| 项 | 要求 | 说明 |
+| --- | --- | --- |
+| Node.js | **≥ 22.6**（开发机实测 v24.19.0） | 需要原生 TypeScript 剥离（type stripping）与内置 `node:sqlite`。**不需要**任何编译工具链 |
+| pnpm | **10.33.2**（见根 `package.json` 的 `packageManager`） | `corepack enable` 即可；monorepo 用 workspace 协议 |
+| 操作系统 | Windows / macOS / Linux | Windows 客户端是 Electron；服务端跨平台 |
+
+不需要：TypeScript 编译器（后端直接跑 `.ts`）、node-gyp、Python、MSVC、数据库服务。
+`tsc` 只在 `pnpm typecheck` 时用（devDependency）。
+
+## 2. 起步：三条命令
+
+```bash
+pnpm install          # 安装依赖（workspace 会把 packages/shared 链接进 server、web、client 三个包）
+
+pnpm fetch:easytier   # 下载 EasyTier 发行包到 vendor/easytier/
+                      # 已有二进制时它会跳过；--all 可同时下 Windows+Linux；--version v2.6.4 指定版本
+
+pnpm dev:server       # 启动主控：http://127.0.0.1:8787
+```
+
+首次启动会在 `server/data/` 生成 `secrets.json`（JWT / 中继密钥 / 初始管理员密码）并建管理员账号。
+管理员密码会打印在启动日志里；也可以自己指定：
+
+```powershell
+# Windows PowerShell
+$env:MCLINK_ADMIN_PASSWORD = "dev-only-passw0rd"
+pnpm dev:server
+```
+
+```bash
+# Linux / macOS
+MCLINK_ADMIN_PASSWORD='dev-only-passw0rd' pnpm dev:server
+```
+
+前端另开一个终端：
+
+```bash
+pnpm dev:web          # Vite 开发服务器：http://127.0.0.1:5173
+                      # /api、/ws、/downloads 已配置代理到 http://127.0.0.1:8787
+                      # 可用 MCLINK_MASTER 指向别的主控
+```
+
+## 3. 常用脚本
+
+| 命令 | 作用 |
+| --- | --- |
+| `pnpm dev:server` | 主控开发模式（`node --watch src/index.ts`，改后端自动重启） |
+| `pnpm dev:web` | 前端 Vite 开发服务器（5173，带 API/WS 代理） |
+| `pnpm dev:client` | Electron 客户端开发模式 |
+| `pnpm build:web` | 构建前端到 **`server/public/`**（主控一个进程同时提供 API + 控制台） |
+| `pnpm build:client` / `pnpm dist:client` | 构建 / 打包 Windows 客户端安装包 |
+| `pnpm start` | 生产方式启动主控（`node src/index.ts`，不带 watch） |
+| `pnpm typecheck` | 全仓 `tsc --noEmit` / `vue-tsc` |
+| `pnpm test` | 服务端测试（`node --test --test-concurrency=1 test/*.test.ts`） |
+| `pnpm fetch:easytier` | 下载 EasyTier 到 `vendor/easytier/` |
+| `pnpm lab` | 端到端集成实验（**真的**拉起 easytier-core 进程，见 §4） |
+| `node scripts/capture.mjs <输出文件> <命令> [参数...]` | 把子进程 stdout+stderr 落文件（本机沙箱禁管道 stdio 时用） |
+
+> **关于 `pnpm test`**：`server/test/unit.test.ts` 已包含一套单元测试（22 个用例），覆盖
+> TOML 生成、ACL 构造、虚拟地址规划、`easytier-cli` 输出解析与房间凭证逻辑。
+> 新增测试按 `server/test/*.test.ts` 放置即可直接生效（Node 原生 TS 剥离同样适用于测试文件）。
+
+## 3.1 客户端的主控地址是「编译期嵌入」的
+
+平台**不开放自建主控**，客户端里没有任何修改服务器地址的入口：
+
+- 地址由打包时的环境变量 `VITE_MCLINK_MASTER` 注入渲染层，运行时只读
+  （见 `client/src/lib/api.ts`：不再写入 localStorage，避免被篡改）。
+- 未注入时回退到本地开发地址 `http://127.0.0.1:8787`，界面上会显示一条黄色提示。
+- `pnpm build:client` 在未注入时会**警告**；`pnpm dist:client` 会**直接失败**，
+  以免打出「指向 localhost」的正式安装包（那种坏法是装完连不上、却看不出哪里错）。
+  本地只想验证打包流程时可加 `--allow-dev-master`。
+
+```bash
+# 正式发包（把域名换成你自己的主控）
+VITE_MCLINK_MASTER=https://mc.example.com pnpm dist:client
+
+# 或在 client/.env.local 里写（该文件不入库，见 client/.env.example）
+VITE_MCLINK_MASTER=https://mc.example.com
+```
+
+这样设计有两个目的：一是避免玩家被诱导把客户端指向钓鱼主控；
+二是让「房间票据只能由官方主控签发」这条安全前提真正成立。
+
+## 4. 端到端实验（`pnpm lab`）
+
+`scripts/lab.mjs` 不是 mock：它会真的拉起 **1 个主控中继 + 1 个子节点 + 4~5 个客户端**
+`easytier-core` 进程，然后用 `easytier-cli` 的 JSON 输出核对下面这些结论：
+
+1. 主控只监听一个端口（默认 11010），却同时服务两个不同房间；
+2. 房间之间完全隔离 —— A 房成员看不到 B 房任何 peer；
+3. 网络密钥错误者进不了房间；
+4. 子节点可以注册上线并参与房间中继调度；
+5. 中继能按房间（外来网络）统计流量。
+
+前置条件：
+
+```bash
+# 1) 主控已在 8787 运行
+pnpm dev:server
+# 2) vendor/easytier 下已有 easytier-core 与 easytier-cli
+pnpm fetch:easytier
+```
+
+运行：
+
+```bash
+node scripts/lab.mjs
+# 或指定主控与管理员密码
+MCLINK_MASTER=http://127.0.0.1:8787 MCLINK_ADMIN_PASSWORD=xxx node scripts/lab.mjs
+```
+
+实验会在 `.cache/lab/` 下创建临时目录，并使用随机端口段（12000 起）避免与上次实验冲突。
+
+## 5. 代码结构导览
+
+```
+packages/shared/src/       服务端 / 网页 / 客户端共用契约
+  types.ts                 领域模型：User/Room/RoomMember/RoomTicket/RelayNode/RoomPolicy…
+  protocol.ts              线协议：Routes(路由常量)、ErrorCodes、WS 的 Topics/ClientEvent/ServerEvent
+  virtualnet.ts            虚拟地址规划：10.200.<slot>.0/24、slot/seat 分配
+  regions.ts               区域定义（cn-east/hk/oversea…）
+  validation.ts            校验规则：用户名/房间码/密码强度/host:port
+  format.ts                展示层格式化
+
+server/src/
+  index.ts                 入口：装配 → 建管理员 → 起 HTTP/WS → 拉起中继 → 后台定时任务
+  app.ts                   应用容器（可注入配置，便于测试）+ 静态目录解析 + 首次建管理员
+  config.ts                全部环境变量与默认值（**改配置先看这里**）
+  server.ts                路由分发、CORS、安全头、按 IP 限流、静态托管
+  logger.ts                轻量结构化日志
+  http/kit.ts              极简路由/上下文/响应/静态文件（含 Range）
+  api/                     public / auth / rooms / agent / admin 五组路由
+  services/                auth(账号与会话) / rooms(房间与票据与调度) / nodes(子节点) / settings
+  db/                      index(SQLite 封装) / schema(迁移) / users / rooms / nodes / traffic
+  easytier/                config(TOML 生成) / process(子进程托管) / manager(中继与采样) /
+                           cli(CLI 封装) / acl(房间 ACL 构造)
+  ws/hub.ts                WebSocket 话题订阅与推送
+  util/                    errors / id(哈希与随机) / net(真实 IP)
+
+web/src/                   官网页 + 管理员控制台（Vite + Vue3，产物输出到 server/public）
+client/                    Windows 客户端（Electron 主进程 + Vue 渲染层）
+  electron/main.cjs        唯一有权启动 easytier-core / 读写配置 / 申请提权的地方
+  src/lib/store.ts         客户端状态机：登录、建房/进房、心跳、按需应用 ACL
+deploy/                    部署脚本、systemd 单元、子节点 agent
+docs/                      文档
+scripts/                   fetch-easytier / lab / capture
+```
+
+分层约定：
+
+* **路由层只做参数解析与鉴权断言**，业务逻辑必须在 `services/` 里；跨表操作用 `db/` 的仓储方法。
+* **共享类型只加在 `packages/shared`**，不要在前端/客户端各自重复定义。
+* `services/` 不直接碰 `req`/`res`；错误统一抛 `HttpError`（`util/errors.ts`），
+  由 `http/kit.ts` 的 `errorResponse()` 转成 `{error:{code,message,fields?}}`。
+
+## 6. 如何新增一个 API
+
+以「导出房间成员的连接信息」为例，完整步骤如下（顺序很重要）：
+
+1. **加路由常量**（`packages/shared/src/protocol.ts`）：
+
+   ```ts
+   export const Routes = {
+     // ...
+     roomExport: (id: string) => `/rooms/${id}/export`,
+   } as const;
+   ```
+
+2. **加数据库查询（如果需要）**：`server/src/db/*.ts` 里加方法，SQL 用参数占位符，不要拼字符串。
+
+3. **加服务方法**：`server/src/services/rooms.ts`，用 `HttpError.xxx()` 表达错误：
+
+   ```ts
+   export(roomId: string, userId: string): { ok: true; data: string } {
+     const row = this.getRow(roomId);
+     this.assertHost(row, userId);              // 非房主 → 403 forbidden
+     return { ok: true, data: '...' };
+   }
+   ```
+
+4. **注册路由**（`server/src/api/rooms.ts`）：
+
+   ```ts
+   router.get(Routes.roomExport(ctx.params.id ?? ''), (ctx) => {
+     const auth = requireAuth(ctx);
+     return app.roomService.export(ctx.params.id ?? '', auth.userId);
+   }, { auth: true });        // auth: true 需要登录；再加 admin: true 需要管理员
+   ```
+
+   注意：
+
+   * 动态段写成 `:id`，路由匹配是「段数必须完全相等」，所以
+     `/rooms/public` 这类静态路径**必须注册在 `/rooms/:id` 之前**（`Router.match()`
+     按注册顺序返回第一个匹配）。
+   * `auth` / `admin` 由 `server.ts` 在进入 handler 前统一校验；
+     房主这类「资源级权限」只能在服务层用 `assertHost()` 判。
+
+5. **补文档**：`docs/api.md` 的路由总表 + 对应小节；如果有新错误码，同步 `ErrorCodes`。
+
+6. **补测试**（可选）：`server/test/rooms-export.test.ts`，用 `createApp({ withRelay: false })`
+   构造一个使用临时数据库的 App，直接调服务方法（不需要起 HTTP）。
+
+## 7. 如何修改房间策略（`RoomPolicy`）
+
+房间策略同时影响 **数据库、ACL、票据 TOML、前端表单**，改动要四处齐动：
+
+1. **类型与默认值**：`packages/shared/src/types.ts` 的 `RoomPolicy` + `DEFAULT_ROOM_POLICY`。
+2. **请求解析与范围裁剪**：`server/src/api/helpers.ts` 的 `parsePolicy()`。
+   新字段必须在这里显式解析并**裁剪范围**，否则客户端可以塞任意值影响 ACL 生成。
+3. **落地实现**（三选一，或都做）：
+   * 影响房主实例 ACL → `server/src/easytier/acl.ts` 的 `buildRoomAcl()`；
+     注意 ACL 的 `rate_limit` 单位是**包/秒**，不是带宽。
+   * 影响客户端实例配置 → `server/src/services/rooms.ts` 的 `ticket()` 里写进 `flags`
+     （例如 `perMemberKbps` → `instanceRecvBpsLimit`）。
+   * 影响平台级中继 → `server/src/easytier/manager.ts` 的 `renderConfig()`
+     （例如平台级出口限速写 `foreignRelayBpsLimit`）。
+4. **变更触发重算**：`server/src/api/rooms.ts` 的 `PATCH /rooms/:id` 里那串
+   `['maxPlayers','maxBandwidthKbps', ...]` 数组要加上新字段名；
+   加进去后 `updatePolicy()` 会 `bumpAcl()` 递增 `acl_revision`，
+   房主客户端下次心跳就会重新应用 ACL。
+5. **前端表单**：玩家侧房间设置表单在 `client/src/pages/RoomPage.vue`（含 `rateLimitPps` 等字段，
+   界面上要注明单位是包/秒）；管理台的只读展示在 `web/src/console/pages/RoomsPage.vue`。
+
+单位与陷阱（务必记住）：
+
+* `rateLimitPps` 是**包/秒**。界面上不要写成带宽。
+* 带宽限速只有两个字段可用：中继的 `foreign_relay_bps_limit`（平台级，硬限制）和
+  实例的 `instance_recv_bps_limit`（客户端自制，可被绕过）；两者都是 **bit/s**，
+  存储用 kbps 时需要 `× 1000`。
+* 两个 `*_bps_limit` 在 TOML 里是**字符串**（`config.ts` 的 `U64_FLAGS` 已处理）。
+* `rpc_portal` 不是 TOML 字段，只能走命令行 `-r`；不要试图写进 `renderEasytierToml()`。
+* 客户端实例的 `bind_device` 必须保持 `false`（见 `ticket()` 里的注释）。
+
+改完后建议：
+
+```bash
+pnpm typecheck
+pnpm lab            # 用真实 easytier-core 验证隔离与限速仍然成立
+```
+
+## 8. 调试技巧
+
+```bash
+# 打开 debug 日志（默认在非生产环境就是 debug）
+MCLINK_LOG_LEVEL=debug pnpm dev:server
+
+# 用临时数据目录，避免污染开发库
+MCLINK_DATA_DIR=.tmp/dev-data pnpm dev:server
+
+# 直接问主控要一份票据（把 <token>/<roomId> 换成真实值）
+curl -s -H "Authorization: Bearer <token>" \
+  "http://127.0.0.1:8787/api/v1/rooms/<roomId>/ticket?listenPort=11010"
+
+# 看中继生成出来的配置
+cat server/data/easytier/relay.toml
+
+# 手动问中继要 peer 列表（RPC 只监听本机）
+vendor/easytier/easytier-cli -p 127.0.0.1:15888 -o json peer list
+vendor/easytier/easytier-cli -p 127.0.0.1:15888 -o json peer list-foreign
+
+# 受限沙箱里子进程不能用管道 stdio（会 EPERM），用 capture 脚本落文件
+node scripts/capture.mjs .cache/out.log vendor/easytier/easytier-cli -p 127.0.0.1:15888 peer list
+```
+
+在 Windows 上调试时常见的坑：
+
+* `easytier-core` 在受限令牌下可能 panic（`SCM start an error`，见 `troubleshooting.md`）——
+  用普通用户令牌运行，不要用服务/受限令牌。
+* `easytier-cli` 在中文 Windows 下可能输出 GBK；`server/src/easytier/cli.ts` 的 `decodeSmart()`
+  已经做了 UTF-8 → GBK 回退。
+* 端口 11010 可能被上一次没退干净的 easytier-core 占着：
+  `Get-NetTCPConnection -LocalPort 11010` 找到 PID 后结束它。
+
+## 9. 提交前的检查清单
+
+- [ ] `pnpm typecheck` 通过
+- [ ] 涉及协议/接口的改动，`docs/api.md` 已同步
+- [ ] 涉及环境变量的改动，`docs/deployment.md` 的变量表已同步
+- [ ] 涉及安全边界的改动（隔离、限速、鉴权），`docs/security.md` 已同步
+- [ ] 改了 `ticket()` / `renderEasytierToml()` / ACL → 跑过 `pnpm lab`
+- [ ] 没有把真实密钥、令牌、真实域名写进代码或文档（示例统一用 `请替换`/`changeme`）

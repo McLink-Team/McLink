@@ -33,6 +33,10 @@ async function main(): Promise<void> {
 
   const { server, hub, close } = createServer(app);
 
+  // 把 WebSocket 的在线信息回填给路由层（避免路由反向依赖 hub）
+  app.runtime.onlineUserCount = () => hub.onlineUserIds().length;
+  app.runtime.wsClientCount = () => hub.clientCount;
+
   /**
    * 把服务内部的领域事件翻译成 WebSocket 推送。
    * 注意 ACL 只发给房主本人（sendToUser），不能发给整个房间话题——
@@ -150,7 +154,24 @@ async function main(): Promise<void> {
     const now = Date.now();
     if (now - lastPlatformPush > 6000) {
       lastPlatformPush = now;
+      /**
+       * platform 话题是**匿名可读**的，因此这里只放聚合数字。
+       * 逐房间名称/带宽属于房间运营信息，只发到 traffic 话题（仅管理员），
+       * 否则话题鉴权就被载荷本身绕过了。
+       */
       hub.publish(Topics.platform, {
+        type: 'traffic.tick',
+        report: {
+          ts: sample.ts,
+          totalRxBps: sample.rxBps,
+          totalTxBps: sample.txBps,
+          totalRxBytes: sample.totalRxBytes,
+          totalTxBytes: sample.totalTxBytes,
+          relayPeers: sample.peerCount,
+          roomCount: foreignWithRooms.length,
+        },
+      });
+      hub.publish(Topics.traffic, {
         type: 'traffic.tick',
         report: {
           ts: sample.ts,

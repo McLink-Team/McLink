@@ -2,9 +2,8 @@
 /**
  * 流量监控：平台总量趋势 + 按房间/按节点归因。
  *
- * `/admin/traffic` 返回的 `foreignNetworks` 里 `roomId` 恒为 null（主控采样时还没做映射，
- * 映射只发生在 WebSocket 推送的那份副本上），所以这里额外取一次房间列表，
- * 用 `networkName → 房间` 建立映射，才能把「外来网络」标到具体房间上。
+ * `foreignNetworks[]` 现在由服务端完成 `networkName → 房间` 映射，
+ * 直接带 `roomId` / `roomName` / `roomCode`（取不到时为 null），因此不再需要额外拉房间列表。
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import {
@@ -13,18 +12,22 @@ import {
   formatBitrate,
   formatBytes,
   formatRelativeTime,
-  regionLabel,
   type ForeignNetworkInfo,
-  type Room,
   type ServerEvent,
   type TrafficPoint,
 } from '@mclink/shared';
 import { api, friendlyError } from '../../lib/api.ts';
 import { RealtimeClient } from '../../lib/realtime.ts';
-import { formatDateTime } from '../../lib/ui.ts';
+import { asArray, formatDateTime } from '../../lib/ui.ts';
 import Badge from '../../components/Badge.vue';
 import Sparkline from '../../components/Sparkline.vue';
 import StatCard from '../../components/StatCard.vue';
+
+/** 服务端在采样结果上补了房间归因字段 */
+interface ForeignNetworkMapped extends ForeignNetworkInfo {
+  roomName: string | null;
+  roomCode: string | null;
+}
 
 interface RoomSeries {
   id: string;
@@ -47,7 +50,7 @@ interface NodeSeries {
 interface TrafficResponse {
   since: string;
   platform: { points: TrafficPoint[]; rxBps: number; txBps: number; rxBytes: number; txBytes: number };
-  foreignNetworks: ForeignNetworkInfo[];
+  foreignNetworks: ForeignNetworkMapped[];
   rooms: RoomSeries[];
   nodes: NodeSeries[];
   totals: { rxBytes: number; txBytes: number };
@@ -62,27 +65,13 @@ const RANGES = [
 
 const minutes = ref(60);
 const data = ref<TrafficResponse | null>(null);
-const roomById = ref<Map<string, Room>>(new Map());
-const roomByNetwork = ref<Map<string, Room>>(new Map());
 const loading = ref(true);
 const error = ref<string | null>(null);
 
 async function load(): Promise<void> {
   loading.value = true;
   try {
-    const [traffic, roomsResult] = await Promise.all([
-      api.get<TrafficResponse>(Routes.adminTraffic, { query: { minutes: minutes.value } }),
-      api.get<{ rooms: Room[]; total: number }>(Routes.adminRooms, { query: { limit: 200 } }),
-    ]);
-    data.value = traffic;
-    const byId = new Map<string, Room>();
-    const byNetwork = new Map<string, Room>();
-    for (const room of roomsResult.rooms) {
-      byId.set(room.id, room);
-      byNetwork.set(room.networkName, room);
-    }
-    roomById.value = byId;
-    roomByNetwork.value = byNetwork;
+    data.value = await api.get<TrafficResponse>(Routes.adminTraffic, { query: { minutes: minutes.value } });
     error.value = null;
   } catch (err) {
     error.value = friendlyError(err);
@@ -124,19 +113,11 @@ onUnmounted(() => {
 
 /* --------------------------------------------------------------- 派生 */
 
-const platform = computed(() => data.value?.platform.points ?? []);
+const platform = computed(() => asArray(data.value?.platform?.points));
 const totals = computed(() => data.value?.totals ?? { rxBytes: 0, txBytes: 0 });
-const foreignNetworks = computed(() => data.value?.foreignNetworks ?? []);
-const roomSeries = computed(() => data.value?.rooms ?? []);
-const nodeSeries = computed(() => data.value?.nodes ?? []);
-
-function resolveRoom(networkName: string, roomId: string | null): Room | null {
-  if (roomId) {
-    const direct = roomById.value.get(roomId);
-    if (direct) return direct;
-  }
-  return roomByNetwork.value.get(networkName) ?? null;
-}
+const foreignNetworks = computed(() => asArray(data.value?.foreignNetworks));
+const roomSeries = computed(() => asArray(data.value?.rooms));
+const nodeSeries = computed(() => asArray(data.value?.nodes));
 
 const cards = computed(() => {
   const p = data.value?.platform;
@@ -259,11 +240,11 @@ const cards = computed(() => {
                   {{ f.networkName }}
                 </td>
                 <td>
-                  <template v-if="resolveRoom(f.networkName, f.roomId)">
-                    <div>{{ resolveRoom(f.networkName, f.roomId)?.name }}</div>
+                  <template v-if="f.roomName || f.roomCode">
+                    <div>{{ f.roomName ?? '未命名房间' }}</div>
                     <div class="faint" style="font-size: var(--fs-xs)">
-                      <span class="mono">{{ resolveRoom(f.networkName, f.roomId)?.code }}</span>
-                      · {{ regionLabel(resolveRoom(f.networkName, f.roomId)?.zone ?? '') }}
+                      <span v-if="f.roomCode" class="mono">{{ f.roomCode }}</span>
+                      <span v-if="f.roomId" class="mono"> · {{ f.roomId }}</span>
                     </div>
                   </template>
                   <Badge v-else tone="warn">未映射</Badge>
@@ -396,7 +377,7 @@ const cards = computed(() => {
   padding: var(--s-3) var(--s-4);
   border-radius: var(--r-md);
   background: var(--warn-bg);
-  border: 1px solid rgba(255, 200, 74, 0.28);
+  border: 1px solid color-mix(in srgb, var(--warn) 28%, transparent);
   font-size: var(--fs-sm);
 }
 </style>

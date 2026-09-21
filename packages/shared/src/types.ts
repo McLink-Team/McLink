@@ -124,8 +124,9 @@ export const DEFAULT_ROOM_POLICY: RoomPolicy = {
 };
 
 export interface Room {
+  /** 内部房间 ID；已与网络名解耦，知道它推不出网络名 */
   id: string;
-  /** 6 位大写加入码，例如 `K7QM2P` */
+  /** 6 位大写加入码，例如 `K7QM2P`。加入码只走主控 API，不参与 EasyTier 网络身份 */
   code: string;
   name: string;
   hostUserId: string;
@@ -138,8 +139,15 @@ export interface Room {
   /** 实际参与中继的节点列表（主控调度结果） */
   relayNodeIds: string[];
   policy: RoomPolicy;
-  /** EasyTier 网络名：mclink-room-<shortid> */
-  networkName: string;
+  /**
+   * EasyTier 网络名。
+   *
+   * **这是准入凭证**（共享中继按网络名决定是否中继），因此只在两个地方出现：
+   *   1. 房主/成员通过票据接口拿到（`RoomTicket.networkName`）；
+   *   2. 管理员查看房间详情时。
+   * 面向玩家的房间列表与房间详情**必须**把它剥掉，否则等于把房间钥匙贴在大厅里。
+   */
+  networkName?: string;
   /** 虚拟网段，形如 10.200.7.0/24 */
   subnet: string;
   /** 当前在线成员数（含房主） */

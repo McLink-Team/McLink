@@ -19,7 +19,7 @@ import {
 } from '@mclink/shared';
 import { api, friendlyError } from '../../lib/api.ts';
 import { RealtimeClient } from '../../lib/realtime.ts';
-import { copyText, formatDateTime, reportError } from '../../lib/ui.ts';
+import { asArray, asStringList, copyText, formatDateTime, relayWhitelist, reportError } from '../../lib/ui.ts';
 import { notifyOk, notifyWarn } from '../../lib/toast.ts';
 import Badge from '../../components/Badge.vue';
 
@@ -46,7 +46,9 @@ interface RelayResponse {
   cliBin: string;
   peers: RelayPeer[];
   logs: string[];
-  whitelist: string[];
+  /** 旧版主控给空格分隔字符串，新版可能额外给 whitelistPatterns */
+  whitelist: string | string[];
+  whitelistPatterns?: string | string[];
 }
 
 const data = ref<RelayResponse | null>(null);
@@ -115,9 +117,14 @@ onUnmounted(() => {
 /* --------------------------------------------------------------- 派生 */
 
 const runtime = computed(() => data.value?.runtime ?? null);
-const peers = computed(() => data.value?.peers ?? []);
-const logs = computed(() => data.value?.logs ?? []);
+const peers = computed(() => asArray(data.value?.peers));
+const logs = computed(() => asStringList(data.value?.logs));
 const configToml = computed(() => data.value?.configToml ?? '');
+/** 白名单可能是空格分隔字符串，直接 .join() 会白屏 */
+const whitelistPatterns = computed(() => relayWhitelist(data.value));
+/** 外来网络的实时速率合计（字段缺失时按 0 处理，不让 reduce 抛错） */
+const foreignRxBps = computed(() => asArray(runtime.value?.foreignNetworks).reduce((acc, n) => acc + (n.rxBps ?? 0), 0));
+const foreignTxBps = computed(() => asArray(runtime.value?.foreignNetworks).reduce((acc, n) => acc + (n.txBps ?? 0), 0));
 
 /* --------------------------------------------------------------- 动作 */
 
@@ -252,15 +259,12 @@ async function applyAcl(): Promise<void> {
             收 {{ formatBytes(runtime.rxBytes) }} / 发 {{ formatBytes(runtime.txBytes) }}
           </span>
           <span class="kv-k">实时速率</span>
-          <span class="kv-v">
-            {{ formatBitrate(runtime.foreignNetworks.reduce((a, n) => a + n.rxBps, 0)) }} /
-            {{ formatBitrate(runtime.foreignNetworks.reduce((a, n) => a + n.txBps, 0)) }}
-          </span>
+          <span class="kv-v">{{ formatBitrate(foreignRxBps) }} / {{ formatBitrate(foreignTxBps) }}</span>
           <span class="kv-k">启动时间</span>
           <span class="kv-v">{{ runtime.startedAt ? formatDateTime(runtime.startedAt) : '—' }}</span>
           <span class="kv-k">白名单</span>
-          <span class="kv-v mono truncate" :title="data.whitelist.join(', ')">
-            {{ data.whitelist.length > 0 ? data.whitelist.join(', ') : '（未配置，任何网络都会被拒绝转发）' }}
+          <span class="kv-v mono truncate" :title="whitelistPatterns.join(', ')">
+            {{ whitelistPatterns.length > 0 ? whitelistPatterns.join(', ') : '（未配置，任何网络都会被拒绝转发）' }}
           </span>
           <span class="kv-k">核心二进制</span><span class="kv-v mono truncate" :title="data.coreBin">{{ data.coreBin }}</span>
           <span class="kv-k">CLI 二进制</span><span class="kv-v mono truncate" :title="data.cliBin">{{ data.cliBin }}</span>
@@ -414,7 +418,7 @@ default_action = 1"
   margin: 0;
   padding: var(--s-3);
   border-radius: var(--r-sm);
-  background: rgba(4, 7, 16, 0.6);
+  background: color-mix(in srgb, var(--bg-0) 60%, transparent);
   border: 1px solid var(--border);
   color: var(--text-dim);
   font-size: var(--fs-xs);
@@ -426,7 +430,7 @@ default_action = 1"
   margin: 0;
   padding: var(--s-3);
   border-radius: var(--r-sm);
-  background: rgba(2, 4, 10, 0.85);
+  background: color-mix(in srgb, var(--bg-0) 85%, transparent);
   border: 1px solid var(--border);
   color: var(--text-dim);
   font-size: var(--fs-xs);
@@ -439,15 +443,15 @@ default_action = 1"
   padding: var(--s-3) var(--s-4);
   border-radius: var(--r-md);
   background: var(--warn-bg);
-  border: 1px solid rgba(255, 200, 74, 0.28);
+  border: 1px solid color-mix(in srgb, var(--warn) 28%, transparent);
   font-size: var(--fs-sm);
 }
 .err-box {
   padding: var(--s-3);
   border-radius: var(--r-sm);
   background: var(--danger-bg);
-  border: 1px solid rgba(255, 107, 107, 0.3);
-  color: #ffc9c9;
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  color: var(--danger);
   font-size: var(--fs-xs);
   word-break: break-word;
 }

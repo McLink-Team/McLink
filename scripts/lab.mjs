@@ -153,8 +153,7 @@ async function peersOf(rpcPortal) {
 }
 
 /** 等待某个条件成立 */
-async function waitFor(description, fn, timeoutMs = 30_000, intervalMs = 1500) {
-  const deadline = Date.now() + timeoutMs;
+async function waitFor(description, fn, timeoutMs = 30_000, intervalMs = 1500) {  const deadline = Date.now() + timeoutMs;
   let last;
   while (Date.now() < deadline) {
     last = await fn();
@@ -165,6 +164,50 @@ async function waitFor(description, fn, timeoutMs = 30_000, intervalMs = 1500) {
   return last;
 }
 
+/**
+ * 订阅「匿名可读」的 platform 话题，观察一段时间内收到的所有帧，
+ * 检查有没有把房间名/网络名/加入码捎带出来。
+ *
+ * 这条断言针对的是一类隐蔽泄露：即使话题鉴权写对了，
+ * 只要把逐房间明细发布在匿名可读的话题上，鉴权就被载荷绕过了。
+ */
+function probeAnonymousLeak(secrets, waitMs = 11_000) {
+  return new Promise((resolve) => {
+    const wsUrl = `${MASTER.replace(/^http/, 'ws')}/ws`;
+    const leaks = [];
+    let frames = 0;
+    let socket;
+    const finish = () => {
+      try {
+        socket?.close();
+      } catch {
+        /* 已关闭 */
+      }
+      resolve({ frames, leaks });
+    };
+    try {
+      socket = new WebSocket(wsUrl);
+    } catch (err) {
+      resolve({ frames: 0, leaks: [`无法建立 WebSocket：${err.message}`] });
+      return;
+    }
+    const timer = setTimeout(finish, waitMs);
+    socket.addEventListener('message', (event) => {
+      frames += 1;
+      const text = String(event.data);
+      for (const secret of secrets) {
+        if (secret && secret.length > 8 && text.includes(secret)) {
+          leaks.push(secret);
+        }
+      }
+    });
+    socket.addEventListener('error', () => {
+      clearTimeout(timer);
+      resolve({ frames, leaks: ['WebSocket 连接错误'] });
+    });
+  });
+}
+
 /** 列出某个实例看到的远端 peer（过滤掉自己） */
 async function foreignNetworksOf(rpcPortal) {
   const res = await cli(rpcPortal, ['peer', 'list-foreign']);
@@ -172,6 +215,70 @@ async function foreignNetworksOf(rpcPortal) {
   const data = res.data;
   if (!data || typeof data !== 'object' || Array.isArray(data)) return { names: [], error: null, data };
   return { names: Object.keys(data), error: null, data };
+}
+
+/**
+ * 以匿名身份连 WebSocket 并尝试订阅 traffic。
+ * 服务端在授予话题后会回一个带 topics 的 hello 帧，据此判断是否被拒绝。
+ */
+function probeAnonymousSubscribe(timeoutMs = 8000) {
+  return new Promise((resolve) => {
+    const wsUrl = `${MASTER.replace(/^http/, 'ws')}/ws`;
+    let settled = false;
+    let subscribed = false;
+    let socket;
+    const done = (result) => {
+      if (settled) return;
+      settled = true;
+      try {
+        socket?.close();
+      } catch {
+        /* 已关闭 */
+      }
+      resolve(result);
+    };
+    try {
+      socket = new WebSocket(wsUrl);
+    } catch (err) {
+      resolve({ trafficRejected: false, detail: `无法建立 WebSocket：${err.message}` });
+      return;
+    }
+    const timer = setTimeout(() => done({ trafficRejected: false, detail: '等待服务端响应超时' }), timeoutMs);
+
+    socket.addEventListener('open', () => {
+      subscribed = true;
+      socket.send(JSON.stringify({ type: 'subscribe', topics: ['traffic'] }));
+    });
+
+    socket.addEventListener('message', (event) => {
+      let msg;
+      try {
+        msg = JSON.parse(String(event.data));
+      } catch {
+        return;
+      }
+      if (msg.type !== 'hello') return;
+      const topics = Array.isArray(msg.topics) ? msg.topics : [];
+      if (!subscribed) {
+        // 连接建立时的首个 hello：默认话题里就不能有 traffic
+        if (topics.includes('traffic')) {
+          clearTimeout(timer);
+          done({ trafficRejected: false, detail: `未认证连接默认就拿到 traffic：${topics.join(',')}` });
+        }
+        return;
+      }
+      clearTimeout(timer);
+      done({
+        trafficRejected: !topics.includes('traffic'),
+        detail: `服务端授予的话题: [${topics.join(', ') || '空'}]`,
+      });
+    });
+
+    socket.addEventListener('error', () => {
+      clearTimeout(timer);
+      done({ trafficRejected: false, detail: 'WebSocket 连接错误' });
+    });
+  });
 }
 
 /** 由监听端口推导 RPC portal 端口，规则与服务端 rpcPortalForListenPort 一致 */
@@ -267,7 +374,8 @@ async function main() {
   const roomB = await api('/rooms', {
     method: 'POST',
     token: hostB.token,
-    body: { name: `实验室 B ${RUN_ID}`, zone: 'auto', listenPort: BASE_PORT + 2, visibility: 'hidden' },
+    // 故意设为公开：用来验证「公开大厅不泄露网络名」这条断言有真实数据可查
+    body: { name: `实验室 B ${RUN_ID}`, zone: 'auto', listenPort: BASE_PORT + 2, visibility: 'public' },
   });
   check('房间 A 创建成功', Boolean(roomA.ticket?.networkName), `${roomA.room.code} ${roomA.ticket?.networkName}`);
   check('房间 B 创建成功', Boolean(roomB.ticket?.networkName), `${roomB.room.code} ${roomB.ticket?.networkName}`);
@@ -540,6 +648,47 @@ async function main() {
   check('新 ACL 里包含被踢成员的虚拟 IP 丢弃规则', blocked, joinA.ticket.virtualIp);
   const kickedTicket = await api(`/rooms/${roomA.room.id}/ticket`, { token: memA.token }).catch((e) => ({ error: e.message }));
   check('被踢成员无法再获取票据', Boolean(kickedTicket?.error), kickedTicket?.error ?? '未拒绝');
+
+  step('验证凭证保护：公开接口不泄露网络名、非成员看不到房间内容');
+  const outsider = await mkUser('outsider');
+  const publicRooms = await api('/rooms/public?limit=100');
+  const leaked = publicRooms.rooms.filter((r) => typeof r.networkName === 'string' && r.networkName.length > 0);
+  check(
+    '公开房间列表不泄露网络名（网络名就是准入凭证）',
+    leaked.length === 0 && publicRooms.rooms.length > 0,
+    `检查了 ${publicRooms.rooms.length} 个房间，泄露 ${leaked.length} 个（至少要有 1 个公开房间，断言才有意义）`,
+  );
+  check(
+    '房间 ID 与网络名已解耦（从 ID 推不出网络名）',
+    !publicRooms.rooms.some((r) => roomA.ticket.networkName.endsWith(r.id)),
+    `房间 A 网络名 ${roomA.ticket.networkName}`,
+  );
+
+  const outsiderDetail = await api(`/rooms/${roomA.room.id}`, { token: outsider.token }).catch((e) => ({ error: e.message }));
+  check('非成员无法读取房间详情', Boolean(outsiderDetail.error), outsiderDetail.error ?? '居然可以读到');
+  const outsiderMembers = await api(`/rooms/${roomA.room.id}/members`, { token: outsider.token }).catch((e) => ({ error: e.message }));
+  check('非成员无法读取成员列表', Boolean(outsiderMembers.error), outsiderMembers.error ?? '居然可以读到');
+
+  const anonymousWs = await probeAnonymousSubscribe();
+  check(
+    '匿名 WebSocket 拿不到 traffic 话题（避免泄露房间名与带宽）',
+    anonymousWs.trafficRejected,
+    anonymousWs.detail,
+  );
+
+  const leakProbe = await probeAnonymousLeak([
+    roomA.room.name,
+    roomB.room.name,
+    roomA.ticket.networkName,
+    roomB.ticket.networkName,
+    roomA.room.code,
+    roomB.room.code,
+  ]);
+  check(
+    '匿名 WebSocket 的任何帧都不含房间名/网络名/加入码',
+    leakProbe.leaks.length === 0,
+    `${leakProbe.frames} 帧，泄露项: ${leakProbe.leaks.join(', ') || '无'}`,
+  );
 
   step('清理实验产生的节点记录');
   try {

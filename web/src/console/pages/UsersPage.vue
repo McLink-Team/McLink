@@ -6,7 +6,7 @@
 import { computed, onMounted, reactive, ref } from 'vue';
 import { Routes, formatBytes, formatRelativeTime, type UserSelf } from '@mclink/shared';
 import { api, friendlyError } from '../../lib/api.ts';
-import { formatDateTime, reportError, toFloat, toInt } from '../../lib/ui.ts';
+import { formatDateTime, asArray, reportError, toFloat, toInt } from '../../lib/ui.ts';
 import { notifyOk } from '../../lib/toast.ts';
 import { currentUser } from '../../lib/session.ts';
 import Badge from '../../components/Badge.vue';
@@ -31,7 +31,7 @@ async function load(): Promise<void> {
     const result = await api.get<{ users: AdminUser[]; total: number }>(Routes.adminUsers, {
       query: { search: filters.search.trim(), limit, offset: page.value * limit },
     });
-    users.value = result.users;
+    users.value = asArray(result.users);
     total.value = result.total;
     error.value = null;
   } catch (err) {
@@ -362,7 +362,7 @@ function usagePercent(user: AdminUser): number | null {
   position: fixed;
   inset: 0;
   z-index: var(--z-modal);
-  background: rgba(3, 5, 12, 0.68);
+  background: color-mix(in srgb, var(--bg-0) 68%, transparent);
   backdrop-filter: blur(3px);
   display: grid;
   place-items: center;
@@ -377,8 +377,8 @@ function usagePercent(user: AdminUser): number | null {
   padding: var(--s-3);
   border-radius: var(--r-sm);
   background: var(--danger-bg);
-  border: 1px solid rgba(255, 107, 107, 0.3);
-  color: #ffc9c9;
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  color: var(--danger);
   font-size: var(--fs-xs);
 }
 </style>

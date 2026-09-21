@@ -1,22 +1,24 @@
 <script setup lang="ts">
-/** 设置：主控地址、本机名称、监听端口、权限状态与运行路径 */
-import { onMounted, ref } from 'vue';
-import { clientState, relaunchElevated, setDevice, setMaster, logout } from '../lib/store.ts';
-import { getMasterUrl } from '../lib/api.ts';
+/** 设置：本机名称、监听端口、权限状态与运行路径（主控地址固定，不可改） */
+import { computed, onMounted, ref } from 'vue';
+import { clientState, relaunchElevated, setDevice, logout } from '../lib/store.ts';
+import { MASTER_URL, USING_DEV_MASTER, getMasterUrl } from '../lib/api.ts';
 import type { AppInfo } from '../lib/bridge.ts';
 
 const info = ref<AppInfo | null>(null);
-const master = ref(getMasterUrl());
 const device = ref(clientState.deviceName);
 const listenPort = ref(clientState.listenPort);
 const saved = ref(false);
+
+const master = computed(() => getMasterUrl());
+const isDevMaster = USING_DEV_MASTER;
+void MASTER_URL;
 
 onMounted(async () => {
   info.value = await window.mclink.info();
 });
 
 function save(): void {
-  setMaster(master.value);
   setDevice(device.value.trim());
   clientState.listenPort = Number(listenPort.value) || clientState.listenPort;
   saved.value = true;
@@ -56,11 +58,14 @@ function openDataDir(): void {
 
     <div class="grid-2">
       <div class="card stack">
-        <div style="font-weight: 620">主控与身份</div>
+        <div style="font-weight: 620">账号与身份</div>
         <div class="field">
-          <label class="label">主控地址</label>
-          <input v-model="master" class="input mono" />
-          <div class="hint">修改后需要重新登录。</div>
+          <label class="label">服务器</label>
+          <div class="readonly-line mono" :title="master">{{ master }}</div>
+          <div v-if="isDevMaster" class="hint" style="color: var(--warn)">
+            本地开发地址（打包时未注入 VITE_MCLINK_MASTER）。
+          </div>
+          <div v-else class="hint">客户端固定连接官方主控，不支持自建主控，也不允许修改。</div>
         </div>
         <div class="field">
           <label class="label">本机名称</label>
@@ -127,6 +132,10 @@ function openDataDir(): void {
           每个房间是一个独立网络，房间之间彼此不可见。
         </span>
         <span>
+          平台不开放自建主控：服务器地址在打包时已固定写入客户端，
+          这样能避免玩家被诱导连接到假冒主控，也保证房间凭证只由官方主控签发。
+        </span>
+        <span>
           联机小贴士：房主先在游戏里「对局域网开放」，再创建房间；玩家用「直接连接」输入联机地址即可。
           如果延迟高，可以在建房时换个区域，或让房主允许 P2P 直连。
         </span>
@@ -135,3 +144,22 @@ function openDataDir(): void {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* 只读的服务器地址，样式上明确区别于输入框 */
+.readonly-line {
+  height: 36px;
+  display: flex;
+  align-items: center;
+  padding: 0 var(--s-3);
+  border-radius: var(--r-sm);
+  border: 1px dashed var(--border-strong);
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+</style>

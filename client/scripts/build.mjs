@@ -26,6 +26,18 @@ if (res.status !== 0) {
   process.exit(res.status ?? 1);
 }
 
+/**
+ * 主控地址是编译期常量（客户端不支持自建主控）。
+ * 这里把最终生效值打印出来，避免"以为打的是线上包，实际指向 localhost"这类事故。
+ */
+const master = (process.env.VITE_MCLINK_MASTER ?? '').trim();
+if (master.length === 0) {
+  console.warn('[build] 未设置 VITE_MCLINK_MASTER，客户端将使用本地开发地址 http://127.0.0.1:8787');
+  console.warn('[build] 正式发包请设置：VITE_MCLINK_MASTER=https://你的主控域名 pnpm dist:client');
+} else {
+  console.log(`[build] 已内嵌主控地址：${master}`);
+}
+
 // 打包时需要把 easytier-core / cli / wintun.dll 一起带上
 const vendorSrc = path.join(REPO_ROOT, 'vendor', 'easytier');
 const vendorDst = path.join(CLIENT_ROOT, 'vendor', 'easytier');

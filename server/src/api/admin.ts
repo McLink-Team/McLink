@@ -14,6 +14,14 @@ import { SCHEMA_VERSION } from '../db/schema.ts';
 
 const log = logger('api:admin');
 
+/**
+ * EasyTier 的网络白名单是「空格分隔的 wildmatch 模式串」。
+ * 语义上是列表，但配置里存成字符串；这里统一切成数组给前端用。
+ */
+function splitPatterns(value: string): string[] {
+  return value.split(/\s+/).filter((s) => s.length > 0);
+}
+
 export function registerAdminRoutes(router: Router, app: App): void {
   /* ---------------------------------------------------------- 仪表盘 */
 
@@ -28,12 +36,18 @@ export function registerAdminRoutes(router: Router, app: App): void {
 
     return {
       ...overview,
-      users: { ...overview.users, online: 0 },
+      users: { ...overview.users, online: app.runtime.onlineUserCount?.() ?? 0 },
       relay: {
         ...relay,
         version: app.relay.cliVersion,
         cliAvailable,
+        /**
+         * whitelist 是 EasyTier 的「空格分隔的模式列表」，语义上是数组。
+         * 这里保留原始字符串（向后兼容）并额外给出已切分的数组，
+         * 避免前端对字符串调用 .join() 直接渲染期崩溃。
+         */
         whitelist: app.config.easytier.relayNetworkWhitelist,
+        whitelistPatterns: splitPatterns(app.config.easytier.relayNetworkWhitelist),
         port: app.config.easytier.relayPort,
         rpcPortal: app.relay.rpcPortal,
         binary: app.config.easytier.coreBin,
@@ -48,8 +62,9 @@ export function registerAdminRoutes(router: Router, app: App): void {
         pid: process.pid,
         memoryMb: Math.round(process.memoryUsage().rss / 1048576),
       },
-      nodes: nodes.slice(0, 12),
-      rooms: rooms.slice(0, 12),
+      /** 最近节点/房间，用于仪表盘的「前 N」表格；计数在 overview.nodes / overview.rooms 里 */
+      recentNodes: nodes.slice(0, 12),
+      recentRooms: rooms.slice(0, 12),
       recentAudit,
       warnings: app.warnings,
     };
@@ -310,6 +325,18 @@ export function registerAdminRoutes(router: Router, app: App): void {
       peers: n.peers,
     }));
 
+    // 按房间归因：中继侧只看到网络名，这里补上房间 ID 与显示名，
+    // 否则「每个房间用了多少流量」这个关键视图就没法呈现（之前只在 WS 推送里做了映射）
+    const foreignNetworks = (sample?.foreignNetworks ?? []).map((fn) => {
+      const room = app.rooms.findByNetworkName(fn.networkName);
+      return {
+        ...fn,
+        roomId: fn.roomId ?? room?.id ?? null,
+        roomName: room?.name ?? null,
+        roomCode: room?.code ?? null,
+      };
+    });
+
     return {
       since,
       platform: {
@@ -319,7 +346,7 @@ export function registerAdminRoutes(router: Router, app: App): void {
         rxBytes: sample?.totalRxBytes ?? 0,
         txBytes: sample?.totalTxBytes ?? 0,
       },
-      foreignNetworks: sample?.foreignNetworks ?? [],
+      foreignNetworks,
       rooms,
       nodes,
       totals: app.traffic.todayTotals(),
@@ -408,6 +435,7 @@ export function registerAdminRoutes(router: Router, app: App): void {
       peers: sample?.peers ?? [],
       logs: app.relay.recentLogs(150),
       whitelist: app.config.easytier.relayNetworkWhitelist,
+      whitelistPatterns: splitPatterns(app.config.easytier.relayNetworkWhitelist),
     };
   }, { auth: true, admin: true });
 
@@ -469,11 +497,20 @@ export function registerAdminRoutes(router: Router, app: App): void {
   }, { auth: true, admin: true });
 }
 
-/** 生成子节点一键部署命令，管理员直接复制到目标机器 */
+/**
+ * 生成子节点部署命令，管理员直接复制到目标机器执行。
+ *
+ * 注意不要在这里指向某个 HTTP 静态资源：主控只托管前端产物与 /downloads，
+ * 并没有 /agent/install.sh 这个文件（早期版本这样写会给出一个 404 的命令）。
+ * 这里改为「把仓库里的部署脚本拷过去再执行」，与 deploy/README.md 保持一致。
+ */
 function buildAgentCommand(app: App, key: string): string {
   const base = app.config.publicBaseUrl || `http://<主控地址>:${app.config.port}`;
   return [
-    'curl -fsSL ' + `${base}/agent/install.sh | sudo bash -s -- \\`,
+    '# 1) 把仓库里的子节点安装脚本拷到目标机器（与主控同版本）',
+    '#    scp deploy/install-node.sh deploy/agent.mjs root@<子节点IP>:/root/',
+    '# 2) 在子节点上执行：',
+    `sudo bash install-node.sh \\`,
     `  --master ${base} \\`,
     `  --key ${key} \\`,
     '  --region cn-east \\',
