@@ -38,7 +38,8 @@ const form = reactive({
   email: '',
 });
 
-const siteName = ref('mclink');
+/** 品牌名以 /meta 返回的 siteName 为准，这里只是它到达之前的占位 */
+const siteName = ref('McLink');
 const registrationOpen = ref(true);
 /** 平台是否要求验证邮箱（来自 /meta） */
 const requireEmailVerification = ref(false);
@@ -57,7 +58,7 @@ const verifyNotice = ref<string | null>(null);
 
 const isRegister = computed(() => mode.value === 'register');
 const title = computed(() =>
-  pendingVerify.value ? '验证邮箱' : isRegister.value ? '创建账号' : '登录 mclink',
+  pendingVerify.value ? '验证邮箱' : isRegister.value ? '创建账号' : '登录 McLink',
 );
 const subtitle = computed(() =>
   pendingVerify.value
@@ -406,7 +407,7 @@ const displayName = computed(() => currentUser.value?.displayName ?? null);
       </div>
 
       <p class="auth-license faint">
-        mclink 基于 EasyTier（LGPL-3.0）构建，账号仅用于房间准入与流量统计。
+        McLink 基于 EasyTier（LGPL-3.0）构建，账号仅用于房间准入与流量统计。
       </p>
     </div>
   </div>

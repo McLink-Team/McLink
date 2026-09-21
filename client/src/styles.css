@@ -106,40 +106,6 @@ textarea {
   background: var(--ink-900);
 }
 
-.app-header {
-  display: flex;
-  align-items: center;
-  gap: var(--s-4);
-  padding: var(--s-3) var(--s-5);
-  border-bottom: 1px solid var(--rule);
-  background: var(--ink-900);
-  -webkit-app-region: drag;
-}
-.app-header button,
-.app-header a,
-.app-header input,
-.app-header select {
-  -webkit-app-region: no-drag;
-}
-
-.brand {
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
-  font-family: var(--font-display);
-  font-weight: 600;
-  font-size: var(--fs-lg);
-  letter-spacing: var(--track-display);
-}
-/* 等距方块字标，画出来的，不用 emoji/Unicode */
-.brand-mark {
-  width: 16px;
-  height: 16px;
-  flex: none;
-  background: var(--signal);
-  clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%);
-}
-
 .app-body {
   overflow: auto;
   padding: var(--s-5);
@@ -312,14 +278,6 @@ textarea {
   padding: 0 var(--s-3);
   font-size: var(--fs-xs);
 }
-.btn-lg {
-  height: 44px;
-  padding: 0 var(--s-5);
-  border-radius: var(--r-md);
-}
-.btn-block {
-  width: 100%;
-}
 
 .badge {
   display: inline-flex;
@@ -404,53 +362,8 @@ textarea {
   word-break: break-all;
 }
 
-/* 联机地址：客户端最重要的一个信息，做成"铭牌" */
-.address {
-  display: flex;
-  align-items: center;
-  gap: var(--s-3);
-  padding: var(--s-4);
-  border-radius: var(--r-md);
-  border: 1px solid var(--signal-line);
-  background: var(--signal-wash);
-}
-.address-value {
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
-  font-size: var(--fs-2xl);
-  font-weight: 500;
-  letter-spacing: var(--track-tight);
-  line-height: 1.15;
-}
-
-/**
- * 地址整块可点：玩家最常做的事就是把这个地址发给朋友，
- * 所以这里不用瞄准小按钮——点铭牌任意位置就复制。
- */
-.address-hit {
-  display: block;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: copy;
-  /* 按钮里的文字默认选不中：万一剪贴板不可用，玩家还能手动选中地址按 Ctrl+C */
-  user-select: text;
-}
-.address-hit > .address-value,
-.address-hit > .faint {
-  display: block;
-}
-.address-hit:hover .address-value {
-  color: var(--signal);
-}
-.address-hit:focus-visible {
-  outline: 2px solid var(--signal);
-  outline-offset: 3px;
-  border-radius: var(--r-sm);
-}
+/* 联机地址：客户端最重要的一个信息，做成"铭牌"。
+ * 具体样式在文件末尾的客户端覆盖区（.addr / .addr-hit / .addr-value）。 */
 
 .alert {
   display: flex;
@@ -520,7 +433,7 @@ textarea {
 
 .logs {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.55;
   background: var(--ink-950);
   border: 1px solid var(--rule);
@@ -578,47 +491,9 @@ textarea {
   background: var(--paper-faint);
 }
 
-/* ------------------------------------------------------------ 登录 */
-.login-wrap {
-  height: 100%;
-  display: grid;
-  place-items: center;
-  padding: var(--s-5);
-  background: var(--ink-950);
-}
-.login-card {
-  width: min(410px, 100%);
-  padding: var(--s-6);
-  border-radius: var(--r-lg);
-  border: 1px solid var(--rule-strong);
-  background: var(--ink-900);
-  box-shadow: var(--shadow-lg);
-}
-/* 旧的极光背景类：保留选择器，但彻底去掉径向光斑 */
-.aurora {
-  position: relative;
-  height: 100%;
-  background: var(--ink-950);
-  overflow: hidden;
-}
-
-/* 只读的服务器铭牌：明确区别于输入框 */
-.readonly-line,
-.server-line {
-  height: 35px;
-  display: flex;
-  align-items: center;
-  padding: 0 var(--s-3);
-  border-radius: var(--r-sm);
-  border: 1px dashed var(--rule-strong);
-  background: var(--ink-850);
-  color: var(--paper-dim);
-  font-size: var(--fs-sm);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  user-select: text;
-}
+/* ------------------------------------------------------------ 登录/主屏
+ * 布局见文件末尾的「主屏舞台」覆盖区；这里不再有极光背景、只读服务器铭牌
+ * 这类面向自部署的装饰 —— 它们已经全部删掉了。 */
 
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -668,9 +543,6 @@ textarea {
   height: 24px;
   padding: 0 9px;
 }
-.app-shell .btn-lg {
-  height: 38px;
-}
 .app-shell .input,
 .app-shell .select {
   height: 32px;
@@ -691,8 +563,8 @@ textarea {
 /* ---------------------------------------------------------------------------
  * 窄窗里的宽表格
  *
- * 520px 宽的窗口装不下 6 列的房间表，之前会被直接裁掉（右侧列看不见）。
- * 做法：表格给一个合理的最小宽度，装它的面板自己横向滚动。
+ * 460px 宽的窗口装不下 6 列的大厅表，之前会被直接裁掉（右侧列看不见）。
+ * 做法：表格给一个足够的最小宽度（列不至于挤成三四行），装它的面板自己横向滚动。
  *
  * 注意这里**不能**用 `width: max-content`：那会让表格的固有宽度沿着
  * flex/grid 链一路向上传播，把整页撑得比窗口还宽（整个界面出现横向滚动、
@@ -700,7 +572,7 @@ textarea {
  * 把"宽"限制在面板内部。
  * ------------------------------------------------------------------------- */
 .app-shell .table {
-  min-width: 540px;
+  min-width: 640px;
   width: 100%;
 }
 .app-shell .card:has(> .table) {
@@ -724,5 +596,399 @@ textarea {
 .app-shell .row,
 .app-shell .row-between {
   flex-wrap: wrap;
+}
+
+/* ============================================================================
+ * 信号灯
+ *
+ * 类名早就在用（标题栏、正在联机窄条），但样式一直没写 —— 灯其实是空的，
+ * 只剩一个 0 尺寸的 span。这里补上：一个实心圆点，不描边、不加光圈
+ * （零偏移的彩色 halo 是装饰，不是深度）。"live" 状态让它缓慢呼吸，
+ * 表示链路正在跑，而不是一闪一闪地催人。
+ * ========================================================================= */
+.app-shell .led,
+.titlebar .led {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--paper-faint);
+}
+.led-ok {
+  background: var(--link);
+}
+.led-signal {
+  background: var(--signal);
+}
+.led-danger {
+  background: var(--fault);
+}
+.led-live {
+  animation: led-breathe 2.6s var(--ease) infinite;
+}
+@keyframes led-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.42;
+  }
+}
+
+/* ============================================================================
+ * 主屏舞台 —— 未进房时的一屏居中
+ *
+ * 参照桌面小工具的体量感：印记 + 品牌字 + 一行副标题，然后一列全宽按钮。
+ * 这里只给"体量"：竖排、居中、按钮 44px 高、间距一致；配色与装饰仍然
+ * 只有发丝线与那一枚琥珀强调色。
+ * ========================================================================= */
+.app-shell .home {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.app-shell .home-stage {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--s-5) var(--s-4);
+}
+/* margin:auto 负责垂直居中；内容比窗口高时它会归零，顶部仍然够得着
+   （用 justify-content:center 的话，溢出部分会被推到不可滚动的上方） */
+.app-shell .home-main {
+  margin: auto 0;
+  width: 100%;
+  max-width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+/* 房间列表与表单需要一点横向余量，比主屏宽一档 */
+.app-shell .home-main.is-wide {
+  max-width: 344px;
+}
+.app-shell .home-foot {
+  flex: none;
+  text-align: center;
+  padding: 0 var(--s-4) var(--s-3);
+  font-size: var(--fs-xs);
+  color: var(--paper-faint);
+}
+/* 堆叠的全宽按钮：一列排下来，间距一致，高度一致 */
+.app-shell .stack-btns {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.app-shell .stack-btns > .btn,
+.app-shell .home-cta {
+  height: 44px;
+  border-radius: var(--r-md);
+  font-size: var(--fs-base);
+}
+.app-shell .home-cta {
+  width: 100%;
+}
+/* 次一级操作：描边，hover 时边界暖起来（而不是把整块填成琥珀） */
+.app-shell .btn-frame {
+  border-color: var(--rule-strong);
+  color: var(--paper);
+  font-weight: 600;
+}
+.app-shell .btn-frame:hover:not(:disabled) {
+  border-color: var(--signal-line);
+  background: var(--signal-wash);
+}
+/* 三步上手：序号是内容的一部分（它是一条有先后的流程），所以用真数字 */
+.app-shell .home-note {
+  counter-reset: step;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+  color: var(--paper-dim);
+}
+.app-shell .home-note li {
+  position: relative;
+  padding-left: 16px;
+  overflow-wrap: anywhere;
+}
+.app-shell .home-note li::before {
+  counter-increment: step;
+  content: counter(step);
+  position: absolute;
+  left: 0;
+  top: 0;
+  font-family: var(--font-mono);
+  color: var(--signal-dim);
+}
+.app-shell .pane-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.app-shell .pane-title {
+  font-family: var(--font-display);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  letter-spacing: var(--track-tight);
+}
+
+/* ============================================================================
+ * 分段与名册 —— 房间页的"密集实用"部分
+ *
+ * 层级只靠留白、字号和发丝线：标题带人数 → 下面一列行，行与行之间一条发丝线。
+ * 不套卡片：房间页上半部分是一整块仪表，不是若干个盒子。
+ * ========================================================================= */
+.app-shell .section-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--rule);
+}
+.app-shell .section-head .title {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--paper-2);
+}
+.app-shell .section-head .count {
+  font-size: var(--fs-xs);
+  color: var(--paper-faint);
+}
+.app-shell .panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  min-width: 0;
+}
+.app-shell .roster {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.app-shell .roster-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: 9px 0;
+  border-bottom: 1px solid var(--rule-faint);
+  min-width: 0;
+}
+.app-shell .roster-row:last-child {
+  border-bottom: 0;
+}
+.app-shell .roster-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.app-shell .roster-name {
+  font-size: var(--fs-sm);
+  color: var(--paper);
+  overflow-wrap: anywhere;
+}
+.app-shell .roster-sub {
+  font-size: var(--fs-xs);
+  color: var(--paper-faint);
+  overflow-wrap: anywhere;
+}
+/* 头像方块：这个世界里最小的单位是方块，所以头像是方的，不是圆的 */
+.app-shell .avatar {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-xs);
+  background: var(--surface-hair);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--paper-dim);
+}
+.app-shell .icon-btn {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--paper-dim);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease);
+}
+.app-shell .icon-btn svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.25;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.app-shell .icon-btn:hover:not(:disabled) {
+  color: var(--paper);
+  border-color: var(--rule-hover);
+  background: var(--surface-hair);
+}
+.app-shell .icon-btn.is-on {
+  color: var(--signal);
+  border-color: var(--signal-line);
+}
+.app-shell .icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* 房间头：房间名大标题 + 一行关键信息 */
+.app-shell .room-head {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+.app-shell .room-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  min-width: 0;
+}
+.app-shell .room-name {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-2xl);
+  font-weight: 600;
+  letter-spacing: var(--track-display);
+  line-height: var(--lh-tight);
+  overflow-wrap: anywhere;
+}
+.app-shell .room-actions {
+  display: flex;
+  gap: 5px;
+  flex: none;
+}
+.app-shell .room-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px var(--s-2);
+  font-size: var(--fs-xs);
+  color: var(--paper-dim);
+}
+.app-shell .room-meta > * + * {
+  padding-left: var(--s-2);
+  border-left: 1px solid var(--rule);
+}
+/* 加入码：纯文字的可点区域（不加底色，免得又是"带底色的片"） */
+.app-shell .meta-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--paper-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  letter-spacing: var(--track-wide);
+  cursor: copy;
+  text-align: left;
+}
+.app-shell .meta-copy:hover {
+  color: var(--signal);
+}
+
+/* 联机地址：房间里最重要的一个信息，整块可点即复制 */
+.app-shell .addr {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-3);
+  border: 1px solid var(--signal-line);
+  border-radius: var(--r-sm);
+  background: var(--signal-wash);
+  min-width: 0;
+}
+.app-shell .addr-hit {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: copy;
+  /* 剪贴板万一不可用，玩家还能自己选中按 Ctrl+C */
+  user-select: text;
+}
+.app-shell .addr-label {
+  font-size: var(--fs-xs);
+  color: var(--signal);
+  letter-spacing: var(--track-wide);
+}
+.app-shell .addr-value {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-xl);
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: var(--track-tight);
+  color: var(--paper);
+  overflow-wrap: anywhere;
+}
+.app-shell .addr-hint {
+  font-size: var(--fs-xs);
+  color: var(--paper-dim);
+  line-height: var(--lh-snug);
+  overflow-wrap: anywhere;
+}
+.app-shell .addr-hit:hover .addr-value {
+  color: var(--signal-bright);
+}
+.app-shell .addr-hit:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 3px;
+  border-radius: var(--r-xs);
+}
+
+/* 网络读数：三格等宽的小数据，不放大、不加底色 */
+.app-shell .stat-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--s-2);
+}
+.app-shell .stat-label {
+  font-size: var(--fs-xs);
+  color: var(--paper-faint);
+}
+.app-shell .stat-value {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-sm);
+  color: var(--paper-2);
+}
+/* 房主操作：收在页面底部单独一段，不与房间名抢同一行 */
+.app-shell .ops {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
 }
 

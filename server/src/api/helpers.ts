@@ -66,6 +66,10 @@ export function parsePolicy(body: Record<string, unknown>, base?: RoomPolicy): R
   const allowPublicRelay = optBool(body, 'allowPublicRelay');
   if (allowPublicRelay !== undefined) out.allowPublicRelay = allowPublicRelay;
 
+  // 局域网广播直通：默认关闭，只有房主显式打开才会写进客户端配置
+  const allowBroadcast = optBool(body, 'allowBroadcast');
+  if (allowBroadcast !== undefined) out.allowBroadcast = allowBroadcast;
+
   const strictPorts = optBool(body, 'strictPorts');
   if (strictPorts !== undefined) out.strictPorts = strictPorts;
 

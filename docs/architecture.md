@@ -235,8 +235,11 @@ export function deriveNetworkName(secret: string): string {
 生成票据时的几个实现细节（`services/rooms.ts` 的 `ticket()`）：
 
 * `listeners` 是 `tcp://0.0.0.0:<listenPort>` + `udp://0.0.0.0:<listenPort>`（客户端之间可直连/打洞）。
-* `enable_udp_broadcast_relay = true`：让 Minecraft 的局域网广播跨虚拟网络，
-  玩家在「多人游戏」列表里能直接看到房间。
+* `enable_udp_broadcast_relay = room.policy.allowBroadcast`（**默认 false**）：
+  打开后 Minecraft 的局域网广播会跨虚拟网络，玩家在「多人游戏」列表里能直接看到房间。
+  之所以默认关闭：Windows 上它靠 **WinDivert 内核网络过滤驱动**抓物理网卡的 UDP 广播，
+  等于在每台玩家机器上装一个系统级网络驱动，实测会与部分软件的网络栈冲突
+  （见 `troubleshooting.md` §16）。EasyTier 官方默认同样是关的。
 * `disable_p2p = !room.policy.allowP2p`：关闭 P2P 后所有流量走中继（可控但更耗带宽）。
 * `perMemberKbps > 0` 时写入 `instance_recv_bps_limit`（客户端自制限速）。
 * **`bind_device = false`**：三处（主控中继、子节点、票据 TOML）统一关闭。这是踩坑结论——

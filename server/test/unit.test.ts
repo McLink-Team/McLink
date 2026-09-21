@@ -11,10 +11,11 @@
 import assert from 'node:assert/strict';
 import { test, describe } from 'node:test';
 
-import { renderAcl, renderEasytierToml, buildLaunchArgs, tomlString, aclToJson } from '../src/easytier/config.ts';
+import { renderAcl, renderEasytierToml, buildLaunchArgs, tomlString, aclToJson, rpcPortalForListenPort, usableRpcPort } from '../src/easytier/config.ts';
 import { buildRoomAcl, isAclEmpty } from '../src/easytier/acl.ts';
 import { parseHumanNumber, parseLatencyMs } from '../src/easytier/manager.ts';
 import { hashRoomPassword, verifyRoomPassword, deriveNetworkName } from '../src/services/rooms.ts';
+import { parsePolicy } from '../src/api/helpers.ts';
 import {
   buildMessage,
   encodeHeader,
@@ -26,6 +27,7 @@ import { resolveFrom } from '../src/services/mailer.ts';
 import { emailGateProblem } from '../src/services/email-gate.ts';
 import { normalizePort } from '../src/services/nodes.ts';
 import { isDecorationLine } from '../src/easytier/process.ts';
+import { DEFAULT_SETTINGS, clientArtifactName } from '../src/services/settings.ts';
 import { endpointHost, endpointPort, nodeClientEndpoint, nodeConnectPort, nodeListenPort } from '../src/db/nodes.ts';
 import type { NodeRow } from '../src/db/nodes.ts';
 import type { UserRow } from '../src/db/users.ts';
@@ -126,6 +128,66 @@ describe('EasyTier TOML 生成', () => {
     assert.equal(tomlString('a\\b'), '"a\\\\b"');
     assert.equal(tomlString('a\nb'), '"a\\nb"');
     assert.equal(tomlString('a\u0001b'), '"a\\u0001b"');
+  });
+});
+
+describe('RPC 端口：客户端上报优先，否则按监听端口推算', () => {
+  test('rpc_portal 只能走命令行，且由监听端口推导时落在 16000 段', () => {
+    // 与服务端一致的推算规则；房主 11010 → 16010，成员 11011 → 16011
+    assert.equal(rpcPortalForListenPort(11010), 16010);
+    assert.equal(rpcPortalForListenPort(11011), 16011);
+    // 相差 1000 的倍数会撞车，这是刻意的取舍（见函数注释）
+    assert.equal(rpcPortalForListenPort(11010), rpcPortalForListenPort(12010));
+  });
+
+  test('usableRpcPort 只接受 1024–65535 的整数', () => {
+    assert.equal(usableRpcPort(17321), 17321);
+    assert.equal(usableRpcPort(1024), 1024);
+    assert.equal(usableRpcPort(65535), 65535);
+    // 低端口要管理员权限，客户端本来也拿不到，一律拒绝
+    assert.equal(usableRpcPort(80), null);
+    assert.equal(usableRpcPort(1023), null);
+    assert.equal(usableRpcPort(65536), null);
+    assert.equal(usableRpcPort(0), null);
+    assert.equal(usableRpcPort(-1), null);
+    assert.equal(usableRpcPort(1.5), null);
+    assert.equal(usableRpcPort(Number.NaN), null);
+    assert.equal(usableRpcPort(null), null);
+    assert.equal(usableRpcPort(undefined), null);
+    // JSON 里端口写成字符串是常见误用：拒绝，而不是悄悄转成数字
+    assert.equal(usableRpcPort('17321' as unknown as number), null);
+  });
+
+  test('固定网卡名写进 [flags].dev_name', () => {
+    const toml = renderEasytierToml({
+      instanceName: 'mclink-room',
+      ipv4: '10.200.5.2/24',
+      listeners: ['tcp://0.0.0.0:11012'],
+      peers: [],
+      networkName: 'n',
+      networkSecret: 's',
+      flags: { devName: 'McLink', noTun: false },
+    });
+    assert.match(toml, /^dev_name = "McLink"$/m);
+    // 必须落在 [flags] 段内，否则 easytier-core 会当成未知顶层字段拒收
+    assert.ok(toml.indexOf('[flags]') < toml.indexOf('dev_name = '), 'dev_name 必须在 [flags] 之后');
+  });
+});
+
+describe('平台默认设置：品牌与下载地址', () => {
+  test('品牌默认写成 McLink（登录页与验证邮件的标题都取它）', () => {
+    assert.equal(DEFAULT_SETTINGS.siteName, 'McLink 联机');
+  });
+
+  test('默认下载地址与真实产物名一致', () => {
+    // 产物名规则必须与 client/electron-builder.yml 的 artifactName 相同
+    assert.equal(clientArtifactName('0.1.0'), 'McLink-Setup-0.1.0-x64.exe');
+    // 曾经的默认值是 /downloads/mclink-client-setup.exe —— 这个文件从来不存在，
+    // 于是全新部署上「下载客户端」按钮直接 404，且没有任何产物能拿到主产物排序
+    assert.equal(
+      DEFAULT_SETTINGS.clientDownloadUrl,
+      `/downloads/${clientArtifactName(DEFAULT_SETTINGS.clientVersion)}`,
+    );
   });
 });
 
@@ -447,6 +509,56 @@ describe('子节点端口：运行端口 / 链接端口分离', () => {
     assert.equal(normalizePort('abc'), null);
     assert.equal(normalizePort(undefined), null);
     assert.equal(normalizePort(11010.9), 11010);
+  });
+});
+
+describe('局域网广播直通：默认关闭', () => {
+  test('房主没开这个开关时，客户端配置里是 false（不再默认装内核网络驱动）', () => {
+    // 背景：这个开关在 Windows 上靠 WinDivert 内核网络过滤驱动抓 UDP 广播，
+    // 实测会与其它软件的网络栈冲突（玩家反馈连上后网易云音乐等上不了网）。
+    // 所以默认必须是关的，只有房主显式打开才写 true。
+    assert.equal(DEFAULT_ROOM_POLICY.allowBroadcast, false, '默认策略必须是关闭');
+
+    const off = renderEasytierToml({
+      instanceName: 'mclink-test',
+      hostname: 'tester',
+      dhcp: false,
+      ipv4: '10.200.0.2/24',
+      listeners: ['tcp://0.0.0.0:11010'],
+      peers: [],
+      networkName: 'mclink-room-test',
+      networkSecret: 'secret',
+      flags: { noTun: false, enableUdpBroadcastRelay: false },
+      acl: null,
+      fileLogDir: null,
+      consoleLogLevel: 'warn',
+    });
+    assert.match(off, /enable_udp_broadcast_relay = false/);
+
+    const on = renderEasytierToml({
+      instanceName: 'mclink-test',
+      hostname: 'tester',
+      dhcp: false,
+      ipv4: '10.200.0.2/24',
+      listeners: ['tcp://0.0.0.0:11010'],
+      peers: [],
+      networkName: 'mclink-room-test',
+      networkSecret: 'secret',
+      flags: { noTun: false, enableUdpBroadcastRelay: true },
+      acl: null,
+      fileLogDir: null,
+      consoleLogLevel: 'warn',
+    });
+    assert.match(on, /enable_udp_broadcast_relay = true/);
+  });
+
+  test('房间策略解析：只有显式传 true 才打开广播直通', () => {
+    assert.equal(parsePolicy({}).allowBroadcast, false, '不传时保持默认关闭');
+    assert.equal(parsePolicy({ allowBroadcast: true }).allowBroadcast, true);
+    assert.equal(parsePolicy({ allowBroadcast: 'on' }).allowBroadcast, true, '字符串 on 也算开');
+    assert.equal(parsePolicy({ allowBroadcast: false }).allowBroadcast, false);
+    // 别被其它字段带偏
+    assert.equal(parsePolicy({ allowP2p: true }).allowBroadcast, false);
   });
 });
 

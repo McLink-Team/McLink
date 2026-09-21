@@ -1,7 +1,17 @@
 <script setup lang="ts">
-/** 已进入房间时的主界面：联机地址、成员、房主控制、聊天、游戏连接指引与网络状态 */
+/**
+ * 房间页 —— 进房后的主界面。
+ *
+ * 排布逻辑：**先把要发出去的东西放最上面，再放"我自己"的读数，然后才是别人。**
+ * 玩家进房后 90% 的动作是「把联机地址发给朋友」，所以地址是整页唯一带强调色的
+ * 一块，而且整块可点即复制；房间名与关键信息挤在它上面一行，房主操作收到页面
+ * 最底部单独一段 —— 关房间这种事不该和"复制地址"抢同一个位置。
+ *
+ * 成员与节点用发丝线分隔的名册，而不是卡片套卡片：窄窗里每多一层盒子，
+ * 就少一行能看的信息。
+ */
 import { computed, ref } from 'vue';
-import { formatBitrate, formatBytes } from '@mclink/shared';
+import { formatBitrate, formatBytes, regionLabel } from '@mclink/shared';
 import {
   applyHostAclIfNeeded,
   approveMember,
@@ -17,7 +27,7 @@ import {
   shareAddress,
   updateRoomPolicy,
 } from '../lib/store.ts';
-import { MASTER_URL, friendlyError } from '../lib/api.ts';
+import { friendlyError } from '../lib/api.ts';
 import { copyText } from '../lib/clipboard.ts';
 import { isFavorite, shortcutsRevision, toggleFavorite } from '../lib/shortcuts.ts';
 import ChatPanel from '../components/ChatPanel.vue';
@@ -37,6 +47,8 @@ const policy = ref({
   allowedPorts: '',
   strictPorts: false,
   allowP2p: true,
+  /** 局域网广播直通：默认关闭，开启要装内核驱动，代价写在弹层说明里 */
+  allowBroadcast: false,
 });
 
 const session = computed(() => clientState.session);
@@ -50,24 +62,21 @@ const favorite = computed(() => {
   return current ? isFavorite(current.id) : false;
 });
 
-/** 一键粘贴到群里的邀请信息（多行纯文本） */
+/** 一键粘贴到群里的邀请信息（多行纯文本）。刻意不含任何服务器地址。 */
 const inviteText = computed(() => {
   const current = room.value;
-  let host = MASTER_URL;
-  try {
-    host = new URL(MASTER_URL).host;
-  } catch {
-    /* 地址不合法时退化为原样展示 */
-  }
   return [
-    `【mclink 联机邀请】${current?.name ?? ''}`,
+    `【McLink 联机邀请】${current?.name ?? ''}`,
     `加入码：${current?.code ?? ''}`,
     `联机地址：${shareAddress.value ?? '（等待分配）'}`,
     '',
-    '怎么进：① 打开 mclink 客户端，用上面的加入码进房间；② 启动游戏 → 多人游戏 → 直接连接 → 粘贴上面的联机地址。',
-    `还没装客户端？到 ${host} 下载 Windows 客户端。`,
+    '怎么进：① 打开 McLink 客户端，用上面的加入码进房间；② 启动游戏 → 多人游戏 → 直接连接 → 粘贴上面的联机地址。',
   ].join('\n');
 });
+
+function initial(name: string): string {
+  return (name || '?').trim().slice(0, 1);
+}
 
 function copy(text: string, tag: string): void {
   void copyText(text).then((ok) => {
@@ -93,6 +102,7 @@ function openPolicy(): void {
     allowedPorts: p.allowedPorts.join(','),
     strictPorts: p.strictPorts,
     allowP2p: p.allowP2p,
+    allowBroadcast: p.allowBroadcast,
   };
   policyOpen.value = true;
 }
@@ -132,6 +142,7 @@ async function savePolicy(): Promise<void> {
         .filter(Boolean),
       strictPorts: policy.value.strictPorts,
       allowP2p: policy.value.allowP2p,
+      allowBroadcast: policy.value.allowBroadcast,
     });
     policyOpen.value = false;
   } catch (err) {
@@ -197,152 +208,195 @@ async function doClose(): Promise<void> {
   <div v-if="session && room" class="view">
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
 
-    <!-- 房间头 -->
-    <div class="card">
-      <div class="row-between wrap">
-        <div class="grow">
-          <div class="row">
-            <span style="font-size: var(--fs-xl); font-weight: 680">{{ room.name }}</span>
-            <span class="badge badge-brand">加入码 {{ room.code }}</span>
-            <span class="badge" :class="isOnline ? 'badge-ok' : 'badge-warn'">
-              <span class="dot" :class="isOnline ? 'dot-ok' : 'dot-warn'" />
-              {{ isOnline ? '虚拟网络已连接' : '正在建立连接…' }}
-            </span>
-          </div>
-          <div class="hint" style="margin-top: 4px">
-            区域 {{ room.zone }} · 网段 <span class="mono">{{ room.subnet }}</span> · 在线
-            {{ room.onlineMembers }}/{{ room.policy.maxPlayers }}
-          </div>
-        </div>
-        <div class="row">
-          <button class="btn btn-sm" :disabled="busy" @click="pollPeers()">刷新状态</button>
-          <button class="btn btn-sm" :disabled="busy" @click="refreshRoom()">刷新成员</button>
-          <button class="btn btn-sm" :title="favorite ? '取消收藏' : '收藏这个房间'" @click="toggleFav()">
-            {{ favorite ? '★ 已收藏' : '☆ 收藏' }}
+    <!-- 房间头：名字 + 一行关键信息 + 一排方形动作按钮 -->
+    <header class="room-head">
+      <div class="room-title-row">
+        <h2 class="room-name">{{ room.name }}</h2>
+        <div class="room-actions">
+          <button
+            class="icon-btn"
+            type="button"
+            title="刷新状态"
+            aria-label="刷新状态"
+            :disabled="busy"
+            @click="pollPeers()"
+          >
+            <svg viewBox="0 0 14 14" aria-hidden="true">
+              <path d="M1.3 7h2.4l1.5-4.2 2.1 8.4 1.6-4.2h3.8" />
+            </svg>
           </button>
-          <button v-if="isHost" class="btn btn-sm" @click="openPolicy()">房间规则</button>
-          <button v-if="isHost" class="btn btn-sm" :disabled="busy" @click="doRotate()">轮换密钥</button>
-          <button v-if="isHost" class="btn btn-sm btn-danger" :disabled="busy" @click="doClose()">关闭房间</button>
-          <button v-else class="btn btn-sm btn-danger" :disabled="busy" @click="leaveRoom()">退出房间</button>
+          <button
+            class="icon-btn"
+            type="button"
+            title="刷新成员"
+            aria-label="刷新成员"
+            :disabled="busy"
+            @click="refreshRoom()"
+          >
+            <svg viewBox="0 0 14 14" aria-hidden="true">
+              <circle cx="5.4" cy="4.4" r="2.1" />
+              <path d="M1.7 12.2c0-2 1.6-3.4 3.7-3.4s3.7 1.4 3.7 3.4" />
+              <path d="M10.6 2.6a1.9 1.9 0 0 1 0 3.7" />
+              <path d="M10.4 8.9c1.3.4 2.1 1.5 2.1 3" />
+            </svg>
+          </button>
+          <button
+            class="icon-btn"
+            :class="{ 'is-on': favorite }"
+            type="button"
+            :title="favorite ? '取消收藏' : '收藏这个房间'"
+            :aria-label="favorite ? '取消收藏' : '收藏这个房间'"
+            @click="toggleFav()"
+          >
+            <svg viewBox="0 0 14 14" aria-hidden="true">
+              <path d="M7 1.5l1.7 3.5 3.8.5-2.8 2.6.7 3.8L7 10.1l-3.4 1.8.7-3.8L1.5 5.5l3.8-.5z" />
+            </svg>
+          </button>
+          <button class="icon-btn" type="button" title="邀请信息" aria-label="邀请信息" @click="inviteOpen = true">
+            <svg viewBox="0 0 14 14" aria-hidden="true">
+              <path d="M5.6 8.4l2.8-2.8" />
+              <path d="M6.3 3.9l1-1a2.3 2.3 0 0 1 3.2 3.2l-1 1" />
+              <path d="M7.7 10.1l-1 1a2.3 2.3 0 0 1-3.2-3.2l1-1" />
+            </svg>
+          </button>
         </div>
       </div>
-    </div>
+
+      <div class="room-meta">
+        <span class="row" style="gap: 6px">
+          <span class="led" :class="isOnline ? 'led-ok led-live' : 'led-signal'" />
+          <span>{{ isOnline ? '虚拟网络已连接' : '正在建立连接…' }}</span>
+        </span>
+        <span>区域 {{ regionLabel(room.zone) }}</span>
+        <span>网段 <span class="mono">{{ room.subnet }}</span></span>
+        <span>在线 <span class="mono">{{ room.onlineMembers }}/{{ room.policy.maxPlayers }}</span></span>
+        <button class="meta-copy" type="button" title="点击复制加入码" @click="copy(room.code, 'code')">
+          加入码 {{ copied === 'code' ? '已复制' : room.code }}
+        </button>
+      </div>
+    </header>
 
     <!-- 联机地址：整块可点，点一下就复制 -->
-    <div class="address">
-      <button class="address-hit grow" type="button" title="点击复制联机地址" @click="copyAddress()">
-        <span class="faint" style="font-size: var(--fs-xs)">
-          发给朋友，让他在游戏里「多人游戏 → 直接连接」粘贴（点一下即复制）
-        </span>
-        <span class="address-value">{{ shareAddress ?? '等待分配…' }}</span>
+    <section class="addr">
+      <button class="addr-hit" type="button" title="点击复制联机地址" @click="copyAddress()">
+        <span class="addr-label">联机地址</span>
+        <span class="addr-value">{{ shareAddress ?? '等待分配…' }}</span>
+        <span class="addr-hint">点一下即复制；朋友在游戏里「多人游戏 → 直接连接」粘贴</span>
       </button>
-      <button class="btn btn-primary" :disabled="!shareAddress" @click="copyAddress()">
-        {{ copied === 'addr' ? '已复制' : '复制地址' }}
+      <button class="btn btn-primary" type="button" :disabled="!shareAddress" @click="copyAddress()">
+        {{ copied === 'addr' ? '已复制' : '复制' }}
       </button>
-      <button class="btn" @click="inviteOpen = true">邀请信息…</button>
-    </div>
+    </section>
 
-    <div class="grid-2">
-      <!-- 网络状态 -->
-      <div class="card">
-        <div class="row-between" style="margin-bottom: 10px">
-          <div style="font-weight: 620">我的网络状态</div>
-          <span class="badge badge-neutral mono">{{ session.virtualIp }}</span>
-        </div>
-        <div class="grid-3" style="margin-bottom: 12px">
-          <div>
-            <div class="faint" style="font-size: var(--fs-xs)">下载</div>
-            <div class="mono">{{ formatBitrate(clientState.localRxBps) }}</div>
-          </div>
-          <div>
-            <div class="faint" style="font-size: var(--fs-xs)">上传</div>
-            <div class="mono">{{ formatBitrate(clientState.localTxBps) }}</div>
-          </div>
-          <div>
-            <div class="faint" style="font-size: var(--fs-xs)">累计流量</div>
-            <div class="mono">{{ formatBytes(clientState.localRxBytes + clientState.localTxBytes) }}</div>
-          </div>
-        </div>
-
-        <table v-if="clientState.peers.length > 0" class="table">
-          <thead>
-            <tr>
-              <th>节点</th>
-              <th>虚拟地址</th>
-              <th>链路</th>
-              <th class="table-num">延迟</th>
-              <th class="table-num">流量</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="p in clientState.peers" :key="p.ipv4 + p.hostname">
-              <td class="truncate" style="max-width: 140px">{{ p.hostname || '-' }}</td>
-              <td class="mono">{{ p.ipv4 || '-' }}</td>
-              <td>
-                <span class="badge" :class="p.cost.startsWith('p2p') ? 'badge-ok' : 'badge-neutral'">
-                  {{ p.cost.startsWith('p2p') ? 'P2P 直连' : '经中继' }}
-                </span>
-              </td>
-              <td class="table-num">{{ p.latencyMs === null ? '-' : `${p.latencyMs.toFixed(1)} ms` }}</td>
-              <td class="table-num">{{ formatBytes(p.rxBytes + p.txBytes) }}</td>
-            </tr>
-          </tbody>
-        </table>
-        <div v-else class="empty">还没有发现其它节点。等成员进来后这里会显示他们。</div>
+    <!-- 我这边的读数 -->
+    <section class="panel">
+      <div class="section-head">
+        <span class="title">我的网络</span>
+        <span class="grow" />
+        <span class="badge badge-neutral mono">{{ session.virtualIp }}</span>
       </div>
 
-      <!-- 成员 -->
-      <div class="card">
-        <div class="row-between" style="margin-bottom: 10px">
-          <div style="font-weight: 620">房间成员（{{ members.length }}）</div>
-          <span v-if="pending.length > 0" class="badge badge-warn">{{ pending.length }} 个待审批</span>
+      <div class="stat-row">
+        <div>
+          <div class="stat-label">下载</div>
+          <div class="stat-value">{{ formatBitrate(clientState.localRxBps) }}</div>
         </div>
-
-        <table class="table">
-          <thead>
-            <tr>
-              <th>玩家</th>
-              <th>身份</th>
-              <th class="table-num">延迟</th>
-              <th v-if="isHost" />
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="m in members" :key="m.userId">
-              <td>
-                <div>{{ m.displayName }}</div>
-                <div class="faint mono" style="font-size: var(--fs-xs)">{{ m.virtualIp ?? '-' }}</div>
-              </td>
-              <td>
-                <span class="badge badge-neutral">{{ m.role === 'host' ? '房主' : '成员' }}</span>
-                <span v-if="m.status === 'pending'" class="badge badge-warn" style="margin-left: 4px">待审批</span>
-                <span v-else-if="m.p2p" class="badge badge-ok" style="margin-left: 4px">直连</span>
-              </td>
-              <td class="table-num">{{ m.latencyMs === null ? '-' : `${m.latencyMs.toFixed(0)} ms` }}</td>
-              <td v-if="isHost" style="text-align: right; white-space: nowrap">
-                <template v-if="m.status === 'pending'">
-                  <button class="btn btn-sm" @click="approveMember(m.userId, true)">通过</button>
-                  <button class="btn btn-sm btn-ghost" @click="approveMember(m.userId, false)">拒绝</button>
-                </template>
-                <button
-                  v-else-if="m.role !== 'host'"
-                  class="btn btn-sm btn-danger"
-                  :disabled="busy"
-                  @click="doKick(m.userId, m.displayName)"
-                >
-                  踢出
-                </button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        <div v-if="members.length === 0" class="empty">还没有其他成员</div>
-
-        <div v-if="isHost" class="hint" style="margin-top: 10px">
-          踢人后服务端会重算房间 ACL（按被踢成员的虚拟 IP 建丢弃规则），本客户端的 easytier-core 会自动应用。
+        <div>
+          <div class="stat-label">上传</div>
+          <div class="stat-value">{{ formatBitrate(clientState.localTxBps) }}</div>
+        </div>
+        <div>
+          <div class="stat-label">累计流量</div>
+          <div class="stat-value">{{ formatBytes(clientState.localRxBytes + clientState.localTxBytes) }}</div>
         </div>
       </div>
-    </div>
+
+      <div v-if="clientState.peers.length > 0" class="roster">
+        <div v-for="p in clientState.peers" :key="p.ipv4 + p.hostname" class="roster-row">
+          <span class="grow roster-main">
+            <span class="roster-name">{{ p.hostname || '未命名节点' }}</span>
+            <span class="roster-sub">{{ p.ipv4 || '—' }}</span>
+          </span>
+          <span class="badge" :class="p.cost.startsWith('p2p') ? 'badge-ok' : 'badge-neutral'">
+            {{ p.cost.startsWith('p2p') ? 'P2P 直连' : '经中继' }}
+          </span>
+          <span class="mono faint roster-sub nowrap">
+            {{ p.latencyMs === null ? '—' : `${p.latencyMs.toFixed(1)} ms` }}
+          </span>
+          <span class="mono faint roster-sub nowrap">{{ formatBytes(p.rxBytes + p.txBytes) }}</span>
+        </div>
+      </div>
+      <p v-else class="hint">还没有发现其它节点。等成员进来后这里会显示他们。</p>
+    </section>
+
+    <!-- 成员名册 -->
+    <section class="panel">
+      <div class="section-head">
+        <span class="title">房间成员</span>
+        <span class="count mono">{{ members.length }}</span>
+        <span class="grow" />
+        <span v-if="pending.length > 0" class="badge badge-warn">{{ pending.length }} 个待审批</span>
+      </div>
+
+      <div v-if="members.length > 0" class="roster">
+        <div v-for="m in members" :key="m.userId" class="roster-row">
+          <span class="avatar">{{ initial(m.displayName) }}</span>
+          <span class="grow roster-main">
+            <span class="roster-name">{{ m.displayName }}</span>
+            <span class="roster-sub">{{ m.virtualIp ?? '尚未分配地址' }}</span>
+          </span>
+          <span v-if="m.status === 'pending'" class="badge badge-warn">待审批</span>
+          <span v-else-if="m.role === 'host'" class="badge badge-brand">房主</span>
+          <span v-else-if="m.p2p" class="badge badge-ok">直连</span>
+          <span v-else class="badge badge-neutral">成员</span>
+          <span class="mono faint roster-sub nowrap">
+            {{ m.latencyMs === null ? '—' : `${m.latencyMs.toFixed(0)} ms` }}
+          </span>
+          <template v-if="isHost">
+            <template v-if="m.status === 'pending'">
+              <button class="btn btn-sm" type="button" @click="approveMember(m.userId, true)">通过</button>
+              <button class="btn btn-sm btn-ghost" type="button" @click="approveMember(m.userId, false)">拒绝</button>
+            </template>
+            <button
+              v-else-if="m.role !== 'host'"
+              class="btn btn-sm btn-danger"
+              type="button"
+              :disabled="busy"
+              @click="doKick(m.userId, m.displayName)"
+            >
+              踢出
+            </button>
+          </template>
+        </div>
+      </div>
+      <p v-else class="hint">还没有其他成员。把上面的联机地址和加入码发给朋友就行。</p>
+
+      <p v-if="isHost" class="hint">
+        踢人后服务端会重算房间 ACL（按被踢成员的虚拟 IP 建丢弃规则），本客户端的 easytier-core 会自动应用。
+      </p>
+    </section>
+
+    <!-- 房主操作单独收在底下：不和"发地址"抢同一行 -->
+    <section class="panel">
+      <div class="section-head">
+        <span class="title">{{ isHost ? '房主操作' : '房间操作' }}</span>
+      </div>
+      <div class="ops">
+        <template v-if="isHost">
+          <button class="btn btn-sm" type="button" @click="openPolicy()">房间规则</button>
+          <button class="btn btn-sm" type="button" :disabled="busy" @click="doRotate()">轮换密钥</button>
+          <button class="btn btn-sm btn-danger" type="button" :disabled="busy" @click="doClose()">关闭房间</button>
+        </template>
+        <button v-else class="btn btn-sm btn-danger" type="button" :disabled="busy" @click="leaveRoom()">
+          退出房间
+        </button>
+      </div>
+      <p class="hint">
+        {{ isHost
+          ? '轮换密钥会让所有人断开并用新的凭证重进；关闭房间则直接解散这个虚拟网络。'
+          : '退出后会断开虚拟网络；重新进入需要再输一次加入码。' }}
+      </p>
+    </section>
 
     <!-- 房间聊天 -->
     <ChatPanel />
@@ -419,6 +473,23 @@ async function doClose(): Promise<void> {
             <option :value="true">开启（默认丢弃，只放行白名单端口与 ICMP）</option>
           </select>
         </div>
+        <!--
+          局域网广播直通：默认关闭。
+          EasyTier 自己也是默认关的 —— 它靠 WinDivert 内核网络过滤驱动去抓物理网卡的
+          UDP 广播，而驱动路径就是我们 vendored 的那份，实测会让部分机器上其它软件断网。
+          所以这是个"要就自己开"的能力，代价必须写在开关下面，而不是藏在文档里。
+        -->
+        <div class="field">
+          <label class="label">局域网广播直通</label>
+          <select v-model="policy.allowBroadcast" class="select">
+            <option :value="false">关闭（推荐）</option>
+            <option :value="true">开启（局域网列表可见）</option>
+          </select>
+          <div class="hint">
+            开启后 Minecraft「多人游戏」列表能直接看到房间，不用手输 IP。代价：Windows 上会安装一个系统级网络过滤驱动（WinDivert）来抓 UDP
+            广播，部分软件（如网易云音乐）可能因此上不了网。关闭时用「直接连接 + 虚拟地址」照常联机。
+          </div>
+        </div>
         <div class="row">
           <button class="btn btn-primary grow" :disabled="busy" @click="savePolicy">保存并生效</button>
           <button class="btn btn-ghost" @click="policyOpen = false">取消</button>
@@ -443,7 +514,7 @@ async function doClose(): Promise<void> {
   z-index: 300;
 }
 .modal-card {
-  width: min(680px, 100%);
+  width: min(560px, 100%);
   max-height: 88vh;
   overflow: auto;
 }
@@ -456,7 +527,7 @@ async function doClose(): Promise<void> {
   font-size: var(--fs-sm);
   line-height: 1.6;
   white-space: pre-wrap;
-  word-break: break-all;
+  overflow-wrap: anywhere;
   user-select: text;
 }
 </style>

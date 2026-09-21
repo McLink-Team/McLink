@@ -75,7 +75,7 @@ const advice = computed<Advice[]>(() => {
   if (remotePeers.value.length === 0) {
     list.push({
       level: 'warn',
-      text: '一个节点都没发现：① 确认右上角主控连接正常（能刷新成员列表）；② 确认本地核心是运行中；③ 确认其它成员真的进了同一个房间；④ 确认已提权。全都正常还看不到，多半是防火墙拦了 EasyTier 的 UDP。',
+      text: '一个节点都没发现：① 确认网络连接正常（能刷新成员列表）；② 确认本地核心是运行中；③ 确认其它成员真的进了同一个房间；④ 确认已提权。全都正常还看不到，多半是防火墙拦了 EasyTier 的 UDP。',
     });
   } else if (directPeers.value.length === 0) {
     list.push({

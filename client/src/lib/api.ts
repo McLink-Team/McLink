@@ -107,7 +107,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
       signal: options.signal,
     });
   } catch (err) {
-    throw new ApiRequestError(0, 'network_error', `无法连接主控（${getMasterUrl()}）：${(err as Error).message}`);
+    throw new ApiRequestError(0, 'network_error', `无法连接服务器：${(err as Error).message}`);
   }
 
   const text = await res.text();
@@ -141,7 +141,7 @@ export const api = {
 
 export function friendlyError(err: unknown): string {
   if (err instanceof ApiRequestError) {
-    if (err.code === 'network_error') return `连不上主控，请检查地址与网络（当前：${getMasterUrl()}）`;
+    if (err.code === 'network_error') return '连不上服务器，请检查网络后重试。';
     return err.message;
   }
   return err instanceof Error ? err.message : String(err);

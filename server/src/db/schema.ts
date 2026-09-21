@@ -264,6 +264,28 @@ update relay_nodes
  where instr(endpoint, ':') > 0;
 `;
 
+/**
+ * V7：把「品牌改名」之前留在库里的默认值一次性改过来。
+ *
+ * 平台设置是**首次启动时写进库**的，之后代码里的默认值再改也不会影响老库：
+ * 老部署的登录页、验证邮件标题会一直显示 `mclink 联机`。
+ * 这里只改「等于旧默认值」的行——管理员自己填过的名字不会被覆盖；
+ * 下载地址同理，旧默认指向的 `mclink-client-setup.exe` 是从来不存在过的文件名。
+ */
+const V7_BRAND_DEFAULTS = `
+update settings
+   set value = json_set(value, '$.siteName', 'McLink 联机'),
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ where key = 'platform'
+   and json_extract(value, '$.siteName') = 'mclink 联机';
+
+update settings
+   set value = json_set(value, '$.clientDownloadUrl', '/downloads/McLink-Setup-0.1.0-x64.exe'),
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ where key = 'platform'
+   and json_extract(value, '$.clientDownloadUrl') = '/downloads/mclink-client-setup.exe';
+`;
+
 export const MIGRATIONS: readonly string[] = [
   V1_INITIAL,
   V2_RELAY_ROOM_MAP,
@@ -271,6 +293,7 @@ export const MIGRATIONS: readonly string[] = [
   V4_ROOM_CHAT,
   V5_EMAIL_VERIFICATION,
   V6_NODE_PORT_SPLIT,
+  V7_BRAND_DEFAULTS,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

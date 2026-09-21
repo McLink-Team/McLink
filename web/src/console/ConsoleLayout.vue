@@ -89,7 +89,7 @@ async function handleLogout(): Promise<void> {
           </svg>
         </span>
         <span class="side-brand-text">
-          <strong>mclink</strong>
+          <strong>McLink</strong>
           <span class="side-brand-sub">管理控制台</span>
         </span>
       </RouterLink>

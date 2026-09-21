@@ -51,6 +51,8 @@ const state = reactive({
   masterUrl: getMasterUrl(),
   deviceName: getDeviceName(),
   listenPort: 0,
+  /** 由本机探测出的 EasyTier RPC 端口（只监听 127.0.0.1），见 bootstrap() 的说明 */
+  rpcPort: 0,
   user: null as UserSelf | null,
   hosted: [] as Room[],
   joined: [] as Room[],
@@ -118,6 +120,16 @@ export async function bootstrap(): Promise<void> {
     const free = await window.mclink.freePort();
     // 选一个不易与常见服务冲突的端口段，避免和主控自身的 11010 撞车
     state.listenPort = free > 20000 ? free : free + 20000;
+    /**
+     * RPC 端口同样由本机探测，而不是让主控按 listenPort 推算。
+     *
+     * 推算值落在固定的 16000–16999 段里，而 Windows 上「看着空着」的端口可能属于
+     * Hyper-V / WSL / Docker 保留的端口段（`netsh int ipv4 show excludedportrange`），
+     * 显式绑定会直接 WSAEACCES(10013)。被排除的端口不会参与系统动态分配，
+     * 所以「listen(0) 拿到的端口」天然避开了这些段——这个信息只有本机能提供。
+     */
+    const freeRpc = await window.mclink.freePort();
+    state.rpcPort = freeRpc === state.listenPort ? await window.mclink.freePort() : freeRpc;
     window.mclink.core.onStatus((status) => {
       state.coreStatus = status;
     });
@@ -288,6 +300,7 @@ export async function createRoom(input: {
       visibility: input.visibility ?? 'public',
       maxPlayers: input.maxPlayers,
       listenPort: state.listenPort,
+      rpcPort: state.rpcPort,
       deviceName: state.deviceName,
     });
     await enterRoom(result.room.id, result.ticket);
@@ -310,6 +323,7 @@ export async function joinRoom(code: string, password?: string): Promise<void> {
       password,
       deviceName: state.deviceName,
       listenPort: state.listenPort,
+      rpcPort: state.rpcPort,
     });
     if (result.pending || !result.ticket) {
       state.lastError = '已提交加入申请，等待房主审批';
@@ -352,7 +366,9 @@ export async function enterRoom(roomId: string, ticket: RoomTicket): Promise<voi
 }
 
 export async function reenterRoom(roomId: string): Promise<void> {
-  const ticket = await api.get<RoomTicket>(`${Routes.roomTicket(roomId)}?listenPort=${state.listenPort}`);
+  const ticket = await api.get<RoomTicket>(
+    `${Routes.roomTicket(roomId)}?listenPort=${state.listenPort}&rpcPort=${state.rpcPort}`,
+  );
   await enterRoom(roomId, ticket);
 }
 
@@ -430,6 +446,11 @@ async function stopNetwork(): Promise<void> {
 /** 把底层报错翻译成玩家能据以行动的建议 */
 function describeCoreError(message: string | null): string {
   if (!message) return '虚拟网络启动失败';
+  // 端口类错误必须排在 bind 分支前面，否则会被「网卡绑定被拒绝」吃掉，
+  // 玩家会照着错误的建议去点提权重启，而问题其实在端口上
+  if (/端口被占用|10048|10013|EADDRINUSE/i.test(message)) {
+    return '虚拟网络启动失败：本地端口被占用。请关闭其它虚拟网络软件后重试，或把客户端完全退出再打开。';
+  }
   if (/10049|AddrNotAvailable|bind/i.test(message)) {
     return '虚拟网络启动失败：网卡绑定被拒绝。请尝试「以管理员身份重启」后再连接。';
   }
@@ -580,12 +601,41 @@ export async function rotateSecret(): Promise<void> {
   state.lastError = '房间密钥与网络名已轮换，所有成员需要用新票据重新加入';
 }
 
+/**
+ * 保存房间策略。
+ *
+ * 这里必须分岔一次，因为房间策略里的字段落在**两层**上（依据 server/src/services/rooms.ts
+ * 的票据生成代码，逐条核对过）：
+ *
+ *   · **配置级** —— 写进启动配置 configToml 的 flags，ACL 里没有它们：
+ *       `enable_udp_broadcast_relay` ← allowBroadcast
+ *       `disable_p2p`                ← allowP2p
+ *       `instance_recv_bps_limit`    ← perMemberKbps（房主再叠加 maxBandwidthKbps）
+ *   · **ACL 级** —— 踢人、限速包速率、端口白名单、最大人数、公告：
+ *       服务端重算 ACL，我们本地热更新（`acl set`）即可，核心不用重启。
+ *
+ * 只做 ACL 热更新的话，房主打开「局域网广播直通」会**静默不生效** ——
+ * 配置没变，必须重新进房才起作用（"设了没反应"，与公告不显示是同一类 bug）。
+ * 所以配置级字段改完后走既有的 reenterRoom()：重新 GET 票据（拿到新配置）→
+ * enterRoom() → startNetwork()，也就是"用新配置重启核心"这条既有路径。
+ */
 export async function updateRoomPolicy(patch: Record<string, unknown>): Promise<void> {
   const session = state.session;
   if (!session) return;
-  const result = await api.patch<{ room: Room; aclToml: string; revision: number }>(Routes.room(session.room.id), patch);
+  const roomId = session.room.id;
+  const result = await api.patch<{ room: Room; aclToml: string; revision: number }>(Routes.room(roomId), patch);
   session.room = result.room;
   session.aclRevision = result.revision;
+
+  /** 只要这次改动碰到其中任何一个，就必须换票据重启核心 */
+  const CONFIG_LEVEL_FIELDS = ['allowBroadcast', 'allowP2p', 'maxBandwidthKbps', 'perMemberKbps'];
+  if (CONFIG_LEVEL_FIELDS.some((key) => key in patch)) {
+    // 重进会重新拉票据并重启实例；startNetwork() 内部会重新应用房主 ACL，
+    // 所以这条路径不必再单独调一次 applyAcl（那会白重启一次，多等两秒）。
+    await reenterRoom(roomId);
+    return;
+  }
+
   if (session.isHost) {
     const res = await window.mclink.core.applyAcl(result.aclToml);
     if (res.mode === 'restart') {

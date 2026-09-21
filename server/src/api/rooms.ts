@@ -41,6 +41,7 @@ export function registerRoomRoutes(router: Router, app: App): void {
       password: optStr(body, 'password', 64) ?? null,
       policy: parsePolicy(body),
       listenPort: optInt(body, 'listenPort', 1024, 65535) ?? app.settings.current.relayPort,
+      rpcPort: optInt(body, 'rpcPort', 1024, 65535) ?? undefined,
       ttlMinutes: 'ttlMinutes' in body ? optInt(body, 'ttlMinutes', 0, 60 * 24 * 30) ?? null : undefined,
       hostHint: ctx.req.headers.host ?? null,
     });
@@ -82,6 +83,7 @@ export function registerRoomRoutes(router: Router, app: App): void {
       password: optStr(body, 'password', 64) ?? null,
       deviceName: optStr(body, 'deviceName', 32) ?? null,
       listenPort: optInt(body, 'listenPort', 1024, 65535) ?? app.settings.current.relayPort,
+      rpcPort: optInt(body, 'rpcPort', 1024, 65535) ?? undefined,
       hostHint: ctx.req.headers.host ?? null,
     });
     return result;
@@ -105,11 +107,14 @@ export function registerRoomRoutes(router: Router, app: App): void {
   router.get('/rooms/:id/ticket', (ctx) => {
     const auth = requireAuth(ctx);
     const listenPort = Number.parseInt(ctx.query.get('listenPort') ?? '', 10);
+    const rpcPort = Number.parseInt(ctx.query.get('rpcPort') ?? '', 10);
     return app.roomService.ticket(
       ctx.params.id ?? '',
       auth.userId,
       Number.isFinite(listenPort) && listenPort > 1024 ? listenPort : app.settings.current.relayPort,
       ctx.req.headers.host ?? null,
+      // 只接受合法范围内的整数，其余交给服务端按 listenPort 推算
+      Number.isFinite(rpcPort) ? rpcPort : null,
     );
   }, { auth: true });
 
@@ -219,7 +224,24 @@ export function registerRoomRoutes(router: Router, app: App): void {
     // 策略变更需要重算 ACL 并递增版本
     let aclToml: string | null = null;
     let revision = row.acl_revision;
-    if (Object.keys(body).some((k) => ['maxPlayers', 'maxBandwidthKbps', 'perMemberKbps', 'rateLimitPps', 'allowP2p', 'allowedPorts', 'strictPorts', 'motd', 'allowPublicRelay'].includes(k))) {
+    /**
+     * 这个清单决定「哪些字段算策略变更」——漏掉一个键，只带该键的 PATCH 就会
+     * 静默丢弃（走进 else 分支，只递增 ACL 版本，策略原封不动）。
+     * allowBroadcast 曾经就漏在这里：房主单独打开广播直通没有任何效果。
+     */
+    const POLICY_KEYS = [
+      'maxPlayers',
+      'maxBandwidthKbps',
+      'perMemberKbps',
+      'rateLimitPps',
+      'allowP2p',
+      'allowBroadcast',
+      'allowedPorts',
+      'strictPorts',
+      'motd',
+      'allowPublicRelay',
+    ];
+    if (Object.keys(body).some((k) => POLICY_KEYS.includes(k))) {
       const current = toRoom(app.roomService.getRow(roomId));
       const policy = parsePolicy(body, current.policy);
       const updated = app.roomService.updatePolicy(roomId, auth.userId, policy);

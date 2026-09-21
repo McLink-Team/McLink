@@ -337,7 +337,7 @@ onUnmounted(() => {
       </div>
 
       <div class="hint" style="margin-top: 8px">
-        消息只保存在主控上（每房间最多保留最近 {{ keepPerRoom }} 条，单条最多 {{ maxChars }} 字符，每人每分钟 20 条）。
+        消息只保存在服务器上（每房间最多保留最近 {{ keepPerRoom }} 条，单条最多 {{ maxChars }} 字符，每人每分钟 20 条）。
         房主可以删除房间里的任意消息。
       </div>
     </template>

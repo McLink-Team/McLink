@@ -1,7 +1,14 @@
 # electron-builder 打包配置
+#
+# 品牌写法统一为 McLink（productName / 快捷方式 / 安装包名都面向玩家可见）。
+# appId 保持不变：它是注册表与升级标识，改了会让老版本无法原地升级。
+#
+# 注意 productName 同时决定**安装目录与 userData 目录**（Windows 路径不区分大小写，
+# 所以 mclink → McLink 不会丢失已登录状态）。改完要重新 `pnpm dist:client` 才生效，
+# 同时把主控设置里的「客户端下载地址」改成本次产物名（或留空由下载页自动挑选）。
 appId: com.mclink.client
-productName: mclink
-copyright: mclink · 基于 EasyTier 的《我的世界》联机平台
+productName: McLink
+copyright: McLink · 基于 EasyTier 的《我的世界》联机平台
 
 directories:
   output: release
@@ -40,7 +47,7 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
-  shortcutName: mclink 联机
+  shortcutName: McLink 联机
   installerLanguages:
     - zh_CN
   language: '2052'
@@ -48,4 +55,5 @@ nsis:
   runAfterFinish: false
 
 # 中文安装界面
-artifactName: mclink-client-${version}-${arch}.${ext}
+# 产物名与 server/src/services/settings.ts 的 clientArtifactName() 必须一致
+artifactName: McLink-Setup-${version}-${arch}.${ext}

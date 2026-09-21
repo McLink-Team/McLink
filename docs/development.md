@@ -99,14 +99,21 @@ VITE_MCLINK_MASTER=https://cnnic.link
 VITE_MCLINK_MASTER=https://cnnic.link pnpm dist:client
 
 # 2) 放进主控的下载目录（默认 server/data/downloads，可用 MCLINK_DOWNLOADS_DIR 改）
-cp client/release/mclink-client-0.1.0-x64.exe server/data/downloads/
+cp client/release/McLink-Setup-0.1.0-x64.exe server/data/downloads/
+
+# 产物名由 client/electron-builder.yml 的 artifactName 决定，格式是
+#   McLink-Setup-<版本>-<架构>.exe
+# 它必须与 server/src/services/settings.ts 的 clientArtifactName() 以及设置项
+# clientDownloadUrl 指向的文件一致。对不上时的现象是：下载页主按钮 404、
+# 没有任何产物拿到「主产物」排序与已登记的 sha256。改版本号时三处一起改。
+# （服务端有兜底：设置里的文件不存在时，会退回下载目录里真实的 Windows 产物。）
 
 # 3) 登记校验值：下载页显示的 sha256 取自设置项 clientSha256，
 #    服务端**不会**每次请求都去哈希一个 87 MB 的文件（见 server/src/api/public.ts
 #    的 listDownloads）。忘了这步的现象是：页面显示旧哈希，玩家按页面校验会以为文件被篡改。
 node -e "const {createHash}=require('crypto'),fs=require('fs');\
 console.log(createHash('sha256').update(fs.readFileSync(process.argv[1])).digest('hex'))" \
-  server/data/downloads/mclink-client-0.1.0-x64.exe
+  server/data/downloads/McLink-Setup-0.1.0-x64.exe
 # 然后把得到的值 PATCH 到 /api/v1/admin/settings 的 clientSha256
 # （控制台「平台设置」里也能改；clientDownloadUrl 同理，文件名变了要一起改）
 ```
@@ -115,7 +122,7 @@ console.log(createHash('sha256').update(fs.readFileSync(process.argv[1])).digest
 「静态服务是否真的吐出了那个文件」是唯一无法靠读代码确认的一环：
 
 ```bash
-curl -sO http://<主控>/downloads/mclink-client-0.1.0-x64.exe && sha256sum mclink-client-0.1.0-x64.exe
+curl -sO http://<主控>/downloads/McLink-Setup-0.1.0-x64.exe && sha256sum McLink-Setup-0.1.0-x64.exe
 ```
 
 ## 4. 端到端实验（`pnpm lab`）

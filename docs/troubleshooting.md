@@ -23,6 +23,7 @@
 | 改了 `MCLINK_ADMIN_PASSWORD` 却登录不上 | 该变量只在首次建号时生效 | §13 |
 | WebSocket 连上但状态不刷新 | 反代没配 `/ws` 的 Upgrade 与长超时 | §14 |
 | `pnpm build:web` 后 `/downloads` 或自定义静态文件消失 | `emptyOutDir` 清空了 `server/public/` | §15 |
+| 客户端 `failed to listen` / `os error 10048` / `10013` | 残留 easytier-core 占端口、其它虚拟网络软件、Windows 保留端口段 | §17 |
 
 ---
 
@@ -572,7 +573,87 @@ location /ws {
 
 ---
 
-## 16. 其它常见小程序问题
+## 16. 连上虚拟网络后，其它软件上不了网（例如网易云音乐）
+
+**症状**：客户端一连上房间，浏览器/音乐软件/游戏启动器里有**部分软件**连不上网
+（不是全部断网，这也是它难查的地方）。断开房间后恢复正常。
+
+**原因**：房主的房间策略里打开了「局域网广播直通」（`allowBroadcast`）。
+它在 Windows 上依赖 **WinDivert 内核网络过滤驱动**去抓物理网卡的 UDP 广播，
+也就是说这台机器被装了一个**系统级网络驱动**，与某些软件的网络栈冲突。
+
+判据（能直接坐实）：
+
+```powershell
+sc.exe qc windivert
+#   BINARY_PATH_NAME 会指向 mclink 客户端自带的 EasyTier 目录，例如
+#   \??\C:\Users\<你>\AppData\...\mclink\...\WinDivert64.sys
+sc.exe query windivert        # STATE : RUNNING
+```
+
+**处置**：
+
+1. **首选**：房主在客户端「房间规则 → 局域网广播直通」里改成**关闭**（这是默认值），
+   然后重新进房一次让核心用新配置重启。MC 联机照常：把房主的虚拟地址发给朋友，
+   用「多人游戏 → 直接连接」粘贴即可。
+2. 已经装上的驱动不会自动卸载，但**不加载就不影响**：关闭开关后重启客户端即可。
+   彻底移除：`sc.exe stop windivert && sc.exe delete windivert`（需要管理员）。
+3. 如果确实需要"局域网列表里直接看到房间"，可以接受这个代价再打开；建议只让
+   **不装其它网络类软件的机器**当房主。
+
+**为什么默认关闭**：EasyTier 官方默认同样是关的。这个开关买到的是"MC 局域网列表里直接看到房间"
+这一条便利，代价是在**每个玩家的机器**上装一个系统级网络驱动 —— 产品上不划算，
+所以改成房主按需开启（见 `RoomPolicy.allowBroadcast` 的注释）。
+
+---
+
+## 17. 客户端连不上：`failed to listen` / `os error 10048` / `10013`
+
+**症状**：点了「连接」之后房间页一直停在「正在建立连接」，客户端的核心日志里能看到
+
+```
+failed to listen ... os error 10048     （地址已在使用）
+failed to listen ... os error 10013     （权限不足 / 落在系统保留端口段）
+```
+
+**原因**（按出现频率）：
+
+1. **上一次的 easytier-core 没退干净**。客户端被任务管理器强杀、或自己崩掉时，
+   子进程会继续活着，占着虚拟网卡与监听端口。
+   现在客户端会在启动 1.2 秒后自动清理**自己的**残留进程
+   （只按可执行文件路径匹配自家 `vendor/easytier` 目录，不会动你另外装的 EasyTier）。
+   只在单实例锁失效的老版本上才需要手工处理。
+2. **机器上还有别的虚拟网络软件**（官方 EasyTier、其它联机工具、Docker/Hyper-V 的端口保留段）
+   占着同一个端口，或该端口落在 `netsh int ipv4 show excludedportrange protocol=tcp`
+   列出的保留段里 —— 后者会报 **10013** 而不是 10048。
+3. 首次绑定失败时客户端会**自动清理并重试一次**；重试仍失败就会明确报
+   「监听端口被占用」并停止核心，而**不会**假装已连接。
+
+**处置**：
+
+```powershell
+# 1) 看是不是自家残留（路径指向客户端安装目录才算）
+Get-CimInstance Win32_Process -Filter "Name='easytier-core.exe'" |
+  Select-Object ProcessId, ExecutablePath
+
+# 2) 看端口落在哪些保留段里（Hyper-V / WSL / Docker 会占段）
+netsh int ipv4 show excludedportrange protocol=tcp
+
+# 3) 端口被别的软件占着（把 12411 换成日志里的实际端口）
+Get-NetTCPConnection -LocalPort 12411 -ErrorAction SilentlyContinue |
+  Select-Object OwningProcess, State
+```
+
+处置顺序：**完全退出客户端 → 重新打开 → 再连接**（新版会自动清残留）；
+仍有问题就关掉其它虚拟网络软件再试。
+
+> 监听端口与 RPC 端口都由客户端在本机探测后上报给主控，所以正常情况下不会
+> 撞上保留端口段：`listen(0)` 拿到的端口天然不来自被系统排除的段。
+> RPC 端口只绑 `127.0.0.1`，机内可见、局域网不可见。
+
+---
+
+## 18. 其它常见小程序问题
 
 | 症状 | 原因 | 处置 |
 | --- | --- | --- |
