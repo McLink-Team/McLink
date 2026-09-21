@@ -45,6 +45,26 @@ sudo bash deploy/install-server.sh --public-url https://cnnic.link \
   --smtp-from 'mclink <no-reply@cnnic.link>'
 ```
 
+> **服务器上没有 GitLab 权限怎么办？** 安装脚本用纯 `tar` 同步源码并排除 `.git`，
+> 所以它**不需要 git**，一个源码目录就够。两种绕法：
+>
+> 1. 在这台服务器上生成一把新密钥并加进 GitLab（推荐，之后 `git pull` 升级也方便）：
+>    ```bash
+>    ssh-keygen -t ed25519 -C "mclink-master@cnnic.link" -f ~/.ssh/id_ed25519 -N ""
+>    cat ~/.ssh/id_ed25519.pub   # 贴到 https://gitlab.com/-/user_settings/ssh_keys
+>    ssh -T git@gitlab.com       # 出现 Welcome to GitLab, @xxx 即可
+>    ```
+> 2. **完全不碰 GitLab**：在开发机上打一个源码包，拷到服务器上直接装
+>    （`node scripts/pack-server-source.mjs` 生成 `out/mclink-src.tar.gz`，
+>    里面已经带了 Linux 版 EasyTier 二进制，服务器不用去 GitHub 下载）：
+>    ```bash
+>    # 开发机（Windows）
+>    scp out/mclink-src.tar.gz root@<服务器IP>:/opt/src/
+>    # 服务器
+>    mkdir -p /opt/src/mclink && tar -xzf /opt/src/mclink-src.tar.gz -C /opt/src/mclink
+>    cd /opt/src/mclink && sudo bash deploy/install-server.sh --public-url https://cnnic.link --no-verify-email
+>    ```
+
 脚本做四件事：装依赖（Node ≥ 22）并建 `mclink` 用户 → 同步代码到 `/opt/mclink/app`、
 构建前端、下载 EasyTier → 生成 `/etc/mclink/mclink.env`（密钥只在首次生成）→
 装 systemd 单元并启动、按需放行 ufw。最后打印**只显示一次**的初始管理员密码。
