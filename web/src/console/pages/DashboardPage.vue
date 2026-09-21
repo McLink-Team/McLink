@@ -157,7 +157,7 @@ const cards = computed(() => {
     { label: '在线节点', value: n.online, hint: `共 ${n.total} 个`, accent: 'ok' as const },
     { label: '降级节点', value: n.degraded, hint: '接近容量上限', accent: 'warn' as const },
     { label: '离线节点', value: n.offline, hint: '心跳超时', accent: 'danger' as const },
-    { label: '待审核节点', value: n.pending, hint: '等待首次心跳', accent: 'accent' as const },
+    { label: '待上线节点', value: n.pending, hint: '已注册，等第一次心跳', accent: 'accent' as const },
     { label: '开放房间', value: r.open, hint: `累计 ${r.total} 个`, accent: 'brand' as const },
     { label: '在线玩家', value: r.onlinePlayers, hint: '90 秒内有心跳', accent: 'brand' as const },
     {

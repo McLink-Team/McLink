@@ -235,7 +235,7 @@ export class NodeService {
       publicIp: input.publicIp ?? null,
     });
 
-    // 待审批 → 上线（首次心跳即视为节点存活，管理员可随时禁用）
+    // 待上线 → 在线：首次心跳即视为节点存活（没有人工审批这一步），管理员可随时禁用
     const fresh = this.nodes.findById(row.id);
     if (fresh && fresh.status === 'pending') {
       this.nodes.setStatus(row.id, 'online');
