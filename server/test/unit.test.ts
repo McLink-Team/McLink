@@ -20,6 +20,8 @@ import {
   allocateSeat,
   allocateSlot,
   hostIpCidr,
+  kbpsToBps,
+  kbpsToBytesPerSecond,
   memberIpCidr,
   memberIpForSlot,
   slotFromIp,
@@ -56,7 +58,7 @@ describe('EasyTier TOML 生成', () => {
     assert.match(toml, /^bind_device = false$/m);
   });
 
-  test('u64 限速字段必须以字符串写出（与 EasyTier 的序列化行为一致）', () => {
+  test('u64 限速字段必须写成裸数字（加引号会让 easytier-core 启动即 panic）', () => {
     const toml = renderEasytierToml({
       instanceName: 'x',
       listeners: [],
@@ -65,9 +67,13 @@ describe('EasyTier TOML 生成', () => {
       networkSecret: 's',
       flags: { foreignRelayBpsLimit: 10_000_000, instanceRecvBpsLimit: 800_000, mtu: 1380 },
     });
-    assert.match(toml, /^foreign_relay_bps_limit = "10000000"$/m);
-    assert.match(toml, /^instance_recv_bps_limit = "800000"$/m);
-    // 普通整数不能加引号
+    // 实测（easytier-core 2.6.4 --check-config）：
+    //   `= 1000000`   → 通过
+    //   `= "1000000"` → panic: invalid type: string "1000000", expected u64
+    assert.match(toml, /^foreign_relay_bps_limit = 10000000$/m);
+    assert.match(toml, /^instance_recv_bps_limit = 800000$/m);
+    assert.ok(!/instance_recv_bps_limit = "/.test(toml), 'u64 字段不能带引号');
+    assert.ok(!/foreign_relay_bps_limit = "/.test(toml), 'u64 字段不能带引号');
     assert.match(toml, /^mtu = 1380$/m);
   });
 
@@ -266,6 +272,21 @@ describe('房间准入密码与网络身份', () => {
     assert.equal(secret.length, 32);
     assert.match(secret, /^[A-Za-z0-9_-]+$/);
     assert.notEqual(secret, generateNetworkSecret(randomBytesBuf, 32));
+  });
+});
+
+describe('限速单位换算', () => {
+  test('kbps → EasyTier 的字节/秒（关键：不是比特/秒，差 8 倍）', () => {
+    // 依据：EasyTier 自己的 instance_recv_bps_limit_test 里配置 bps_limit * 1024，
+    // 然后把实测吞吐换算成 KiB/s 与 bps_limit 比较 → 配置单位是字节/秒。
+    assert.equal(kbpsToBytesPerSecond(1000), 125_000);
+    assert.equal(kbpsToBytesPerSecond(8), 1000);
+    assert.equal(kbpsToBytesPerSecond(0), 0);
+    assert.equal(kbpsToBytesPerSecond(-5), 0);
+    // 旧名必须与新实现一致，避免有人误用旧语义
+    assert.equal(kbpsToBps(1000), kbpsToBytesPerSecond(1000));
+    // 明确记录这个 8 倍差异：按比特/秒实现会得到 1000000，那是错的
+    assert.notEqual(kbpsToBytesPerSecond(1000), 1000 * 1000);
   });
 });
 

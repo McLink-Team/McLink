@@ -80,7 +80,13 @@ export interface EasytierConfig {
    * 留空时依次回退到 MCLINK_PUBLIC_BASE_URL 的主机名、请求的 Host 头。
    */
   relayPublicHost: string;
-  /** 平台级中继出口限速（bit/s）；0 = 不限 */
+  /**
+   * 主控中继的转发出口限速。
+   * ⚠️ 单位是 EasyTier 原生的**字节/秒**（字段名叫 `_bps_` 但语义是字节），
+   * 不是比特/秒。管理台的 `relayBandwidthKbps`（kbps）会经
+   * `kbpsToBytesPerSecond()` 换算后再下发到子节点。
+   * 0 = 不限。
+   */
   relayForeignBpsLimit: number;
   /** 中继实例是否启用多线程 */
   relayMultiThread: boolean;

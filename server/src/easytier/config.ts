@@ -291,11 +291,20 @@ const FLAG_KEY_MAP: Record<keyof EasytierFlagsSpec, string> = {
   enableUdpBroadcastRelay: 'enable_udp_broadcast_relay',
 };
 
-/** u64 字段按 EasyTier 的序列化行为写成字符串 */
-const U64_FLAGS = new Set<keyof EasytierFlagsSpec>(['foreignRelayBpsLimit', 'instanceRecvBpsLimit']);
-
 /**
- * 生成 EasyTier 可用的 TOML 配置。
+ * u64 限速字段在 TOML 里必须写成**数字**，不能加引号。
+ *
+ * 这里曾经写成字符串（依据是 EasyTier 的 `flags_diff_from_default` 宏把 u64 序列化
+ * 成 JSON 字符串）——但那是 **JSON config-patch** 路径的表示法，与 TOML 无关。
+ * 实测（easytier-core 2.6.4 `--check-config`）：
+ *   `instance_recv_bps_limit = 1000000`   → 通过
+ *   `instance_recv_bps_limit = "1000000"` → panic:
+ *     invalid type: string "1000000", expected u64
+ * 任何设了带宽上限的房间都会让客户端 easytier-core 启动即崩溃，所以这条必须守住：
+ * server/test/unit.test.ts 里有对应的回归断言。
+ */
+
+/** 生成 EasyTier 可用的 TOML 配置。
  * 不依赖任何 TOML 库：字段固定且可控，手写更可预测，也避免引第三方依赖。
  */
 export function renderEasytierToml(spec: EasytierConfigSpec): string {
@@ -337,11 +346,8 @@ export function renderEasytierToml(spec: EasytierConfigSpec): string {
       if (typeof rawValue === 'boolean') {
         entries.push(`${tomlKey} = ${rawValue ? 'true' : 'false'}`);
       } else if (typeof rawValue === 'number') {
-        entries.push(
-          U64_FLAGS.has(key)
-            ? `${tomlKey} = ${tomlString(String(Math.trunc(rawValue)))}`
-            : `${tomlKey} = ${Math.trunc(rawValue)}`,
-        );
+        // u64 也写成裸数字：加引号会被 EasyTier 的 TOML 反序列化拒绝（见文件顶部注释）
+        entries.push(`${tomlKey} = ${Math.trunc(rawValue)}`);
       } else if (typeof rawValue === 'string') {
         entries.push(`${tomlKey} = ${tomlString(rawValue)}`);
       }

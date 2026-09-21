@@ -57,7 +57,8 @@ pnpm dev:web          # Vite 开发服务器：http://127.0.0.1:5173
 | `pnpm typecheck` | 全仓 `tsc --noEmit` / `vue-tsc` |
 | `pnpm test` | 服务端测试（`node --test --test-concurrency=1 test/*.test.ts`） |
 | `pnpm fetch:easytier` | 下载 EasyTier 到 `vendor/easytier/` |
-| `pnpm lab` | 端到端集成实验（**真的**拉起 easytier-core 进程，见 §4） |
+| `pnpm lab` | 控制面端到端实验（**真的**拉起 easytier-core 进程，见 §4） |
+| `pnpm lab:dataplane` | 数据面与限速实验（真实 TCP 测速 + 限速前后对比，见 §4.1） |
 | `node scripts/capture.mjs <输出文件> <命令> [参数...]` | 把子进程 stdout+stderr 落文件（本机沙箱禁管道 stdio 时用） |
 
 > **关于 `pnpm test`**：`server/test/unit.test.ts` 已包含一套单元测试（22 个用例），覆盖
@@ -115,6 +116,34 @@ MCLINK_MASTER=http://127.0.0.1:8787 MCLINK_ADMIN_PASSWORD=xxx node scripts/lab.m
 ```
 
 实验会在 `.cache/lab/` 下创建临时目录，并使用随机端口段（12000 起）避免与上次实验冲突。
+
+实验最后一步会拿**真实二进制**给所有生成的配置判卷（`easytier-core --check-config`）。
+这一步不是装饰：曾经把 u64 限速字段写成带引号的字符串，TypeScript 侧测试全绿，
+但 easytier-core 一加载配置就 panic。让真实二进制判卷，是唯一可靠的守门方式。
+
+### 4.1 数据面与限速实验（`pnpm lab:dataplane`）
+
+`pnpm lab` 刻意用 `no_tun` 跑，因为「同机多个虚拟网卡 + 同一网段」会让操作系统的
+路由表产生歧义，OS 层 ping 测试不可信。想验证**数据面**（真的把字节从 A 送到 B）
+以及**限速是否真的生效**，用这个脚本：
+
+```bash
+pnpm lab:dataplane
+```
+
+它做的事：
+
+1. 建两个房间（一个不限速作基准、一个 `perMemberKbps=1000`）；
+2. 用 **TUN** 模式启动房主与成员两个实例（每个实例给不同的 `dev_name`，
+   否则同机两个实例会抢同名虚拟网卡）；
+3. 在房主机器上起一个 TCP 服务当作「Minecraft 服务端」；
+4. 用 `easytier-cli port-forward add tcp <bind> <dst>` 在成员侧把本地端口转发到
+   房主的虚拟 IP —— **转发在 EasyTier 内部完成，不依赖系统路由表**，
+   所以同机多实例也能得到可信的吞吐数字；
+5. 两个场景各传输 2 MiB，对比实际吞吐。
+
+本机实测：不限速 **1,525,201 kbps**（2 MiB / 11 ms），限速 1000 kbps 后 **896 kbps**
+（2 MiB / 18.7 s）—— 限速确实把带宽压到了设定值附近。
 
 ## 5. 代码结构导览
 
@@ -230,9 +259,15 @@ scripts/                   fetch-easytier / lab / capture
 
 * `rateLimitPps` 是**包/秒**。界面上不要写成带宽。
 * 带宽限速只有两个字段可用：中继的 `foreign_relay_bps_limit`（平台级，硬限制）和
-  实例的 `instance_recv_bps_limit`（客户端自制，可被绕过）；两者都是 **bit/s**，
-  存储用 kbps 时需要 `× 1000`。
-* 两个 `*_bps_limit` 在 TOML 里是**字符串**（`config.ts` 的 `U64_FLAGS` 已处理）。
+  实例的 `instance_recv_bps_limit`（客户端自制，可被绕过）。
+* **它们的单位是「字节/秒」，不是比特/秒**（EasyTier 的 `_bps_` 命名有歧义，
+  依据是 `three_node.rs` 的 `instance_recv_bps_limit_test`）。平台对外用 kbps，
+  存储与界面都用 kbps，**下发前必须经 `kbpsToBytesPerSecond()` 换算**（÷8）。
+  按比特/秒写会让玩家实际拿到 8 倍带宽——`pnpm lab:dataplane` 会守住这条。
+* **两个 `*_bps_limit` 在 TOML 里必须写裸数字，不能加引号**，否则
+  easytier-core 解析配置时直接 panic（`expected u64`）。`server/test/unit.test.ts`
+  有对应回归断言；两个实验脚本会在启动实例前跑 `--check-config` 判卷。
+* 改动票据生成后，请跑 `pnpm lab:dataplane` 确认限速仍按预期生效（它做真实 TCP 测速）。
 * `rpc_portal` 不是 TOML 字段，只能走命令行 `-r`；不要试图写进 `renderEasytierToml()`。
 * 客户端实例的 `bind_device` 必须保持 `false`（见 `ticket()` 里的注释）。
 

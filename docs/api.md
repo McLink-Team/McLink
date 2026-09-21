@@ -720,19 +720,23 @@ WebSocket 只用于平台概览、流量与节点状态。
    （`WsHub.onlineUserIds()` 已实现但未接入）。
 10. **`routes.stats` 无 Prometheus 端点**：`/api/v1/stats` 是平台自有的 JSON 概览；
     Prometheus 格式需要调用 EasyTier 自己的 CLI：`easytier-cli -p <rpc> stats prometheus`。
-11. **`RoomPolicy.maxBandwidthKbps` 与 `allowedPorts` 的落地范围**：
-    `maxBandwidthKbps` 目前在票据生成里没有对应实现（只有 `perMemberKbps` 会写入
-    `instance_recv_bps_limit`）；`allowedPorts` 只在 `strictPorts = true` 时才进入 ACL 放行规则。
+11. **限速字段的落地范围**：
+    `perMemberKbps` 与 `maxBandwidthKbps` **都会**写入实例的 `instance_recv_bps_limit`
+    （成员用前者、房主用后者，两者都设时取较小值）；注意该字段单位是**字节/秒**，
+    服务端用 `kbpsToBytesPerSecond()` 从 kbps 换算。
+    `allowedPorts` 只在 `strictPorts = true` 时才进入 ACL 放行规则。
 12. **`room_password_required` 用了 401**：语义上更接近 403，但实现是
     `new HttpError(401, ErrorCodes.ROOM_PASSWORD, ...)`，客户端应按 `code` 而不是状态码判断。
-13. **`toRoom()` 会返回 `networkName`，而公开大厅是匿名可读的**：
-    `GET /api/v1/rooms/public`（无需登录）返回的每个房间都带 `networkName` 与 `id`，
-    而 `id` 就是网络名后缀。前端只在管理台用到 `room.networkName`，玩家端与客户端都不使用它
-    （客户端用的是 `ticket.networkName`）。这是**不必要的暴露面**，建议把 `networkName`
-    从 `toRoom()` 移除或只在管理台响应里附加。
-14. **`GET /rooms/:id` 与 `GET /rooms/:id/members` 只校验「已登录」**，不校验成员身份：
-    任何登录用户知道房间 ID 就能读到房间元信息、加入码与成员列表（含 `virtualIp`）。
-    `/ticket` 与 `/acl` 是正确的（分别返回 403「你不在该房间中」/「只有房主可以执行该操作」）。
+13. **网络名不再出现在玩家/匿名接口里（已修复）**：
+    历史上 `room.id` 等于网络名后缀，而 `/rooms/public` 匿名可读，等于公开了准入凭证。
+    现在 `room.id` 是独立的 `shortId('r')`，且 `db/rooms.ts` 提供
+    `toPublicRoom()` / `toRoomForUser()`：公开大厅、我的房间列表、房间详情都**剥掉**
+    `networkName`（只有房主与管理员能看到）。`Room.networkName` 因此是可选的。
+    `scripts/lab.mjs` 有对应的回归断言。
+14. **房间详情与成员列表要求「是房间成员」（已修复）**：
+    `GET /rooms/:id` 与 `GET /rooms/:id/members` 现在都会调用
+    `roomService.assertMember()`，非成员返回 403。`/ticket` 与 `/acl` 依旧分别
+    校验成员身份与房主身份。
 15. **主控中继兜底地址取自请求的 `Host` 头**：票据里 `nodeId: "master"` 的那条中继记录，
     在没有配置 `MCLINK_RELAY_PUBLIC_HOST` / `MCLINK_PUBLIC_BASE_URL` 时由请求 `Host` 推导，
     因此用 `http://127.0.0.1:8787` 建的房间会得到 `tcp://127.0.0.1:11010`。

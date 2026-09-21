@@ -106,13 +106,22 @@ MCLINK_ADMIN_PASSWORD='请替换成强密码' pnpm dev:server
 pnpm dev:web          # http://127.0.0.1:5173
 ```
 
-端到端实验（会**真的**拉起 easytier-core 进程，验证房间隔离、子节点调度与流量统计）：
+验证（两个实验都会**真的**拉起 easytier-core 进程，不是 mock）：
 
 ```bash
-pnpm lab
+pnpm test             # 单元测试（限速单位换算、TOML 生成、ACL 构造、地址规划…）
+pnpm lab              # 控制面：单端口多房间、房间隔离、网络名准入、调度、踢人、流量归因
+pnpm lab:dataplane    # 数据面：真实 TCP 跑通，并验证限速真的把带宽压到设定值
 ```
 
-详见 [docs/development.md](docs/development.md)。
+实测结果（本机，真实 EasyTier 2.6.4 二进制）：
+
+| 实验 | 结果 |
+| --- | --- |
+| `pnpm lab` | **48/48** 断言通过，含「7 份生成的配置全部通过 `easytier-core --check-config`」 |
+| `pnpm lab:dataplane` | **20/20** 通过：不限速 2 MiB / 11 ms（约 1.5 Gbps）→ 限速 1000 kbps 后 2 MiB / 18.7 s（**896 kbps**） |
+
+详见 [docs/development.md](docs/development.md) 与 [docs/architecture.md](docs/architecture.md) §7.3。
 
 ### Debian 部署（1 条命令）
 

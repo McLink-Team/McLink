@@ -4,7 +4,7 @@
  * 子节点是一台部署在某区域的公共中继。它的角色跟主控中继完全一样
  * （单端口 + relay_network_whitelist 通配），区别只是归属与容量。
  */
-import { isKnownRegion, isValidHostPort, type RelayNode } from '@mclink/shared';
+import { isKnownRegion, isValidHostPort, kbpsToBytesPerSecond, type RelayNode } from '@mclink/shared';
 import { NodeRepo, toNode, type NodeRow } from '../db/nodes.ts';
 import { EnrollKeyRepo } from '../db/users.ts';
 import { AuditRepo } from '../db/traffic.ts';
@@ -130,7 +130,8 @@ export class NodeService {
         relayNetworkWhitelist: et.relayNetworkWhitelist,
         bindDevice: false,
         defaultProtocol: 'tcp',
-        ...(s.relayBandwidthKbps > 0 ? { foreignRelayBpsLimit: s.relayBandwidthKbps * 1000 } : {}),
+        // 平台设置里的限速是「kbps」，EasyTier 的 foreign_relay_bps_limit 是「字节/秒」
+        ...(s.relayBandwidthKbps > 0 ? { foreignRelayBpsLimit: kbpsToBytesPerSecond(s.relayBandwidthKbps) } : {}),
       },
       acl: null,
       fileLogDir: null,
