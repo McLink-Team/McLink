@@ -39,9 +39,13 @@
 **原因**（按概率排序）：
 
 1. 安装时 EasyTier 下载失败（受限网络、GitHub 被阻断、`--skip-easytier`）。
-2. `MCLINK_ET_CORE` 指向的路径写错，或与 `--dir` 不匹配。
-3. 二进制存在但没有可执行位。
-4. 架构不匹配（下成了 arm64 包）。
+2. **下载成功但解压失败** —— 这个坑很隐蔽：EasyTier 官方只发 **zip**，而 Debian 的
+   GNU `tar` **不能解 zip**。2026-09 之前的脚本用 `tar -xf xxx.zip`，于是"下载 24 MB 成功、
+   二进制却没落地"，日志里只有一句"压缩包解压失败"。现已改用 `unzip`（并写进依赖），
+   缺失时依次退让到 `bsdtar` / `python3 -m zipfile`。
+3. `MCLINK_ET_CORE` 指向的路径写错，或与 `--dir` 不匹配。
+4. 二进制存在但没有可执行位。
+5. 架构不匹配（下成了 arm64 包）。
 
 **处置**：
 
@@ -51,7 +55,8 @@ grep -E 'MCLINK_ET_(CORE|CLI)' /etc/mclink/mclink.env
 ls -l /opt/mclink/app/vendor/easytier/
 
 # 2) 缺文件就补：在源码目录重跑安装（不加 --skip-easytier）
-sudo bash deploy/install-server.sh
+#    国内机器建议带加速前缀，否则第 1 步就可能超时
+sudo bash deploy/install-server.sh --github-proxy https://ghproxy.net/
 
 # 3) 或手动放一份并校验
 sudo install -m 0755 easytier-core /opt/mclink/app/vendor/easytier/easytier-core
@@ -62,10 +67,21 @@ sudo systemctl restart mclink-server
 # 4) 受限网络：设置代理后重试
 export HTTPS_PROXY=http://<代理>:<端口>
 sudo -E bash deploy/install-server.sh
+
+# 5) 完全不想碰 GitHub：在开发机 pnpm fetch:easytier --all 后
+#    把 deploy/vendor/linux-x86_64/ 两个文件拷到上面的目录，再 chmod 0755
+```
+
+**自查**（确认新脚本真的能解官方 zip）：
+
+```bash
+command -v unzip || sudo apt-get install -y unzip
+unzip -l /tmp/et.zip | head    # 能列出内容就说明解压工具没问题
 ```
 
 注意：**只有中继缺失不影响控制面**。管理员仍可登录、建子节点；只是没有主控自带中继，
-房间必须依赖子节点（否则见 §5）。
+房间必须依赖子节点（否则见 §5）。控制台「主控中继」页现在会直接告诉你是"没找到二进制"
+还是"没启用中继"（见 `diagnostics`），不用再去翻日志。
 
 ---
 
@@ -143,6 +159,10 @@ grep MCLINK_ET_CLI /etc/mclink/mclink.env
 
 **注册相关的特定错误**：
 
+* `找不到 mclink-node.service（应与 install-node.sh 放在同一目录）`：
+  用 `curl | sudo bash` 一键安装时目标机上没有仓库，自然也没有这个文件（2026-09 之前的脚本
+  在这个场景下必然失败）。现在脚本会依次找：本机同目录 → `--source`/父目录的 `deploy/` →
+  **从主控下载** `${MASTER}/agent/mclink-node.service`。若三条路都不通，手工放一份到脚本同目录即可。
 * `注册密钥无效 / 已被使用 / 已被吊销`：注册密钥是**一次性**的。
   令牌文件还在的话**不要重新注册**；令牌丢了就在管理台重新签发一把。
 * `该 endpoint 已被其它节点注册`：`endpoint` 全局唯一。旧的同 endpoint 记录还在

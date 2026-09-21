@@ -226,7 +226,24 @@ apt_install() { apt-get install -y --no-install-recommends "$@" >/dev/null; }
 install_base_packages() {
   log "更新软件包索引并安装基础依赖…"
   apt-get update -qq || die "apt-get update 失败：请检查网络与 /etc/apt/sources.list"
-  apt_install ca-certificates curl openssl tar coreutils || die "基础依赖安装失败"
+  # unzip：EasyTier 官方只发 zip，而 Debian 的 GNU tar 解不了 zip。
+  # 以前这里漏了它、又用 tar 去解，于是"下载成功但二进制没落地"（实测踩过）。
+  apt_install ca-certificates curl openssl tar unzip coreutils || die "基础依赖安装失败"
+}
+
+# 解 zip 包。GNU tar 不支持 zip，按可用工具依次退让；全都没有才失败。
+extract_zip() {  # extract_zip <zip 文件> <目标目录>
+  local zip="$1" dest="$2"
+  if command -v unzip >/dev/null 2>&1; then
+    unzip -o -q "$zip" -d "$dest" && return 0
+  fi
+  if command -v bsdtar >/dev/null 2>&1; then
+    bsdtar -xf "$zip" -C "$dest" && return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -m zipfile -e "$zip" "$dest" && return 0
+  fi
+  return 1
 }
 
 node_major() {
@@ -377,14 +394,14 @@ install_easytier() {
     tmp="$(mktemp -d)"
     log "下载 EasyTier ${ET_VERSION}：${url}"
     if curl -fL --retry 3 --connect-timeout 20 --retry-delay 3 -o "${tmp}/et.zip" "$url"; then
-      if tar -xf "${tmp}/et.zip" -C "$tmp" >/dev/null 2>&1; then
+      if extract_zip "${tmp}/et.zip" "$tmp"; then
         local found
         found="$(find "$tmp" -type f -name 'easytier-core' | head -n1)"
         [[ -n "$found" ]] && cp -f "$found" "${et_dir}/easytier-core" || true
         found="$(find "$tmp" -type f -name 'easytier-cli' | head -n1)"
         [[ -n "$found" ]] && cp -f "$found" "${et_dir}/easytier-cli" || true
       else
-        warn "EasyTier 压缩包解压失败（文件可能损坏）"
+        warn "EasyTier 压缩包解压失败（已尝试 unzip / bsdtar / python3）"
       fi
     else
       warn "EasyTier 下载失败（受限网络可设置 HTTPS_PROXY 后重试）"
@@ -459,7 +476,7 @@ write_env_file() {
 # ---------------------------------------------------------------- systemd
 install_unit() {
   local unit_src="${SCRIPT_DIR}/mclink-node.service"
-  local node_bin
+  local node_bin tmp_unit
   if [[ ! -f "$unit_src" ]]; then
     # 常见情况：install-node.sh 被单独拷到目标机，单元文件不在旁边
     if [[ -f "${SOURCE_DIR:-/nonexistent}/deploy/mclink-node.service" ]]; then
@@ -467,7 +484,17 @@ install_unit() {
     elif [[ -f "${SCRIPT_DIR}/../deploy/mclink-node.service" ]]; then
       unit_src="$(cd "${SCRIPT_DIR}/../deploy" && pwd)/mclink-node.service"
     else
-      die "找不到 mclink-node.service（应与 install-node.sh 放在同一目录）"
+      # `curl | sudo bash` 装的时候本机必然没有这个文件 —— 从主控取。
+      # 这一步和 agent.mjs 是同一个思路：脚本能自举，就不该要求先有仓库。
+      tmp_unit="$(mktemp -d)/mclink-node.service"
+      log "本机没有 mclink-node.service，从主控下载：${MASTER}/agent/mclink-node.service"
+      if curl -fsSL --connect-timeout 10 --max-time 60 -o "$tmp_unit" "${MASTER}/agent/mclink-node.service" \
+        && grep -q '^\[Unit\]' "$tmp_unit"; then
+        unit_src="$tmp_unit"
+      else
+        rm -f "$tmp_unit"
+        die "无法获取 mclink-node.service（本机没有、主控也没提供）。请把 deploy/mclink-node.service 放到本机后重试"
+      fi
     fi
   fi
   node_bin="$(command -v node)"

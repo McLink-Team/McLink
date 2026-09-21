@@ -65,6 +65,11 @@ export const Routes = {
    */
   agentCoreBin: '/agent/easytier-core',
   agentCliBin: '/agent/easytier-cli',
+  /**
+   * 主控托管的 systemd 单元。
+   * `curl | sudo bash` 安装时目标机上没有仓库，也就没有这个文件 —— 得能下到。
+   */
+  agentNodeUnit: '/agent/mclink-node.service',
 
   /* ---------- 管理台 ---------- */
   adminLogin: '/admin/login',
