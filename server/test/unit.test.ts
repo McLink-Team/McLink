@@ -24,6 +24,9 @@ import {
 } from '../src/mail/smtp.ts';
 import { resolveFrom } from '../src/services/mailer.ts';
 import { emailGateProblem } from '../src/services/email-gate.ts';
+import { normalizePort } from '../src/services/nodes.ts';
+import { endpointHost, endpointPort, nodeClientEndpoint, nodeConnectPort, nodeListenPort } from '../src/db/nodes.ts';
+import type { NodeRow } from '../src/db/nodes.ts';
 import type { UserRow } from '../src/db/users.ts';
 import {
   DEFAULT_ROOM_POLICY,
@@ -375,6 +378,74 @@ describe('邮箱门禁（开启后谁能建房/进房）', () => {
 
   test('开关打开时：验证过才放行', () => {
     assert.equal(emailGateProblem(user({ email: 'a@b.com', email_verified: 1 }), true), null);
+  });
+});
+
+describe('子节点端口：运行端口 / 链接端口分离', () => {
+  const node = (over: Partial<NodeRow>): NodeRow => ({
+    id: 'n_test',
+    name: 'relay-test',
+    region: 'cn-east',
+    endpoint: 'relay.example.com:11010',
+    listen_port: null,
+    connect_port: null,
+    public_ip: null,
+    status: 'online',
+    version: null,
+    capacity_peers: 500,
+    peers: 0,
+    rooms: 0,
+    rx_bps: 0,
+    tx_bps: 0,
+    weight: 100,
+    tags: '[]',
+    token_hash: '',
+    last_seen_at: null,
+    created_at: '',
+    disabled: 0,
+    config_revision: 0,
+    ...over,
+  });
+
+  test('endpoint 端口解析：正常、无端口、越界', () => {
+    assert.equal(endpointPort('relay.example.com:21010'), 21010);
+    assert.equal(endpointPort('1.2.3.4:11010'), 11010);
+    assert.equal(endpointPort('relay.example.com'), null, '没有冒号时应当拿不到端口');
+    assert.equal(endpointPort('relay.example.com:0'), null);
+    assert.equal(endpointPort('relay.example.com:99999'), null);
+    assert.equal(endpointPort('relay.example.com:abc'), null);
+    assert.equal(endpointHost('relay.example.com:21010'), 'relay.example.com');
+  });
+
+  test('两个端口都没存时回退到 endpoint 的端口（老数据行为不变）', () => {
+    const row = node({});
+    assert.equal(nodeListenPort(row, 11010), 11010);
+    assert.equal(nodeConnectPort(row, 11010), 11010);
+    assert.equal(nodeClientEndpoint(row, 11010), 'relay.example.com:11010');
+  });
+
+  test('显式端口优先：本机 11010、对外 21010（NAT 场景）', () => {
+    const row = node({ listen_port: 11010, connect_port: 21010 });
+    assert.equal(nodeListenPort(row, 11010), 11010, '运行端口给节点自己用');
+    assert.equal(nodeConnectPort(row, 11010), 21010, '链接端口下发给客户端');
+    // 关键：下发给客户端的地址必须是链接端口，不能是本机监听端口
+    assert.equal(nodeClientEndpoint(row, 11010), 'relay.example.com:21010');
+  });
+
+  test('只存了运行端口时，链接端口回退到 endpoint 的端口', () => {
+    const row = node({ listen_port: 11010, connect_port: null });
+    assert.equal(nodeListenPort(row, 11010), 11010);
+    assert.equal(nodeConnectPort(row, 11010), 11010);
+  });
+
+  test('端口归一化：只接受 1-65535 的整数', () => {
+    assert.equal(normalizePort(11010), 11010);
+    assert.equal(normalizePort('21010'), 21010);
+    assert.equal(normalizePort(0), null);
+    assert.equal(normalizePort(65536), null);
+    assert.equal(normalizePort('abc'), null);
+    assert.equal(normalizePort(undefined), null);
+    assert.equal(normalizePort(11010.9), 11010);
   });
 });
 

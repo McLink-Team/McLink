@@ -44,6 +44,9 @@ export const Routes = {
   agentRegister: '/agent/register',
   agentHeartbeat: '/agent/heartbeat',
   agentConfig: '/agent/config',
+  /** 主控托管的安装脚本与 agent（目标机器据此一条命令装好，不必先拿到仓库） */
+  agentInstallScript: '/agent/install.sh',
+  agentScript: '/agent/agent.mjs',
 
   /* ---------- 管理台 ---------- */
   adminLogin: '/admin/login',

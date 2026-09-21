@@ -9,6 +9,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { API_PREFIX, Routes, WS_PATH, Topics } from '@mclink/shared';
 import type { App } from './app.ts';
+import { REPO_ROOT } from './config.ts';
 import { HttpError, isHttpError } from './util/errors.ts';
 import { logger } from './logger.ts';
 import {
@@ -134,6 +135,22 @@ export function createServer(app: App): RunningServer {
     }
 
     try {
+      /*
+       * ---- 静态：子节点一键安装脚本 ----
+       * 刻意放在根路径（不走 /api/v1）：这样运维拿到的是
+       * `curl -fsSL <主控>/agent/install.sh | sudo bash -s -- …` 这种一眼就懂的命令，
+       * 也与 install-node.sh 里"从 ${MASTER}/agent/agent.mjs 取 agent"的约定一致。
+       * 两个文件都不含密钥 —— 注册密钥是命令行参数，一次性且用完即废。
+       */
+      if (url.pathname === Routes.agentInstallScript || url.pathname === Routes.agentScript) {
+        const name = url.pathname === Routes.agentInstallScript ? 'install-node.sh' : 'agent.mjs';
+        const target = path.join(REPO_ROOT, 'deploy', name);
+        if (!fs.existsSync(target)) throw HttpError.notFound(`主控上没有找到 deploy/${name}`);
+        streamFile(ctx, target, 0);
+        logRequest(ctx, started);
+        return;
+      }
+
       // ---- 静态：客户端安装包 ----
       if (url.pathname.startsWith('/downloads/')) {
         const rel = url.pathname.slice('/downloads/'.length);

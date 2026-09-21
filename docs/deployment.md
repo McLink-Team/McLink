@@ -400,9 +400,44 @@ SMTP 服务器，投递信誉是发件域名的事。
 
 子节点侧变量（`install-node.sh` 写入 `/etc/mclink/node.env`，由 `deploy/agent.mjs` 读取）：
 `MCLINK_NODE_MASTER`、`MCLINK_NODE_ENROLL_KEY`、`MCLINK_NODE_REGION`、`MCLINK_NODE_ENDPOINT`、
+`MCLINK_NODE_LISTEN_PORT`、`MCLINK_NODE_CONNECT_PORT`、
 `MCLINK_NODE_NAME`、`MCLINK_NODE_CAPACITY_PEERS`、`MCLINK_NODE_TAGS`、`MCLINK_NODE_STATE_DIR`、
 `MCLINK_NODE_LOG_DIR`、`MCLINK_NODE_LOG_FILE`、`MCLINK_NODE_INTERVAL`、`MCLINK_NODE_PUBLIC_IP`、
 `MCLINK_NODE_LOG_LEVEL`、`MCLINK_ET_CORE`、`MCLINK_ET_CLI`。
+
+### 子节点的两个端口：运行端口 vs 链接端口
+
+子节点有**两个独立的端口**，这是为了支持「节点在 NAT / 端口映射后面」这种常见部署：
+
+| 名字 | 变量 / 参数 | 含义 | 谁在用 |
+| --- | --- | --- | --- |
+| **运行端口** | `--listen-port` / `MCLINK_NODE_LISTEN_PORT` | 节点上 `easytier-core` 实际 bind 的端口 | 节点自己；防火墙/安全组要放行**它**（TCP+UDP） |
+| **链接端口** | `--endpoint` 的端口 / `MCLINK_NODE_CONNECT_PORT` | 主控下发给客户端连接用的端口 | 客户端（房间票据里的 `tcp://host:port`） |
+
+多数部署两者相同（都写 11010），此时 `--listen-port` 可以省略。
+典型的需要区分的场景：机房只允许 21010 对外，于是本机绑 11010、外部把 21010 映射到 11010，
+注册命令写 `--endpoint relay-sh.cnnic.link:21010 --listen-port 11010`。
+主控会把「监听配置」按运行端口下发（节点据此 bind），把「客户端票据」按链接端口下发。
+
+控制台「中继节点」列表会分别显示链接端口（Endpoint 列）与运行端口，两者不同时额外标注
+`经 NAT：外部 21010 → 本机 11010`，编辑节点时也能单独改（改链接端口会自动同步 endpoint）。
+
+### 一键安装子节点（主控生成的单条命令）
+
+管理台「节点 → 签发注册密钥」填好区域、节点公网地址、运行端口、链接端口后，直接给出一条命令：
+
+```bash
+curl -fsSL https://cnnic.link/agent/install.sh | sudo bash -s -- \
+  --master https://cnnic.link --key <一次性注册密钥> --region cn-east --name relay-sh \
+  --endpoint relay-sh.cnnic.link:21010 --listen-port 11010
+```
+
+目标机器粘贴执行即可：脚本与 agent 由主控托管（`GET /agent/install.sh`、`GET /agent/agent.mjs`，
+由 `server/src/server.ts` 读取仓库里的 `deploy/` 目录直接返回），无需先拿到本仓库，也不需要 scp。
+脚本会装依赖、放好 EasyTier 二进制、注册节点、写 `/etc/mclink/node.env` 并拉起 systemd 服务。
+
+排查：`curl -fsSL https://cnnic.link/agent/install.sh | head -n 3` 应输出 `#!/usr/bin/env bash`；
+若输出 `<!doctype html>`，说明反代把 `/agent/` 改写到了前端静态目录。
 
 ---
 

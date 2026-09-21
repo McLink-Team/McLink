@@ -241,12 +241,36 @@ create index if not exists idx_email_codes_email on email_codes(email, created_a
 update users set email_verified = 0 where email is null;
 `;
 
+/**
+ * 子节点的「运行端口」与「链接端口」分离。
+ *
+ * 为什么需要分开：节点常常在 NAT / Docker 端口映射后面——本机只能绑 11010，
+ * 但对外只开放 21010（或者机房只允许某几个端口对外）。此前两者是同一个端口，
+ * 于是这种部署要么连不上，要么得改节点本地配置。
+ *
+ *   listen_port  —— 运行端口：子节点 easytier-core 实际 bind 的端口，由主控下发的安装命令指定
+ *   connect_port —— 链接端口：主控下发给客户端用于连接的公网端口
+ *   endpoint     —— 仍然表示面向客户端的 `host:connect_port`
+ *
+ * 回填策略：老节点两个端口都取原 endpoint 的端口，行为与之前完全一致。
+ */
+const V6_NODE_PORT_SPLIT = `
+alter table relay_nodes add column listen_port integer;
+alter table relay_nodes add column connect_port integer;
+
+update relay_nodes
+   set listen_port = coalesce(listen_port, cast(substr(endpoint, instr(endpoint, ':') + 1) as integer)),
+       connect_port = coalesce(connect_port, cast(substr(endpoint, instr(endpoint, ':') + 1) as integer))
+ where instr(endpoint, ':') > 0;
+`;
+
 export const MIGRATIONS: readonly string[] = [
   V1_INITIAL,
   V2_RELAY_ROOM_MAP,
   V3_ROOM_ACCESS_LOG,
   V4_ROOM_CHAT,
   V5_EMAIL_VERIFICATION,
+  V6_NODE_PORT_SPLIT,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

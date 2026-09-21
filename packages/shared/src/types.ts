@@ -45,8 +45,18 @@ export interface RelayNode {
   id: string;
   name: string;
   region: string;
-  /** 客户端连接用的公网地址，形如 `relay-sh.example.com:11010` */
+  /** 客户端连接用的公网地址，形如 `relay-sh.example.com:21010`（端口 = connectPort） */
   endpoint: string;
+  /**
+   * 运行端口：节点上 easytier-core 实际监听的端口。
+   * 由主控下发的安装命令指定；在 NAT / 端口映射后面时与链接端口不同。
+   */
+  listenPort: number | null;
+  /**
+   * 链接端口：主控下发给客户端、用来连这个节点的端口。
+   * 与运行端口的区别见 `docs/deployment.md` 的「子节点端口」。
+   */
+  connectPort: number | null;
   /** 节点上报的公网 IP，仅管理员可见 */
   publicIp: string | null;
   status: NodeStatus;

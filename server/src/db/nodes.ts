@@ -7,6 +7,10 @@ export interface NodeRow {
   name: string;
   region: string;
   endpoint: string;
+  /** 运行端口：子节点 easytier-core 实际 bind 的端口（NAT 后可不同于链接端口） */
+  listen_port: number | null;
+  /** 链接端口：主控下发给客户端连接用的端口 */
+  connect_port: number | null;
   public_ip: string | null;
   status: string;
   version: string | null;
@@ -24,12 +28,56 @@ export interface NodeRow {
   config_revision: number;
 }
 
+/**
+ * endpoint 的端口部分。
+ * 数据是 `host:port`（注册时校验过），拿不到就返回 null 让上层回退到默认端口。
+ */
+export function endpointPort(endpoint: string): number | null {
+  const raw = endpoint.slice(endpoint.lastIndexOf(':') + 1);
+  const port = Number.parseInt(raw, 10);
+  return Number.isFinite(port) && port > 0 && port <= 65535 ? port : null;
+}
+
+/** endpoint 的主机部分（`host:port` → `host`） */
+export function endpointHost(endpoint: string): string {
+  const index = endpoint.lastIndexOf(':');
+  return index > 0 ? endpoint.slice(0, index) : endpoint;
+}
+
+/**
+ * 运行端口：节点上 easytier-core 实际监听的端口。
+ * 回退：显式的 listen_port → endpoint 的端口 → 调用方给的默认值。
+ *
+ * 这三个函数刻意放在仓储层而不是服务层：房间服务（生成客户端票据）与节点服务
+ * （生成节点配置）都要用同一个规则，而它们之间不该互相依赖。
+ */
+export function nodeListenPort(row: NodeRow, fallback: number): number {
+  return row.listen_port ?? endpointPort(row.endpoint) ?? fallback;
+}
+
+/** 链接端口：主控下发给客户端、用来连这个节点的端口 */
+export function nodeConnectPort(row: NodeRow, fallback: number): number {
+  return row.connect_port ?? endpointPort(row.endpoint) ?? fallback;
+}
+
+/**
+ * 下发给客户端的中继地址 `host:connectPort`。
+ * 用这个而不是直接拼 row.endpoint：管理员改过链接端口后，老的 endpoint 字符串
+ * 会立刻过期，票据必须按**当前**端口生成。
+ */
+export function nodeClientEndpoint(row: NodeRow, fallback: number): string {
+  return `${endpointHost(row.endpoint)}:${nodeConnectPort(row, fallback)}`;
+}
+
 export function toNode(row: NodeRow): RelayNode {
+  const fallback = endpointPort(row.endpoint);
   return {
     id: row.id,
     name: row.name,
     region: row.region,
     endpoint: row.endpoint,
+    listenPort: row.listen_port ?? fallback,
+    connectPort: row.connect_port ?? fallback,
     publicIp: row.public_ip,
     status: row.status as NodeStatus,
     version: row.version,
@@ -77,6 +125,8 @@ export class NodeRepo {
     name: string;
     region: string;
     endpoint: string;
+    listenPort: number;
+    connectPort: number;
     tokenHash: string;
     capacityPeers: number;
     version?: string | null;
@@ -85,13 +135,15 @@ export class NodeRepo {
     status?: NodeStatus;
   }): NodeRow {
     this.db.run(
-      `insert into relay_nodes (id, name, region, endpoint, public_ip, status, version, capacity_peers,
-        peers, rooms, rx_bps, tx_bps, weight, tags, token_hash, last_seen_at, created_at, disabled, config_revision)
-       values (?, ?, ?, ?, null, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?, null, ?, 0, 0)`,
+      `insert into relay_nodes (id, name, region, endpoint, listen_port, connect_port, public_ip, status, version,
+        capacity_peers, peers, rooms, rx_bps, tx_bps, weight, tags, token_hash, last_seen_at, created_at, disabled, config_revision)
+       values (?, ?, ?, ?, ?, ?, null, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?, null, ?, 0, 0)`,
       input.id,
       input.name,
       input.region,
       input.endpoint,
+      input.listenPort,
+      input.connectPort,
       input.status ?? 'pending',
       input.version ?? null,
       input.capacityPeers,
@@ -144,7 +196,16 @@ export class NodeRepo {
 
   updateMeta(
     id: string,
-    fields: { name?: string; region?: string; endpoint?: string; weight?: number; capacityPeers?: number; tags?: string[] },
+    fields: {
+      name?: string;
+      region?: string;
+      endpoint?: string;
+      listenPort?: number;
+      connectPort?: number;
+      weight?: number;
+      capacityPeers?: number;
+      tags?: string[];
+    },
   ): void {
     const sets: string[] = [];
     const params: unknown[] = [];
@@ -159,6 +220,14 @@ export class NodeRepo {
     if (fields.endpoint !== undefined) {
       sets.push('endpoint = ?');
       params.push(fields.endpoint);
+    }
+    if (fields.listenPort !== undefined) {
+      sets.push('listen_port = ?');
+      params.push(fields.listenPort);
+    }
+    if (fields.connectPort !== undefined) {
+      sets.push('connect_port = ?');
+      params.push(fields.connectPort);
     }
     if (fields.weight !== undefined) {
       sets.push('weight = ?');

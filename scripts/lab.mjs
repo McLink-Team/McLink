@@ -692,9 +692,32 @@ async function main() {
   await runEmailVerificationLab(adminToken);
 
   step('注册一个子节点（区域中继）');
+  /*
+   * 数据面用的这个节点跑在 127.0.0.1 上，两个端口相同 —— 单机环境下
+   * "本机监听 12180、对外 12181" 没有真实映射，客户端连不上，
+   * 所以端口分离单独用一个节点在控制面验证（见下面的 cn-south 节点）。
+   */
   const nodePort = BASE_PORT;
-  const enroll = await api('/admin/nodes/enroll-key', { method: 'POST', body: { note: `lab-${RUN_ID}` }, token: adminToken });
+  const enroll = await api('/admin/nodes/enroll-key', {
+    method: 'POST',
+    body: { note: `lab-${RUN_ID}`, region: 'cn-east', name: `lab-node-${RUN_ID}`, host: '127.0.0.1' },
+    token: adminToken,
+  });
   check('签发注册密钥', Boolean(enroll.enrollKey), enroll.enrollKey);
+  check(
+    '签发时给出的是一条可粘贴的安装命令',
+    typeof enroll.command === 'string' && enroll.command.startsWith('curl -fsSL ') && !enroll.command.includes('\n'),
+    enroll.command,
+  );
+  for (const path of ['/agent/install.sh', '/agent/agent.mjs']) {
+    const res = await fetch(`${MASTER}${path}`);
+    const text = await res.text();
+    check(
+      `主控托管 ${path}`,
+      res.ok && !text.startsWith('<!doctype html'),
+      `HTTP ${res.status} ${res.headers.get('content-type')} ${text.length} 字节`,
+    );
+  }
   const registered = await api('/agent/register', {
     method: 'POST',
     body: {
@@ -702,6 +725,8 @@ async function main() {
       name: `lab-node-${RUN_ID}`,
       region: 'cn-east',
       endpoint: `127.0.0.1:${nodePort}`,
+      listenPort: nodePort,
+      connectPort: nodePort,
       capacityPeers: 200,
       version: 'lab',
     },
@@ -758,6 +783,84 @@ async function main() {
     '票据始终包含主控中继作为兜底入口',
     roomA.ticket.relays.some((r) => r.nodeId === 'master'),
   );
+  /*
+   * 端口分离最关键的一条：给客户端的必须是对外的**链接端口**，
+   * 不能把节点本机监听的运行端口发出去（NAT 后面那个端口客户端根本连不上）。
+   *
+   * 单机环境里"外部 12181 → 本机 12180"没有真实映射，所以这里用一个只在控制面
+   * 参与调度的节点（华南区，主机名不解析）来验证：只查票据，不跑真实流量。
+   * 数据面的房间用华东区，仍然落在 127.0.0.1 那个真节点上。
+   */
+  step('端口分离：运行端口 ≠ 链接端口');
+  const splitListen = BASE_PORT + 100;
+  const splitConnect = BASE_PORT + 101;
+  const splitHost = `relay-split-${RUN_ID}.example.com`;
+  const splitEnroll = await api('/admin/nodes/enroll-key', {
+    method: 'POST',
+    body: {
+      note: `lab-split-${RUN_ID}`,
+      region: 'cn-south',
+      name: `lab-split-${RUN_ID}`,
+      host: splitHost,
+      listenPort: splitListen,
+      connectPort: splitConnect,
+    },
+    token: adminToken,
+  });
+  check(
+    '安装命令里同时带上了运行端口与链接端口',
+    splitEnroll.command.includes(`--listen-port ${splitListen}`) && splitEnroll.command.includes(`--endpoint ${splitHost}:${splitConnect}`),
+    splitEnroll.command,
+  );
+  const splitNode = await api('/agent/register', {
+    method: 'POST',
+    body: {
+      enrollKey: splitEnroll.enrollKey,
+      name: `lab-split-${RUN_ID}`,
+      region: 'cn-south',
+      endpoint: `${splitHost}:${splitConnect}`,
+      listenPort: splitListen,
+      connectPort: splitConnect,
+      capacityPeers: 200,
+      version: 'lab',
+    },
+  });
+  check(
+    '节点记录了两个不同的端口',
+    splitNode.node?.listenPort === splitListen && splitNode.node?.connectPort === splitConnect,
+    `listen=${splitNode.node?.listenPort} connect=${splitNode.node?.connectPort}`,
+  );
+  check(
+    '下发的监听配置用的是运行端口',
+    (() => {
+      const listeners = /listeners = \[(.*?)\]/.exec(splitNode.relayConfigToml ?? '')?.[1] ?? '';
+      return listeners.includes(`:${splitListen}`) && !listeners.includes(`:${splitConnect}`);
+    })(),
+    (/listeners = \[(.*?)\]/.exec(splitNode.relayConfigToml ?? '')?.[1] ?? '').slice(0, 80),
+  );
+  await api('/agent/heartbeat', {
+    method: 'POST',
+    token: splitNode.nodeToken,
+    body: { peers: 0, rooms: 0, rxBps: 0, txBps: 0, version: 'lab' },
+  });
+  const splitRoom = await api('/rooms', {
+    method: 'POST',
+    token: hostA.token,
+    body: { name: `端口分离 ${RUN_ID}`, zone: 'cn-south', visibility: 'hidden', listenPort: BASE_PORT + 320 },
+  });
+  const splitRelay = splitRoom.ticket.relays.find((r) => r.nodeId === splitNode.node.id);
+  check(
+    '房间被调度到该节点',
+    Boolean(splitRelay),
+    splitRoom.ticket.relays.map((r) => `${r.label}(${r.url})`).join(', '),
+  );
+  check(
+    '票据里用的是链接端口，而不是运行端口',
+    splitRelay?.url.includes(`:${splitConnect}`) === true && splitRelay?.url.includes(`:${splitListen}`) !== true,
+    splitRelay ? `${splitRelay.url}（运行 ${splitListen} / 链接 ${splitConnect}）` : '未调度到该节点',
+  );
+  await api(`/rooms/${splitRoom.room.id}/close`, { method: 'POST', token: hostA.token }).catch(() => {});
+  await api(`/admin/nodes/${splitNode.node.id}`, { method: 'DELETE', token: adminToken }).catch(() => {});
   check(
     '两个房间分配了不同的虚拟网段',
     roomA.ticket.virtualIp !== roomB.ticket.virtualIp,
