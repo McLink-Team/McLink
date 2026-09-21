@@ -4,6 +4,8 @@ import { computed, onMounted, ref } from 'vue';
 import { REGIONS, type Room } from '@mclink/shared';
 import { clientState, createRoom, joinRoom, loadRooms, reenterRoom } from '../lib/store.ts';
 import { friendlyError } from '../lib/api.ts';
+import PublicPlaza from './PublicPlaza.vue';
+import RoomShortcuts from './RoomShortcuts.vue';
 
 const code = ref('');
 const joinPassword = ref('');
@@ -218,6 +220,12 @@ async function resume(room: Room): Promise<void> {
       </table>
       <div v-else class="empty">还没有房间。创建一个，或者用朋友的加入码进入。</div>
     </div>
+
+    <!-- 收藏与最近进入过的房间（本机记录，一键重进） -->
+    <RoomShortcuts />
+
+    <!-- 公共房间广场：公开房间可以不用加入码直接进 -->
+    <PublicPlaza />
 
     <div class="card card-tight">
       <div class="hint">

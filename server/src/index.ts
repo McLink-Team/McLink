@@ -73,6 +73,18 @@ async function main(): Promise<void> {
     hub.publish(Topics.rooms, { type: 'room.update', roomId, room });
   });
 
+  /**
+   * 房间聊天广播。
+   * 只发给 `room:<id>` 话题的订阅者，而该话题的订阅在 authorizeTopic 里
+   * 已经要求「是该房间的活跃成员」，所以闲聊不会外泄。
+   */
+  app.events.on('room.message', ({ roomId, message }) => {
+    hub.publish(Topics.room(roomId), { type: 'room.message', roomId, message });
+  });
+  app.events.on('room.messageDeleted', ({ roomId, messageId }) => {
+    hub.publish(Topics.room(roomId), { type: 'room.messageDeleted', roomId, messageId });
+  });
+
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
     server.listen(app.config.port, app.config.host, () => resolve());
@@ -237,13 +249,15 @@ async function main(): Promise<void> {
     }, 30_000),
   );
 
-  // 4) 会话清理与流量数据保留
+  // 4) 会话清理与流量/聊天数据保留
   timers.push(
     setInterval(() => {
       const sessions = app.users.purgeExpiredSessions();
       const samples = app.traffic.prune(72);
-      if (sessions > 0 || samples > 0) {
-        log.debug('定期清理完成', { sessions, samples });
+      // 聊天记录只保留 7 天：房间早就关了的话，留着也没有意义
+      const chat = app.messages.pruneOlderThan(24 * 7);
+      if (sessions > 0 || samples > 0 || chat > 0) {
+        log.debug('定期清理完成', { sessions, samples, chat });
       }
     }, 3600_000),
   );

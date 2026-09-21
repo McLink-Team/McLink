@@ -36,6 +36,7 @@ import { RoomRepo, toMember, toRoom, toRoomForUser, type JoinedRoomRow, type Mem
 import { NodeRepo, type NodeRow } from '../db/nodes.ts';
 import { UserRepo } from '../db/users.ts';
 import { AuditRepo } from '../db/traffic.ts';
+import { MessageRepo } from '../db/chat.ts';
 import type { SettingsService } from './settings.ts';
 
 const log = logger('rooms');
@@ -96,6 +97,7 @@ export class RoomService {
   private readonly audit: AuditRepo;
   private readonly settings: SettingsService;
   private readonly events: AppEventBus;
+  private readonly messages: MessageRepo;
 
   constructor(
     config: ServerConfig,
@@ -105,6 +107,7 @@ export class RoomService {
     audit: AuditRepo,
     settings: SettingsService,
     events: AppEventBus,
+    messages: MessageRepo,
   ) {
     this.config = config;
     this.rooms = rooms;
@@ -113,6 +116,28 @@ export class RoomService {
     this.audit = audit;
     this.settings = settings;
     this.events = events;
+    this.messages = messages;
+  }
+
+  /**
+   * 往房间里写一条系统消息（谁进来了、谁被踢了…）。
+   * 这些是「房间大事记」，和玩家发言一起出现在聊天流里，比单独的通知更好追溯。
+   */
+  systemMessage(roomId: string, text: string): void {
+    try {
+      const message = this.messages.add({
+        roomId,
+        userId: null,
+        displayName: '系统',
+        role: 'system',
+        kind: 'system',
+        body: text,
+      });
+      this.events.emit('room.message', { roomId, message });
+    } catch (err) {
+      // 系统消息失败不能影响主流程（比如房间刚好被删）
+      log.warn('写入系统消息失败', { room: roomId, error: (err as Error).message });
+    }
   }
 
   /* ------------------------------------------------------------ 查询 */
@@ -226,6 +251,7 @@ export class RoomService {
     });
     this.rooms.recalcCounts(row.id);
     notifyChanged(this.events, row.id);
+    this.systemMessage(row.id, `房间已创建，加入码 ${code}。把加入码和联机地址发给朋友即可一起玩。`);
 
     this.audit.write({
       actorType: 'user',
@@ -330,6 +356,12 @@ export class RoomService {
     this.rooms.touch(row.id);
     this.rooms.logAccess(row.id, input.userId, pending ? 'join_pending' : 'join', null, null);
     notifyChanged(this.events, row.id);
+    this.systemMessage(
+      row.id,
+      pending
+        ? `${user.display_name} 申请加入，等待房主审批。`
+        : `${user.display_name} 加入了房间（虚拟地址 ${virtualIp.replace(/\/\d+$/, '')}）。`,
+    );
 
     this.audit.write({
       actorType: 'user',
@@ -373,6 +405,11 @@ export class RoomService {
     const revision = this.bumpAcl(roomId);
     notifyChanged(this.events, roomId);
     this.events.emit('room.acl', { roomId, revision });
+    const target = this.rooms.findMember(roomId, targetUserId);
+    this.systemMessage(
+      roomId,
+      approve ? `${target?.display_name ?? '该成员'} 的加入申请已通过。` : `${target?.display_name ?? '该成员'} 的加入申请被拒绝。`,
+    );
     this.audit.write({
       actorType: 'user',
       actorId: hostUserId,
@@ -405,6 +442,7 @@ export class RoomService {
     this.events.emit('room.acl', { roomId, revision });
     // 立刻通知被踢的人断开，而不是等它下一次心跳
     this.events.emit('room.kicked', { roomId, userId: targetUserId, reason });
+    this.systemMessage(roomId, `${member.display_name} 被移出房间（${reason}）。`);
     this.audit.write({
       actorType: 'user',
       actorId: hostUserId,
@@ -432,6 +470,8 @@ export class RoomService {
     const revision = this.bumpAcl(roomId);
     notifyChanged(this.events, roomId);
     this.events.emit('room.acl', { roomId, revision });
+    const leaver = this.users.findById(userId);
+    this.systemMessage(roomId, `${leaver?.display_name ?? '有成员'} 离开了房间。`);
   }
 
   /* ------------------------------------------------------------ 关闭 */
@@ -441,6 +481,8 @@ export class RoomService {
     this.assertHost(row, userId);
     this.rooms.close(roomId, 'closed');
     this.rooms.logAccess(roomId, userId, 'close', byHost ? 'host' : 'api', null);
+    // 房间关了就没有聊天语境了；清掉记录避免数据库被历史闲聊撑大
+    this.messages.clearRoom(roomId);
     this.events.emit('room.closed', roomId);
     notifyChanged(this.events, roomId);
     this.audit.write({

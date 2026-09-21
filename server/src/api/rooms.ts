@@ -7,6 +7,10 @@ import { HttpError } from '../util/errors.ts';
 import { logger } from '../logger.ts';
 import { toPublicRoom, toRoom, toRoomForUser } from '../db/rooms.ts';
 import { hashRoomPassword } from '../services/rooms.ts';
+import { KEEP_PER_ROOM, MAX_BODY_CHARS, clampBody } from '../db/chat.ts';
+
+/** 房间内每人每分钟的发言上限 */
+const CHAT_PER_MINUTE = 20;
 
 const log = logger('api:rooms');
 
@@ -256,5 +260,88 @@ export function registerRoomRoutes(router: Router, app: App): void {
     const roomId = ctx.params.id ?? '';
     app.roomService.assertHost(app.roomService.getRow(roomId), auth.userId);
     return app.rooms.recentAccess(roomId, 100);
+  }, { auth: true });
+
+  /* ------------------------------------------------------------ 房间聊天 */
+
+  /** 取历史消息；带 sinceId 时做增量补齐（重连场景） */
+  router.get('/rooms/:id/messages', (ctx) => {
+    const auth = requireAuth(ctx);
+    const roomId = ctx.params.id ?? '';
+    app.roomService.assertMember(app.roomService.getRow(roomId), auth.userId);
+    const sinceId = Number.parseInt(ctx.query.get('sinceId') ?? '', 10);
+    const limit = Number.parseInt(ctx.query.get('limit') ?? '', 10);
+    return {
+      messages: app.messages.list(roomId, {
+        sinceId: Number.isFinite(sinceId) ? sinceId : undefined,
+        limit: Number.isFinite(limit) ? limit : undefined,
+      }),
+      keepPerRoom: KEEP_PER_ROOM,
+      maxBodyChars: MAX_BODY_CHARS,
+    };
+  }, { auth: true });
+
+  /** 发消息。只允许房间成员，且按「每人每房间每分钟」限流，避免刷屏。 */
+  router.post('/rooms/:id/messages', async (ctx) => {
+    const auth = requireAuth(ctx);
+    const roomId = ctx.params.id ?? '';
+    const row = app.roomService.getRow(roomId);
+    app.roomService.assertMember(row, auth.userId);
+    if (row.status !== 'open') throw HttpError.conflict('房间已关闭，无法发言');
+
+    const body = await ctx.body();
+    const raw = typeof body.body === 'string' ? body.body : '';
+    // 去掉纯换行/空白内容，避免空消息占位
+    const trimmed = raw.replace(/\s+$/g, '').replace(/^\s+/, '');
+    if (trimmed.length === 0) throw HttpError.badRequest('消息内容不能为空', { body: '消息内容不能为空' });
+
+    const recent = app.messages.countRecentByUser(roomId, auth.userId, 60);
+    if (recent >= CHAT_PER_MINUTE) {
+      throw HttpError.rateLimited(`发言过于频繁（每分钟最多 ${CHAT_PER_MINUTE} 条）`);
+    }
+
+    const message = app.messages.add({
+      roomId,
+      userId: auth.userId,
+      displayName: auth.displayName || auth.username,
+      role: row.host_user_id === auth.userId ? 'host' : 'member',
+      kind: 'text',
+      body: clampBody(trimmed),
+    });
+    app.messages.trim(roomId);
+    app.events.emit('room.message', { roomId, message });
+    return message;
+  }, { auth: true });
+
+  /** 删除消息：房主可删本房间任意消息，其他人只能删自己的 */
+  router.delete('/rooms/:id/messages/:messageId', (ctx) => {
+    const auth = requireAuth(ctx);
+    const roomId = ctx.params.id ?? '';
+    const row = app.roomService.getRow(roomId);
+    app.roomService.assertMember(row, auth.userId);
+
+    const messageId = Number.parseInt(ctx.params.messageId ?? '', 10);
+    if (!Number.isFinite(messageId)) throw HttpError.badRequest('消息 ID 不合法');
+    const target = app.messages.findById(messageId);
+    if (!target || target.room_id !== roomId) throw HttpError.notFound('消息不存在');
+
+    const isHost = row.host_user_id === auth.userId;
+    if (!isHost && target.user_id !== auth.userId) {
+      throw HttpError.forbidden('只能删除自己的消息');
+    }
+    app.messages.remove(messageId);
+    app.events.emit('room.messageDeleted', { roomId, messageId });
+    if (isHost && target.user_id !== auth.userId) {
+      app.audit.write({
+        actorType: 'user',
+        actorId: auth.userId,
+        actorName: auth.username,
+        action: 'room.chat_delete',
+        targetType: 'room',
+        targetId: roomId,
+        detail: { messageId, author: target.display_name },
+      });
+    }
+    return { ok: true };
   }, { auth: true });
 }

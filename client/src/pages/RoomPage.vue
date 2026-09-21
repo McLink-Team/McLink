@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/** 已进入房间时的主界面：联机地址、成员、房主控制、网络状态 */
+/** 已进入房间时的主界面：联机地址、成员、房主控制、聊天、游戏连接指引与网络状态 */
 import { computed, ref } from 'vue';
 import { formatBitrate, formatBytes } from '@mclink/shared';
 import {
@@ -17,12 +17,17 @@ import {
   shareAddress,
   updateRoomPolicy,
 } from '../lib/store.ts';
-import { friendlyError } from '../lib/api.ts';
+import { MASTER_URL, friendlyError } from '../lib/api.ts';
+import { isFavorite, shortcutsRevision, toggleFavorite } from '../lib/shortcuts.ts';
+import ChatPanel from '../components/ChatPanel.vue';
+import ConnectionDiagnostic from '../components/ConnectionDiagnostic.vue';
+import GameQuickConnect from '../components/GameQuickConnect.vue';
 
 const copied = ref('');
 const busy = ref(false);
 const error = ref('');
 const policyOpen = ref(false);
+const inviteOpen = ref(false);
 const policy = ref({
   maxPlayers: 8,
   maxBandwidthKbps: 0,
@@ -37,6 +42,31 @@ const session = computed(() => clientState.session);
 const room = computed(() => session.value?.room ?? null);
 const members = computed(() => session.value?.members ?? []);
 const pending = computed(() => members.value.filter((m) => m.status === 'pending'));
+
+const favorite = computed(() => {
+  void shortcutsRevision.value;
+  const current = room.value;
+  return current ? isFavorite(current.id) : false;
+});
+
+/** 一键粘贴到群里的邀请信息（多行纯文本） */
+const inviteText = computed(() => {
+  const current = room.value;
+  let host = MASTER_URL;
+  try {
+    host = new URL(MASTER_URL).host;
+  } catch {
+    /* 地址不合法时退化为原样展示 */
+  }
+  return [
+    `【mclink 联机邀请】${current?.name ?? ''}`,
+    `加入码：${current?.code ?? ''}`,
+    `联机地址：${shareAddress.value ?? '（等待分配）'}`,
+    '',
+    '怎么进：① 打开 mclink 客户端，用上面的加入码进房间；② 启动游戏 → 多人游戏 → 直接连接 → 粘贴上面的联机地址。',
+    `还没装客户端？到 ${host} 下载 Windows 客户端。`,
+  ].join('\n');
+});
 
 function copy(text: string, tag: string): void {
   void navigator.clipboard.writeText(text).then(
@@ -65,6 +95,26 @@ function openPolicy(): void {
     allowP2p: p.allowP2p,
   };
   policyOpen.value = true;
+}
+
+/** 收藏 / 取消收藏当前房间（只写本机 localStorage） */
+function toggleFav(): void {
+  const current = room.value;
+  if (!current) return;
+  toggleFavorite({
+    roomId: current.id,
+    code: current.code,
+    name: current.name,
+    lastAddress: shareAddress.value ?? null,
+    lastSeenAt: new Date().toISOString(),
+  });
+}
+
+/** 打开置顶迷你窗，把联机地址钉在屏幕上 */
+async function openMini(): Promise<void> {
+  error.value = '';
+  const res = await window.mclink.mini.open();
+  if (!res.ok) error.value = res.error ?? '迷你窗打开失败';
 }
 
 async function savePolicy(): Promise<void> {
@@ -167,6 +217,10 @@ async function doClose(): Promise<void> {
         <div class="row">
           <button class="btn btn-sm" :disabled="busy" @click="pollPeers()">刷新状态</button>
           <button class="btn btn-sm" :disabled="busy" @click="refreshRoom()">刷新成员</button>
+          <button class="btn btn-sm" :title="favorite ? '取消收藏' : '收藏这个房间'" @click="toggleFav()">
+            {{ favorite ? '★ 已收藏' : '☆ 收藏' }}
+          </button>
+          <button class="btn btn-sm" title="把联机地址钉在屏幕角落" @click="openMini()">迷你窗</button>
           <button v-if="isHost" class="btn btn-sm" @click="openPolicy()">房间规则</button>
           <button v-if="isHost" class="btn btn-sm" :disabled="busy" @click="doRotate()">轮换密钥</button>
           <button v-if="isHost" class="btn btn-sm btn-danger" :disabled="busy" @click="doClose()">关闭房间</button>
@@ -184,9 +238,7 @@ async function doClose(): Promise<void> {
       <button class="btn btn-primary" @click="copy(shareAddress ?? '', 'addr')">
         {{ copied === 'addr' ? '已复制' : '复制地址' }}
       </button>
-      <button class="btn" @click="copy(`加入码 ${room.code}，联机地址 ${shareAddress}`, 'both')">
-        {{ copied === 'both' ? '已复制' : '复制邀请信息' }}
-      </button>
+      <button class="btn" @click="inviteOpen = true">邀请信息…</button>
     </div>
 
     <div class="grid-2">
@@ -291,6 +343,34 @@ async function doClose(): Promise<void> {
       </div>
     </div>
 
+    <!-- 房间聊天 -->
+    <ChatPanel />
+
+    <!-- 按游戏查「房主做什么 / 玩家填什么」 -->
+    <GameQuickConnect />
+
+    <!-- 直连还是中继、延迟、NAT 与监听端口 -->
+    <ConnectionDiagnostic />
+
+    <!-- 邀请信息弹层：多行文本，可直接粘到群里 -->
+    <div v-if="inviteOpen" class="modal-mask">
+      <div class="card modal-card stack">
+        <div style="font-weight: 650; font-size: var(--fs-lg)">邀请信息</div>
+        <div class="hint">下面这段可以直接复制粘贴到 QQ / 微信群里，朋友照着做就能进来。</div>
+        <pre class="invite mono">{{ inviteText }}</pre>
+        <div class="row">
+          <button class="btn btn-primary grow" @click="copy(inviteText, 'invite')">
+            {{ copied === 'invite' ? '已复制到剪贴板' : '复制邀请信息' }}
+          </button>
+          <button class="btn btn-ghost" @click="inviteOpen = false">关闭</button>
+        </div>
+        <div class="hint">
+          加入码可以进房间，联机地址用于游戏内直连；两者都不是长期凭证 ——
+          房主轮换密钥或关闭房间后就失效了。
+        </div>
+      </div>
+    </div>
+
     <!-- 房间规则弹层 -->
     <div v-if="policyOpen" class="modal-mask">
       <div class="card modal-card stack">
@@ -366,5 +446,17 @@ async function doClose(): Promise<void> {
   width: min(680px, 100%);
   max-height: 88vh;
   overflow: auto;
+}
+.invite {
+  margin: 0;
+  padding: var(--s-3);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.32);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: text;
 }
 </style>

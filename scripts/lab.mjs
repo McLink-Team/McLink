@@ -230,6 +230,40 @@ function probeAnonymousLeak(secrets, waitMs = 11_000) {
   });
 }
 
+/**
+ * 用一个已认证的 WebSocket 连接订阅话题，返回收到的帧。
+ * 用于验证「聊天实时推送」这类只有长连接才能覆盖的能力。
+ */
+function openAuthedWs(token, topics, waitMs = 500) {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(`ws://127.0.0.1:8787/ws?token=${encodeURIComponent(token)}`);
+    const frames = [];
+    const timer = setTimeout(() => reject(new Error('WebSocket 打开超时')), 8000);
+    socket.addEventListener('error', () => {
+      clearTimeout(timer);
+      reject(new Error('WebSocket 连接错误'));
+    });
+    socket.addEventListener('message', (event) => {
+      try {
+        frames.push(JSON.parse(String(event.data)));
+      } catch {
+        /* 忽略非 JSON 帧 */
+      }
+    });
+    socket.addEventListener('open', () => {
+      clearTimeout(timer);
+      socket.send(JSON.stringify({ type: 'subscribe', topics }));
+      setTimeout(() => resolve({ socket, frames }), waitMs);
+    });
+  });
+}
+
+/** 连接时的首个 hello 不含订阅结果，订阅回执是后面那个 hello */
+const lastHelloTopics = (frames) => {
+  const hellos = frames.filter((f) => f.type === 'hello');
+  return hellos.length > 0 ? (hellos[hellos.length - 1].topics ?? []) : [];
+};
+
 /** 列出某个实例看到的远端 peer（过滤掉自己） */
 async function foreignNetworksOf(rpcPortal) {
   const res = await cli(rpcPortal, ['peer', 'list-foreign']);
@@ -711,6 +745,119 @@ async function main() {
     leakProbe.leaks.length === 0,
     `${leakProbe.frames} 帧，泄露项: ${leakProbe.leaks.join(', ') || '无'}`,
   );
+
+  step('验证房间聊天（成员可见、非成员拒绝、限流、房主可删他人消息）');
+  const chatId = roomB.room.id; // B 房成员都还在（A 房的 memA 已被踢）
+  const hostBToken = hostB.token;
+  const memBToken = memB.token;
+
+  const sent = await api(`/rooms/${chatId}/messages`, {
+    method: 'POST',
+    token: hostBToken,
+    body: { body: '大家好，我在游戏里对局域网开放了 👋' },
+  });
+  check('房主可以发消息', Boolean(sent?.id), `id=${sent?.id} role=${sent?.role}`);
+
+  const asMember = await api(`/rooms/${chatId}/messages`, {
+    method: 'POST',
+    token: memBToken,
+    body: { body: '收到，我来连' },
+  });
+  check('成员可以发消息', Boolean(asMember?.id), `id=${asMember?.id} role=${asMember?.role}`);
+
+  const history = await api(`/rooms/${chatId}/messages?limit=50`, { token: memBToken });
+  const bodies = history.messages.map((m) => m.body);
+  check('成员能读到房间历史（含房主消息）', bodies.some((b) => b.includes('局域网开放')), `${history.messages.length} 条`);
+  check(
+    '加入房间会自动产生系统消息',
+    history.messages.some((m) => m.kind === 'system'),
+    history.messages.find((m) => m.kind === 'system')?.body ?? '（无）',
+  );
+
+  const outsideread = await api(`/rooms/${chatId}/messages`, { token: outsider.token }).catch((e) => ({ error: e.message }));
+  check('非成员无法读取房间聊天', Boolean(outsideread.error), outsideread.error ?? '居然可以读');
+  const outsideSend = await api(`/rooms/${chatId}/messages`, { method: 'POST', token: outsider.token, body: { body: 'hi' } }).catch((e) => ({ error: e.message }));
+  check('非成员无法在房间发言', Boolean(outsideSend.error), outsideSend.error ?? '居然可以发');
+
+  const emptyMsg = await api(`/rooms/${chatId}/messages`, { method: 'POST', token: memBToken, body: { body: '   ' } }).catch((e) => ({ error: e.message }));
+  check('空消息被拒绝', Boolean(emptyMsg.error), emptyMsg.error ?? '未拒绝');
+
+  const longMsg = await api(`/rooms/${chatId}/messages`, {
+    method: 'POST',
+    token: memBToken,
+    body: { body: 'x'.repeat(900) },
+  });
+  const longBodyChars = [...(longMsg.body ?? '')].length;
+  check('超长消息被按码点截断（不会切坏 emoji）', longBodyChars <= 501, `${longBodyChars} 字符`);
+
+  // 限流：每分钟 20 条
+  let rateLimited = false;
+  for (let i = 0; i < 25; i += 1) {
+    try {
+      await api(`/rooms/${chatId}/messages`, { method: 'POST', token: memBToken, body: { body: `刷屏 ${i}` } });
+    } catch (err) {
+      if (String(err.message).includes('429') || String(err.message).includes('频繁')) {
+        rateLimited = true;
+        break;
+      }
+    }
+  }
+  check('发言限流生效（每分钟 20 条）', rateLimited, rateLimited ? '已触发 429' : '连发 25 条都没被限');
+
+  const delByOther = await api(`/rooms/${chatId}/messages/${sent.id}`, { method: 'DELETE', token: memBToken }).catch((e) => ({ error: e.message }));
+  check('普通成员不能删他人消息', Boolean(delByOther.error), delByOther.error ?? '居然可以删');
+
+  const delByHost = await api(`/rooms/${chatId}/messages/${asMember.id}`, { method: 'DELETE', token: hostBToken }).catch((e) => ({ error: e.message }));
+  check('房主可以删他人消息（用于管理刷屏）', !delByHost.error, delByHost.error ?? '已删除');
+
+  const delOwn = await api(`/rooms/${chatId}/messages/${delByHost.error ? '1' : asMember.id}`, { method: 'DELETE', token: memBToken }).catch((e) => ({ error: e.message }));
+  void delOwn;
+
+  step('验证聊天实时推送（只有长连接才能覆盖的能力）');
+  const hostWs = await openAuthedWs(hostB.token, [`room:${chatId}`]);
+  check(
+    '房主能订阅房间话题',
+    lastHelloTopics(hostWs.frames).includes(`room:${chatId}`),
+    JSON.stringify(lastHelloTopics(hostWs.frames)),
+  );
+
+  const beforePush = hostWs.frames.filter((f) => f.type === 'room.message').length;
+  const pushedMessage = await api(`/rooms/${chatId}/messages`, {
+    method: 'POST',
+    token: memBToken,
+    body: { body: '实时推送测试 🎮' },
+  });
+  await sleep(1200);
+  const pushFrames = hostWs.frames.filter((f) => f.type === 'room.message');
+  check('成员发言后房主实时收到 room.message', pushFrames.length > beforePush, `收到 ${pushFrames.length} 条`);
+  check(
+    '推送内容带角色与正文',
+    (pushFrames.at(-1)?.message?.body ?? '').includes('实时推送测试') &&
+      pushFrames.at(-1)?.message?.role === 'member',
+  );
+
+  await api(`/rooms/${chatId}/messages/${pushedMessage.id}`, { method: 'DELETE', token: hostB.token });
+  await sleep(900);
+  check(
+    '删消息推送 room.messageDeleted',
+    hostWs.frames.some((f) => f.type === 'room.messageDeleted' && f.messageId === pushedMessage.id),
+  );
+
+  const outsiderWs = await openAuthedWs(outsider.token, [`room:${chatId}`]);
+  check(
+    '非成员订阅房间话题被拒绝',
+    !lastHelloTopics(outsiderWs.frames).includes(`room:${chatId}`),
+    JSON.stringify(lastHelloTopics(outsiderWs.frames)),
+  );
+  const outsiderBefore = outsiderWs.frames.filter((f) => f.type === 'room.message').length;
+  await api(`/rooms/${chatId}/messages`, { method: 'POST', token: memBToken, body: { body: '非成员不该看到' } });
+  await sleep(1200);
+  check(
+    '非成员收不到房间消息',
+    outsiderWs.frames.filter((f) => f.type === 'room.message').length === outsiderBefore,
+  );
+  hostWs.socket.close();
+  outsiderWs.socket.close();
 
   step('让真实二进制给所有生成的配置判卷');
   const badConfigs = configChecks.filter((c) => !c.ok);
