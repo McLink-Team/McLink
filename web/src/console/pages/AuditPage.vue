@@ -114,43 +114,47 @@ function actorLabel(type: AuditEntry['actorType']): string {
 </script>
 
 <template>
-  <div class="stack" style="gap: var(--s-5)">
-    <div class="row-between wrap">
-      <div>
-        <div class="panel-title">审计日志</div>
-        <p class="panel-sub">记录登录、房间、节点、中继与设置变更，共 {{ total }} 条。</p>
+  <div class="console-page">
+    <header class="console-head">
+      <div class="console-head-text">
+        <h1 class="console-head-title">审计日志</h1>
+        <p class="console-head-sub">记录登录、房间、节点、中继与设置变更，共 {{ total }} 条。</p>
       </div>
-      <button class="btn" type="button" :disabled="loading" @click="load">
-        <span v-if="loading" class="spinner" />
-        刷新
-      </button>
-    </div>
-
-    <section class="card stack">
-      <div class="row wrap" style="gap: var(--s-2)">
-        <span class="label">动作前缀</span>
-        <button
-          v-for="p in ACTION_PREFIXES"
-          :key="p.value"
-          class="chip-btn"
-          :class="{ active: action === p.value }"
-          type="button"
-          @click="setAction(p.value)"
-        >
-          {{ p.label }}
+      <div class="console-head-actions">
+        <button class="btn" type="button" :disabled="loading" @click="load">
+          <span v-if="loading" class="spinner" />
+          刷新
         </button>
+      </div>
+    </header>
+
+    <section class="console-section">
+      <div class="filter-row">
+        <span class="filter-key">动作前缀</span>
+        <div class="seg">
+          <button
+            v-for="p in ACTION_PREFIXES"
+            :key="p.value"
+            class="seg-item"
+            :class="{ active: action === p.value }"
+            type="button"
+            @click="setAction(p.value)"
+          >
+            {{ p.label }}
+          </button>
+        </div>
       </div>
     </section>
 
-    <section class="card stack">
-      <div v-if="loading && entries.length === 0" class="stack">
-        <div v-for="i in 6" :key="i" class="skeleton" style="height: 38px" />
+    <section class="console-section">
+      <div v-if="loading && entries.length === 0" class="stack-tight">
+        <div v-for="i in 6" :key="i" class="skeleton" style="height: 34px" />
       </div>
 
-      <div v-else-if="error" class="row-between">
-        <div>
-          <div class="panel-title" style="font-size: var(--fs-base)">加载失败</div>
-          <p class="panel-sub">{{ error }}</p>
+      <div v-else-if="error" class="console-section-head">
+        <div class="console-section-text">
+          <div class="console-sub-title">加载失败</div>
+          <p class="console-section-note">{{ error }}</p>
         </div>
         <button class="btn" type="button" @click="load">重试</button>
       </div>
@@ -158,7 +162,7 @@ function actorLabel(type: AuditEntry['actorType']): string {
       <div v-else-if="entries.length === 0" class="empty">没有匹配的审计记录。</div>
 
       <template v-else>
-        <div class="table-wrap">
+        <div class="log-scroll">
           <table class="table">
             <thead>
               <tr>
@@ -174,21 +178,20 @@ function actorLabel(type: AuditEntry['actorType']): string {
             <tbody>
               <template v-for="e in entries" :key="e.id">
                 <tr>
-                  <td class="muted mono" style="font-size: var(--fs-xs); white-space: nowrap">
-                    {{ formatDateTime(e.ts) }}
-                  </td>
+                  <td class="mono cell-sub nowrap">{{ formatDateTime(e.ts) }}</td>
                   <td><Badge :tone="actorTone(e.actorType)">{{ actorLabel(e.actorType) }}</Badge></td>
                   <td>
-                    <div>{{ e.actorName ?? '—' }}</div>
-                    <div v-if="e.actorId" class="faint mono" style="font-size: var(--fs-xs)">{{ e.actorId }}</div>
+                    <div v-if="e.actorName">{{ e.actorName }}</div>
+                    <div v-else class="cell-void">未记录</div>
+                    <div v-if="e.actorId" class="cell-sub">{{ e.actorId }}</div>
                   </td>
-                  <td class="mono">{{ e.action }}</td>
+                  <td class="mono wrap-anywhere">{{ e.action }}</td>
                   <td>
                     <template v-if="e.targetType">
-                      {{ e.targetType }}
-                      <div v-if="e.targetId" class="faint mono" style="font-size: var(--fs-xs)">{{ e.targetId }}</div>
+                      <div>{{ e.targetType }}</div>
+                      <div v-if="e.targetId" class="cell-sub">{{ e.targetId }}</div>
                     </template>
-                    <span v-else class="faint">—</span>
+                    <span v-else class="cell-void">无</span>
                   </td>
                   <td>
                     <button
@@ -199,13 +202,14 @@ function actorLabel(type: AuditEntry['actorType']): string {
                     >
                       {{ expanded.has(e.id) ? '收起' : '展开 JSON' }}
                     </button>
-                    <span v-else class="faint">—</span>
+                    <span v-else class="cell-void">无</span>
                   </td>
-                  <td class="mono" style="font-size: var(--fs-xs)">{{ e.ip ?? '—' }}</td>
+                  <td v-if="e.ip" class="mono cell-sub">{{ e.ip }}</td>
+                  <td v-else class="cell-void">未记录</td>
                 </tr>
                 <tr v-if="e.detail && expanded.has(e.id)">
                   <td colspan="7" class="detail-cell">
-                    <pre class="json-block">{{ detailJson(e) }}</pre>
+                    <pre class="code-block code-block-lg">{{ detailJson(e) }}</pre>
                   </td>
                 </tr>
               </template>
@@ -213,11 +217,9 @@ function actorLabel(type: AuditEntry['actorType']): string {
           </table>
         </div>
 
-        <div class="row-between">
-          <span class="faint" style="font-size: var(--fs-xs)">
-            第 {{ page + 1 }} / {{ pageCount }} 页 · 共 {{ total }} 条
-          </span>
-          <div class="row">
+        <div class="pager">
+          <span class="pager-count">第 {{ page + 1 }} / {{ pageCount }} 页 · 共 {{ total }} 条</span>
+          <div class="console-toolbar">
             <button class="btn btn-sm" type="button" :disabled="page === 0 || loading" @click="prevPage">上一页</button>
             <button class="btn btn-sm" type="button" :disabled="page + 1 >= pageCount || loading" @click="nextPage">
               下一页
@@ -230,43 +232,44 @@ function actorLabel(type: AuditEntry['actorType']): string {
 </template>
 
 <style scoped>
-.table-wrap {
+.filter-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  flex-wrap: wrap;
+}
+.filter-key {
+  font-size: var(--fs-xs);
+  color: var(--paper-faint);
+  letter-spacing: 0.02em;
+}
+.log-scroll {
   overflow-x: auto;
+  max-width: 100%;
 }
-.chip-btn {
-  height: 28px;
-  padding: 0 var(--s-3);
-  border-radius: 999px;
-  border: 1px solid var(--border-strong);
-  background: var(--surface);
-  color: var(--text-dim);
+/* 空值占位：用小一号的弱化文字，不用破折号堆满整列 */
+.cell-void {
   font-size: var(--fs-xs);
-  font-family: var(--font-mono);
-  cursor: pointer;
-  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
-}
-.chip-btn:hover {
-  color: var(--text);
-}
-.chip-btn.active {
-  background: var(--surface-strong);
-  border-color: var(--brand);
-  color: var(--brand);
-}
-.json-block {
-  margin: 0;
-  padding: var(--s-3);
-  border-radius: var(--r-sm);
-  background: color-mix(in srgb, var(--bg-0) 70%, transparent);
-  border: 1px solid var(--border);
-  color: var(--text-dim);
-  font-size: var(--fs-xs);
-  max-height: 320px;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
+  color: var(--paper-faint);
 }
 .detail-cell {
-  background: color-mix(in srgb, var(--bg-0) 40%, transparent);
+  background: var(--ink-850);
+  padding: var(--s-2) var(--s-3) var(--s-4);
+}
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-4);
+  flex-wrap: wrap;
+  margin-top: var(--s-4);
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--rule-faint);
+}
+.pager-count {
+  font-size: var(--fs-xs);
+  color: var(--paper-faint);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
 </style>

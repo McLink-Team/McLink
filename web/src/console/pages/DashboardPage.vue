@@ -188,48 +188,65 @@ const warnings = computed(() => asStringList(overview.value?.warnings));
 </script>
 
 <template>
-  <div class="stack" style="gap: var(--s-5)">
+  <div class="console-page">
+    <header class="console-head">
+      <div class="console-head-text">
+        <h1 class="console-head-title">仪表盘</h1>
+        <p class="console-head-sub">
+          <template v-if="overview">
+            服务端时间 {{ formatDateTime(overview.serverTime) }} · 主控已运行 {{ formatDuration(overview.uptimeSeconds) }} ·
+            实时事件会自动刷新本页
+          </template>
+          <template v-else>平台概览、中继运行状态与最近操作。</template>
+        </p>
+      </div>
+      <div class="console-head-actions">
+        <button class="btn" type="button" :disabled="loading" @click="load">
+          <span v-if="loading" class="spinner" />
+          刷新
+        </button>
+      </div>
+    </header>
+
     <!-- 加载中 -->
-    <div v-if="loading && !overview" class="grid cards">
-      <div v-for="i in 6" :key="i" class="card">
-        <div class="skeleton" style="height: 12px; width: 40%" />
-        <div class="skeleton" style="height: 26px; width: 60%; margin-top: 10px" />
+    <div v-if="loading && !overview" class="stat-grid">
+      <div v-for="i in 6" :key="i" class="stat-skeleton">
+        <div class="skeleton" style="height: 11px; width: 44%" />
+        <div class="skeleton" style="height: 24px; width: 60%; margin-top: 9px" />
       </div>
     </div>
 
     <!-- 失败 -->
-    <div v-else-if="error && !overview" class="card stack">
-      <div class="row-between">
-        <div>
-          <div class="panel-title">概览加载失败</div>
-          <p class="panel-sub">{{ error }}</p>
+    <section v-else-if="error && !overview" class="console-section">
+      <div class="console-section-head">
+        <div class="console-section-text">
+          <div class="console-sub-title">概览加载失败</div>
+          <p class="console-section-note">{{ error }}</p>
         </div>
         <button class="btn" type="button" @click="load">重试</button>
       </div>
-    </div>
+    </section>
 
     <template v-else>
       <!-- 告警条：配置层面有问题时最需要被看到 -->
-      <div v-if="warnings.length > 0" class="warn-bar stack" style="gap: var(--s-2)">
-        <div class="row" style="gap: var(--s-2)">
+      <div v-if="warnings.length > 0" class="notice notice-warn warn-block">
+        <div class="warn-block-head">
           <Badge tone="warn">配置告警 {{ warnings.length }} 条</Badge>
-          <span class="faint" style="font-size: var(--fs-xs)">来自主控启动时的环境校验，可能需要人工处理</span>
+          <span class="cell-sub">来自主控启动时的环境校验，可能需要人工处理</span>
         </div>
         <ul class="warn-list">
           <li v-for="(w, i) in warnings" :key="i">{{ w }}</li>
         </ul>
       </div>
 
-      <div v-if="error" class="warn-bar">
-        <div class="row wrap" style="gap: var(--s-3)">
-          <Badge tone="danger">刷新失败</Badge>
-          <span class="grow">{{ error }}</span>
-          <button class="btn btn-sm" type="button" @click="load">重试</button>
-        </div>
+      <div v-if="error" class="notice notice-danger">
+        <Badge tone="danger">刷新失败</Badge>
+        <span class="notice-body">{{ error }}</span>
+        <button class="btn btn-sm" type="button" @click="load">重试</button>
       </div>
 
       <!-- StatCard 组 -->
-      <div class="grid cards">
+      <div class="stat-grid">
         <StatCard
           v-for="c in cards"
           :key="c.label"
@@ -240,13 +257,13 @@ const warnings = computed(() => asStringList(overview.value?.warnings));
         />
       </div>
 
-      <div class="grid two">
+      <div class="split">
         <!-- 中继运行状态 -->
-        <section class="card stack">
-          <div class="row-between">
-            <div>
-              <div class="panel-title">主控中继</div>
-              <p class="panel-sub">单端口共享中继，为所有房间转发（EasyTier network whitelist 通配）</p>
+        <section class="console-section">
+          <div class="console-section-head">
+            <div class="console-section-text">
+              <h2 class="console-section-title">主控中继</h2>
+              <p class="console-section-note">单端口共享中继，为所有房间转发（EasyTier network whitelist 通配）</p>
             </div>
             <Badge :tone="relay?.running ? 'ok' : 'danger'" dot :pulse="Boolean(relay?.running)">
               {{ relay?.running ? '运行中' : '未运行' }}
@@ -258,37 +275,37 @@ const warnings = computed(() => asStringList(overview.value?.warnings));
               <span class="kv-k">监听地址</span><span class="kv-v mono">{{ relay.listen }}</span>
               <span class="kv-k">网络名</span><span class="kv-v mono">{{ relay.networkName }}</span>
               <span class="kv-k">白名单</span>
-              <span class="kv-v mono truncate" :title="whitelistPatterns.join(', ')">
+              <span class="kv-v mono wrap-anywhere">
                 {{ whitelistPatterns.length > 0 ? whitelistPatterns.join(', ') : '（未配置）' }}
               </span>
               <span class="kv-k">CLI 版本</span>
-              <span class="kv-v mono">
-                {{ relay.version ?? '未探测到 easytier-cli' }}
+              <span class="kv-v">
+                <span class="mono">{{ relay.version ?? '未探测到 easytier-cli' }}</span>
                 <Badge v-if="!relay.cliAvailable" tone="warn">流量统计不可用</Badge>
               </span>
               <span class="kv-k">RPC Portal</span><span class="kv-v mono">{{ relay.rpcPortal }}</span>
-              <span class="kv-k">配置文件</span><span class="kv-v mono truncate" :title="relay.configFile">{{ relay.configFile }}</span>
-              <span class="kv-k">日志文件</span><span class="kv-v mono truncate" :title="relay.logFile">{{ relay.logFile }}</span>
+              <span class="kv-k">配置文件</span>
+              <span class="kv-v mono wrap-anywhere">{{ relay.configFile }}</span>
+              <span class="kv-k">日志文件</span>
+              <span class="kv-v mono wrap-anywhere">{{ relay.logFile }}</span>
               <span class="kv-k">累计流量</span>
               <span class="kv-v">
-                收 {{ formatBytes(relay.rxBytes) }} / 发 {{ formatBytes(relay.txBytes) }}
-                · {{ relay.peerCount }} peers
+                收 {{ formatBytes(relay.rxBytes) }} / 发 {{ formatBytes(relay.txBytes) }} ·
+                {{ relay.peerCount }} peers
               </span>
               <span class="kv-k">启动于</span>
               <span class="kv-v">
-                {{ relay.startedAt ? formatRelativeTime(relay.startedAt) : '—' }}
-                <span class="faint" style="font-size: var(--fs-xs)">
-                  （主控已运行 {{ formatDuration(overview?.uptimeSeconds ?? 0) }}）
-                </span>
+                {{ relay.startedAt ? formatRelativeTime(relay.startedAt) : '未记录' }}
+                <span class="cell-sub">（主控已运行 {{ formatDuration(overview?.uptimeSeconds ?? 0) }}）</span>
               </span>
             </div>
 
-            <div v-if="relay.lastError" class="err-box">
+            <div v-if="relay.lastError" class="notice notice-danger dash-notice">
               <strong>最近错误：</strong>{{ relay.lastError }}
             </div>
-            <div v-else class="hint">最近未记录错误。</div>
+            <p v-else class="hint hint-row">最近未记录错误。</p>
 
-            <div class="row">
+            <div class="console-toolbar dash-actions">
               <RouterLink class="btn btn-sm" to="/console/relay">打开主控中继面板</RouterLink>
               <RouterLink class="btn btn-sm btn-ghost" to="/console/traffic">查看流量归因</RouterLink>
             </div>
@@ -297,19 +314,24 @@ const warnings = computed(() => asStringList(overview.value?.warnings));
         </section>
 
         <!-- system 信息块 -->
-        <section class="card stack">
-          <div class="panel-title">系统信息</div>
+        <section class="console-section">
+          <div class="console-section-head">
+            <div class="console-section-text">
+              <h2 class="console-section-title">系统信息</h2>
+              <p class="console-section-note">主控进程自身的运行时读数。</p>
+            </div>
+          </div>
           <div v-if="overview" class="kv">
             <span class="kv-k">平台版本</span><span class="kv-v mono">{{ overview.version }}</span>
             <span class="kv-k">EasyTier 核心</span>
             <span class="kv-v mono">{{ overview.easytierVersion ?? '未探测' }}</span>
-            <span class="kv-k">Node 版本</span><span class="kv-v mono">{{ overview.system?.nodeVersion ?? '—' }}</span>
-            <span class="kv-k">运行平台</span><span class="kv-v mono">{{ overview.system?.platform ?? '—' }}</span>
-            <span class="kv-k">Schema 版本</span><span class="kv-v mono">{{ overview.system?.schemaVersion ?? '—' }}</span>
+            <span class="kv-k">Node 版本</span><span class="kv-v mono">{{ overview.system?.nodeVersion ?? '未知' }}</span>
+            <span class="kv-k">运行平台</span><span class="kv-v mono">{{ overview.system?.platform ?? '未知' }}</span>
+            <span class="kv-k">Schema 版本</span><span class="kv-v mono">{{ overview.system?.schemaVersion ?? '未知' }}</span>
             <span class="kv-k">数据库</span>
-            <span class="kv-v mono truncate" :title="overview.system?.dbFile ?? ''">{{ overview.system?.dbFile ?? '—' }}</span>
-            <span class="kv-k">进程 PID</span><span class="kv-v mono">{{ overview.system?.pid ?? '—' }}</span>
-            <span class="kv-k">内存占用</span><span class="kv-v mono">{{ overview.system?.memoryMb ?? '—' }} MB</span>
+            <span class="kv-v mono wrap-anywhere">{{ overview.system?.dbFile ?? '未记录' }}</span>
+            <span class="kv-k">进程 PID</span><span class="kv-v mono">{{ overview.system?.pid ?? '未知' }}</span>
+            <span class="kv-k">内存占用</span><span class="kv-v mono">{{ overview.system?.memoryMb ?? '未知' }} MB</span>
             <span class="kv-k">服务端时间</span><span class="kv-v mono">{{ formatDateTime(overview.serverTime) }}</span>
             <span class="kv-k">已运行</span><span class="kv-v">{{ formatDuration(overview.uptimeSeconds) }}</span>
           </div>
@@ -317,11 +339,11 @@ const warnings = computed(() => asStringList(overview.value?.warnings));
       </div>
 
       <!-- 节点表 -->
-      <section class="card stack">
-        <div class="row-between">
-          <div>
-            <div class="panel-title">中继节点</div>
-            <p class="panel-sub">最多显示前 12 个，完整列表与操作在中继节点页</p>
+      <section class="console-section">
+        <div class="console-section-head">
+          <div class="console-section-text">
+            <h2 class="console-section-title">中继节点</h2>
+            <p class="console-section-note">最多显示前 12 个，完整列表与操作在中继节点页</p>
           </div>
           <RouterLink class="btn btn-sm" to="/console/nodes">全部节点</RouterLink>
         </div>
@@ -344,8 +366,8 @@ const warnings = computed(() => asStringList(overview.value?.warnings));
             <tbody>
               <tr v-for="n in nodeRows" :key="n.id">
                 <td>
-                  <div class="truncate" style="max-width: 220px">{{ n.name }}</div>
-                  <div class="faint mono truncate" style="font-size: var(--fs-xs)" :title="n.endpoint">{{ n.endpoint }}</div>
+                  <div class="wrap-anywhere">{{ n.name }}</div>
+                  <div class="cell-sub">{{ n.endpoint }}</div>
                 </td>
                 <td>{{ regionLabel(n.region) }}</td>
                 <td><Badge :tone="nodeTone(n.status)" dot>{{ nodeLabel(n.status) }}</Badge></td>
@@ -353,7 +375,7 @@ const warnings = computed(() => asStringList(overview.value?.warnings));
                 <td class="table-num">{{ n.rooms }}</td>
                 <td class="table-num">{{ formatBitrate(n.rxBps) }} / {{ formatBitrate(n.txBps) }}</td>
                 <td class="table-num">{{ n.weight }}</td>
-                <td class="muted">{{ formatRelativeTime(n.lastSeenAt) }}</td>
+                <td class="cell-sub">{{ formatRelativeTime(n.lastSeenAt) }}</td>
               </tr>
             </tbody>
           </table>
@@ -361,11 +383,11 @@ const warnings = computed(() => asStringList(overview.value?.warnings));
       </section>
 
       <!-- 房间表 -->
-      <section class="card stack">
-        <div class="row-between">
-          <div>
-            <div class="panel-title">开放中的房间</div>
-            <p class="panel-sub">最多显示前 12 个，详情与强制关闭在房间管理页</p>
+      <section class="console-section">
+        <div class="console-section-head">
+          <div class="console-section-text">
+            <h2 class="console-section-title">开放中的房间</h2>
+            <p class="console-section-note">最多显示前 12 个，详情与强制关闭在房间管理页</p>
           </div>
           <RouterLink class="btn btn-sm" to="/console/rooms">房间管理</RouterLink>
         </div>
@@ -387,14 +409,14 @@ const warnings = computed(() => asStringList(overview.value?.warnings));
             </thead>
             <tbody>
               <tr v-for="r in roomRows" :key="r.id">
-                <td class="truncate" style="max-width: 220px">{{ r.name }}</td>
+                <td class="wrap-anywhere">{{ r.name }}</td>
                 <td class="mono">{{ r.code }}</td>
-                <td class="truncate" style="max-width: 140px">{{ r.hostDisplayName }}</td>
+                <td class="wrap-anywhere">{{ r.hostDisplayName }}</td>
                 <td>{{ regionLabel(r.zone) }}</td>
                 <td><Badge :tone="roomTone(r.status)" dot>{{ roomLabel(r.status) }}</Badge></td>
                 <td class="table-num">{{ r.onlineMembers }} / {{ r.policy.maxPlayers }}</td>
                 <td class="mono">{{ r.subnet }}</td>
-                <td class="muted">{{ formatRelativeTime(r.createdAt) }}</td>
+                <td class="cell-sub">{{ formatRelativeTime(r.createdAt) }}</td>
               </tr>
             </tbody>
           </table>
@@ -402,11 +424,11 @@ const warnings = computed(() => asStringList(overview.value?.warnings));
       </section>
 
       <!-- 审计时间线 -->
-      <section class="card stack">
-        <div class="row-between">
-          <div>
-            <div class="panel-title">最近操作</div>
-            <p class="panel-sub">最近 15 条审计记录</p>
+      <section class="console-section">
+        <div class="console-section-head">
+          <div class="console-section-text">
+            <h2 class="console-section-title">最近操作</h2>
+            <p class="console-section-note">最近 15 条审计记录</p>
           </div>
           <RouterLink class="btn btn-sm" to="/console/audit">全部日志</RouterLink>
         </div>
@@ -414,17 +436,15 @@ const warnings = computed(() => asStringList(overview.value?.warnings));
         <div v-if="auditRows.length === 0" class="empty">暂无审计记录。</div>
         <ol v-else class="timeline">
           <li v-for="a in auditRows" :key="a.id">
-            <span class="tl-dot" />
-            <div class="tl-body">
-              <div class="row wrap" style="gap: var(--s-2)">
-                <span class="mono tl-action">{{ a.action }}</span>
+            <span class="led led-signal tl-led" />
+            <div class="timeline-body">
+              <div class="tl-head">
+                <span class="timeline-action">{{ a.action }}</span>
                 <Badge tone="neutral">{{ a.actorType }}</Badge>
-                <span class="muted" style="font-size: var(--fs-xs)">{{ a.actorName ?? a.actorId ?? '系统' }}</span>
-                <span class="faint" style="font-size: var(--fs-xs); margin-left: auto">
-                  {{ formatRelativeTime(a.ts) }}
-                </span>
+                <span class="cell-sub">{{ a.actorName ?? a.actorId ?? '系统' }}</span>
+                <span class="tl-time cell-sub">{{ formatRelativeTime(a.ts) }}</span>
               </div>
-              <div v-if="a.targetType" class="faint" style="font-size: var(--fs-xs)">
+              <div v-if="a.targetType" class="cell-sub">
                 目标：{{ a.targetType }}{{ a.targetId ? ` · ${a.targetId}` : '' }}
                 <template v-if="a.ip"> · 来源 {{ a.ip }}</template>
               </div>
@@ -437,88 +457,76 @@ const warnings = computed(() => asStringList(overview.value?.warnings));
 </template>
 
 <style scoped>
-.cards {
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+/* 读数格子：与 StatCard 自带的上下留白配合，用发丝线分格而不是卡片 */
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(178px, 1fr));
+  border-top: 1px solid var(--rule);
 }
-.two {
+.stat-grid :deep(.stat) {
+  padding-right: var(--s-4);
+  border-bottom: 1px solid var(--rule);
+}
+.stat-skeleton {
+  padding: var(--s-4) var(--s-4) var(--s-4) 0;
+  border-bottom: 1px solid var(--rule);
+}
+.split {
+  display: grid;
   grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: var(--s-6);
+  border-top: 1px solid var(--rule);
+  padding-top: var(--s-5);
 }
-.table-wrap {
-  overflow-x: auto;
+/* split 里的两栏各自不再画上边线，避免出现双重发丝线 */
+.split .console-section {
+  border-top: 0;
+  padding-top: 0;
 }
-.warn-bar {
-  padding: var(--s-4);
-  border-radius: var(--r-md);
-  background: var(--warn-bg);
-  border: 1px solid color-mix(in srgb, var(--warn) 28%, transparent);
+.warn-block {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--s-3);
+}
+.warn-block-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
 }
 .warn-list {
   margin: 0;
-  padding-left: 1.1em;
-  font-size: var(--fs-sm);
-  color: var(--text-dim);
+  padding-left: 1.15em;
   display: flex;
   flex-direction: column;
-  gap: 2px;
-}
-.kv {
-  display: grid;
-  grid-template-columns: 104px minmax(0, 1fr);
-  gap: var(--s-2) var(--s-3);
+  gap: 3px;
   font-size: var(--fs-sm);
-  align-items: baseline;
+  overflow-wrap: anywhere;
 }
-.kv-k {
-  color: var(--text-faint);
-  font-size: var(--fs-xs);
-}
-.kv-v {
+.notice-body {
+  flex: 1;
   min-width: 0;
+  overflow-wrap: anywhere;
+}
+.dash-notice {
+  margin-top: var(--s-4);
+}
+.hint-row {
+  margin-top: var(--s-4);
+}
+.dash-actions {
+  margin-top: var(--s-5);
+}
+.tl-led {
+  margin-top: 7px;
+}
+.tl-head {
   display: flex;
   align-items: center;
   gap: var(--s-2);
   flex-wrap: wrap;
 }
-.err-box {
-  padding: var(--s-3);
-  border-radius: var(--r-sm);
-  background: var(--danger-bg);
-  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
-  color: var(--danger);
-  font-size: var(--fs-xs);
-  word-break: break-word;
-}
-.timeline {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-3);
-}
-.timeline li {
-  display: flex;
-  gap: var(--s-3);
-  align-items: flex-start;
-}
-.tl-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--brand);
-  margin-top: 6px;
-  flex: none;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 14%, transparent);
-}
-.tl-body {
-  min-width: 0;
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.tl-action {
-  font-size: var(--fs-sm);
-  color: var(--text);
+.tl-time {
+  margin-left: auto;
 }
 </style>

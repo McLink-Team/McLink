@@ -121,33 +121,34 @@ const nodeSeries = computed(() => asArray(data.value?.nodes));
 
 const cards = computed(() => {
   const p = data.value?.platform;
+  // 读数用纸白（数据本身不是状态）；只有"外来网络"是值得被注意的信号，用告警色。
   return [
-    { label: '实时接收', value: p ? formatBitrate(p.rxBps) : '—', hint: `区间累计 ${formatBytes(p?.rxBytes ?? 0)}`, accent: 'brand' as const },
-    { label: '实时发送', value: p ? formatBitrate(p.txBps) : '—', hint: `区间累计 ${formatBytes(p?.txBytes ?? 0)}`, accent: 'violet' as const },
+    { label: '实时接收', value: p ? formatBitrate(p.rxBps) : '未采样', hint: `区间累计 ${formatBytes(p?.rxBytes ?? 0)}`, accent: 'accent' as const },
+    { label: '实时发送', value: p ? formatBitrate(p.txBps) : '未采样', hint: `区间累计 ${formatBytes(p?.txBytes ?? 0)}`, accent: 'accent' as const },
     { label: '今日累计接收', value: formatBytes(totals.value.rxBytes), hint: '自然日 00:00 起', accent: 'accent' as const },
     { label: '今日累计发送', value: formatBytes(totals.value.txBytes), hint: '自然日 00:00 起', accent: 'accent' as const },
-    { label: '外来网络', value: foreignNetworks.value.length, hint: '正在经由主控中继的房间网络', accent: 'ok' as const },
-    { label: '开放房间', value: roomSeries.value.length, hint: '按房间归因的流量序列', accent: 'warn' as const },
+    { label: '外来网络', value: foreignNetworks.value.length, hint: '正在经由主控中继的房间网络', accent: 'warn' as const },
+    { label: '开放房间', value: roomSeries.value.length, hint: '按房间归因的流量序列', accent: 'accent' as const },
   ];
 });
 </script>
 
 <template>
-  <div class="stack" style="gap: var(--s-5)">
-    <div class="row-between wrap">
-      <div>
-        <div class="panel-title">流量监控</div>
-        <p class="panel-sub">
+  <div class="console-page">
+    <header class="console-head">
+      <div class="console-head-text">
+        <h1 class="console-head-title">流量监控</h1>
+        <p class="console-head-sub">
           <template v-if="data">统计起点 {{ formatDateTime(data.since) }} · </template>
           采样间隔约 5 秒；中继出口限速按 kbps 配置，界面统一换算为 bit/s 展示。
         </p>
       </div>
-      <div class="row">
-        <div class="range-group">
+      <div class="console-head-actions">
+        <div class="seg">
           <button
             v-for="r in RANGES"
             :key="r.minutes"
-            class="range-btn"
+            class="seg-item"
             :class="{ active: minutes === r.minutes }"
             type="button"
             @click="setRange(r.minutes)"
@@ -160,61 +161,61 @@ const cards = computed(() => {
           刷新
         </button>
       </div>
-    </div>
+    </header>
 
-    <div v-if="loading && !data" class="grid cards">
-      <div v-for="i in 6" :key="i" class="card">
-        <div class="skeleton" style="height: 12px; width: 40%" />
-        <div class="skeleton" style="height: 26px; width: 60%; margin-top: 10px" />
+    <div v-if="loading && !data" class="stat-grid">
+      <div v-for="i in 6" :key="i" class="stat-skeleton">
+        <div class="skeleton" style="height: 11px; width: 42%" />
+        <div class="skeleton" style="height: 24px; width: 62%; margin-top: 9px" />
       </div>
     </div>
 
-    <div v-else-if="error && !data" class="card">
-      <div class="row-between">
-        <div>
-          <div class="panel-title" style="font-size: var(--fs-base)">流量数据加载失败</div>
-          <p class="panel-sub">{{ error }}</p>
+    <section v-else-if="error && !data" class="console-section">
+      <div class="console-section-head">
+        <div class="console-section-text">
+          <div class="console-sub-title">流量数据加载失败</div>
+          <p class="console-section-note">{{ error }}</p>
         </div>
         <button class="btn" type="button" @click="load">重试</button>
       </div>
-    </div>
+    </section>
 
     <template v-else>
-      <div v-if="error" class="warn-bar">
-        <div class="row wrap" style="gap: var(--s-3)">
-          <Badge tone="danger">刷新失败</Badge>
-          <span class="grow">{{ error }}</span>
-          <button class="btn btn-sm" type="button" @click="load">重试</button>
-        </div>
+      <div v-if="error" class="notice notice-warn">
+        <Badge tone="danger">刷新失败</Badge>
+        <span class="notice-body">{{ error }}</span>
+        <button class="btn btn-sm" type="button" @click="load">重试</button>
       </div>
 
-      <div class="grid cards">
+      <div class="stat-grid">
         <StatCard v-for="c in cards" :key="c.label" :label="c.label" :value="c.value" :hint="c.hint" :accent="c.accent" />
       </div>
 
       <!-- 平台总趋势 -->
-      <section class="card stack">
-        <div class="row-between">
-          <div>
-            <div class="panel-title" style="font-size: var(--fs-base)">平台总收发趋势</div>
-            <p class="panel-sub">实线为接收，虚线为发送；纵轴按区间峰值自适应。</p>
+      <section class="console-section">
+        <div class="console-section-head">
+          <div class="console-section-text">
+            <h2 class="console-section-title">平台总收发趋势</h2>
+            <p class="console-section-note">实线为接收，虚线为发送；纵轴按区间峰值自适应。</p>
           </div>
-          <div class="row" style="gap: var(--s-3); font-size: var(--fs-xs)">
-            <span class="row" style="gap: 6px"><span class="legend-line brand" /> 接收</span>
-            <span class="row" style="gap: 6px"><span class="legend-line accent dashed" /> 发送</span>
+          <div class="legend">
+            <span class="legend-item"><span class="legend-line legend-rx" /> 接收</span>
+            <span class="legend-item"><span class="legend-line legend-tx" /> 发送</span>
           </div>
         </div>
         <Sparkline :points="platform" compare :height="110" />
       </section>
 
       <!-- 外来网络归因 -->
-      <section class="card stack">
-        <div>
-          <div class="panel-title" style="font-size: var(--fs-base)">外来网络 → 房间归因</div>
-          <p class="panel-sub">
-            主控中继正在为其转发的外来网络。这是判断「哪个房间在吃带宽」最直接的视图；
-            「未映射」表示该网络的房间已关闭或尚未登记。
-          </p>
+      <section class="console-section">
+        <div class="console-section-head">
+          <div class="console-section-text">
+            <h2 class="console-section-title">外来网络 → 房间归因</h2>
+            <p class="console-section-note">
+              主控中继正在为其转发的外来网络。这是判断「哪个房间在吃带宽」最直接的视图；
+              「未映射」表示该网络的房间已关闭或尚未登记。
+            </p>
+          </div>
         </div>
 
         <div v-if="foreignNetworks.length === 0" class="empty">
@@ -236,15 +237,13 @@ const cards = computed(() => {
             </thead>
             <tbody>
               <tr v-for="f in foreignNetworks" :key="f.networkName">
-                <td class="mono truncate" style="font-size: var(--fs-xs); max-width: 240px" :title="f.networkName">
-                  {{ f.networkName }}
-                </td>
+                <td class="mono cell-sub">{{ f.networkName }}</td>
                 <td>
                   <template v-if="f.roomName || f.roomCode">
                     <div>{{ f.roomName ?? '未命名房间' }}</div>
-                    <div class="faint" style="font-size: var(--fs-xs)">
-                      <span v-if="f.roomCode" class="mono">{{ f.roomCode }}</span>
-                      <span v-if="f.roomId" class="mono"> · {{ f.roomId }}</span>
+                    <div class="cell-sub">
+                      <span v-if="f.roomCode">{{ f.roomCode }}</span>
+                      <span v-if="f.roomId"> · {{ f.roomId }}</span>
                     </div>
                   </template>
                   <Badge v-else tone="warn">未映射</Badge>
@@ -254,7 +253,7 @@ const cards = computed(() => {
                 <td class="table-num">{{ formatBitrate(f.txBps) }}</td>
                 <td class="table-num">{{ formatBytes(f.rxBytes) }}</td>
                 <td class="table-num">{{ formatBytes(f.txBytes) }}</td>
-                <td class="muted" style="font-size: var(--fs-xs)">{{ formatRelativeTime(f.lastSeenAt) }}</td>
+                <td class="cell-sub">{{ formatRelativeTime(f.lastSeenAt) }}</td>
               </tr>
             </tbody>
           </table>
@@ -262,8 +261,13 @@ const cards = computed(() => {
       </section>
 
       <!-- 房间流量 -->
-      <section class="card stack">
-        <div class="panel-title" style="font-size: var(--fs-base)">房间流量（最近 {{ roomSeries.length }} 个开放房间）</div>
+      <section class="console-section">
+        <div class="console-section-head">
+          <div class="console-section-text">
+            <h2 class="console-section-title">房间流量</h2>
+            <p class="console-section-note">最近 {{ roomSeries.length }} 个开放房间的收发序列。</p>
+          </div>
+        </div>
         <div v-if="roomSeries.length === 0" class="empty">当前没有开放房间的流量样本。</div>
         <div v-else class="table-wrap">
           <table class="table">
@@ -273,12 +277,12 @@ const cards = computed(() => {
                 <th class="table-num">peer</th>
                 <th class="table-num">累计接收</th>
                 <th class="table-num">累计发送</th>
-                <th style="width: 200px">趋势</th>
+                <th class="col-spark">趋势</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="r in roomSeries" :key="r.id">
-                <td class="truncate" style="max-width: 260px">{{ r.label }}</td>
+                <td class="wrap-anywhere">{{ r.label }}</td>
                 <td class="table-num">{{ r.peers ?? 0 }}</td>
                 <td class="table-num">{{ formatBytes(r.rxBytes ?? 0) }}</td>
                 <td class="table-num">{{ formatBytes(r.txBytes ?? 0) }}</td>
@@ -292,8 +296,13 @@ const cards = computed(() => {
       </section>
 
       <!-- 节点流量 -->
-      <section class="card stack">
-        <div class="panel-title" style="font-size: var(--fs-base)">节点流量</div>
+      <section class="console-section">
+        <div class="console-section-head">
+          <div class="console-section-text">
+            <h2 class="console-section-title">节点流量</h2>
+            <p class="console-section-note">按子节点归因的实时速率与累计值。</p>
+          </div>
+        </div>
         <div v-if="nodeSeries.length === 0" class="empty">还没有注册任何子节点。</div>
         <div v-else class="table-wrap">
           <table class="table">
@@ -303,12 +312,12 @@ const cards = computed(() => {
                 <th class="table-num">peer</th>
                 <th class="table-num">实时接收</th>
                 <th class="table-num">实时发送</th>
-                <th style="width: 200px">趋势</th>
+                <th class="col-spark">趋势</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="n in nodeSeries" :key="n.id">
-                <td class="truncate" style="max-width: 260px">{{ n.label }}</td>
+                <td class="wrap-anywhere">{{ n.label }}</td>
                 <td class="table-num">{{ n.peers }}</td>
                 <td class="table-num">{{ formatBitrate(n.rxBps) }}</td>
                 <td class="table-num">{{ formatBitrate(n.txBps) }}</td>
@@ -325,37 +334,31 @@ const cards = computed(() => {
 </template>
 
 <style scoped>
-.cards {
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+/* 读数格子：与 StatCard 自带的上下留白配合，用发丝线分格而不是卡片 */
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(178px, 1fr));
+  border-top: 1px solid var(--rule);
 }
-.table-wrap {
-  overflow-x: auto;
+.stat-grid :deep(.stat) {
+  padding-right: var(--s-4);
+  border-bottom: 1px solid var(--rule);
 }
-.range-group {
-  display: inline-flex;
-  padding: 3px;
-  gap: 2px;
-  border-radius: var(--r-sm);
-  background: var(--surface);
-  border: 1px solid var(--border);
+.stat-skeleton {
+  padding: var(--s-4) var(--s-4) var(--s-4) 0;
+  border-bottom: 1px solid var(--rule);
 }
-.range-btn {
-  height: 30px;
-  padding: 0 var(--s-3);
-  border: 0;
-  border-radius: var(--r-xs);
-  background: transparent;
-  color: var(--text-dim);
+.legend {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
   font-size: var(--fs-xs);
-  cursor: pointer;
-  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+  color: var(--paper-dim);
 }
-.range-btn:hover {
-  color: var(--text);
-}
-.range-btn.active {
-  background: var(--surface-strong);
-  color: var(--text);
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 .legend-line {
   display: inline-block;
@@ -364,20 +367,19 @@ const cards = computed(() => {
   border-top-width: 2px;
   border-top-style: solid;
 }
-.legend-line.brand {
-  border-color: var(--brand);
+.legend-rx {
+  border-color: var(--signal);
 }
-.legend-line.accent {
-  border-color: var(--accent);
-}
-.legend-line.dashed {
+.legend-tx {
+  border-color: var(--sky);
   border-top-style: dashed;
 }
-.warn-bar {
-  padding: var(--s-3) var(--s-4);
-  border-radius: var(--r-md);
-  background: var(--warn-bg);
-  border: 1px solid color-mix(in srgb, var(--warn) 28%, transparent);
-  font-size: var(--fs-sm);
+.col-spark {
+  width: 200px;
+}
+.notice-body {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 </style>

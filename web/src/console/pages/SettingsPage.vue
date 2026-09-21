@@ -136,52 +136,57 @@ const envWhitelist = computed(() => asPatternList(env.value?.relayNetworkWhiteli
 </script>
 
 <template>
-  <div class="stack" style="gap: var(--s-5)">
-    <div class="row-between wrap">
-      <div>
-        <div class="panel-title">平台设置</div>
-        <p class="panel-sub">
+  <div class="console-page">
+    <header class="console-head">
+      <div class="console-head-text">
+        <h1 class="console-head-title">平台设置</h1>
+        <p class="console-head-sub">
           这里的改动会立刻影响落地页与新建房间的默认值；部分项目需要在部署环境里配置才能生效。
         </p>
       </div>
-      <div class="row">
+      <div class="console-head-actions">
         <button class="btn" type="button" :disabled="loading || !defaults" @click="restoreDefaults">恢复默认</button>
         <button class="btn btn-primary" type="button" :disabled="saving || loading" @click="save">
           <span v-if="saving" class="spinner" />
           保存设置
         </button>
       </div>
-    </div>
+    </header>
 
     <div v-if="loading" class="stack">
-      <div class="skeleton" style="height: 260px" />
-      <div class="skeleton" style="height: 180px" />
+      <div class="skeleton" style="height: 240px" />
+      <div class="skeleton" style="height: 160px" />
     </div>
 
-    <div v-else-if="error" class="card">
-      <div class="row-between">
-        <div>
-          <div class="panel-title" style="font-size: var(--fs-base)">设置加载失败</div>
-          <p class="panel-sub">{{ error }}</p>
+    <section v-else-if="error" class="console-section">
+      <div class="console-section-head">
+        <div class="console-section-text">
+          <div class="console-sub-title">设置加载失败</div>
+          <p class="console-section-note">{{ error }}</p>
         </div>
         <button class="btn" type="button" @click="load">重试</button>
       </div>
-    </div>
+    </section>
 
     <template v-else>
-      <div v-if="saveError" class="err-bar">
+      <div v-if="saveError" class="notice notice-danger">
         <Badge tone="danger">保存失败</Badge>
-        <span>{{ saveError }}</span>
+        <span class="notice-body">{{ saveError }}</span>
       </div>
-      <div v-else-if="savedAt" class="ok-bar">
+      <div v-else-if="savedAt" class="notice notice-ok">
         <Badge tone="ok">已保存</Badge>
-        <span class="faint">设置已写入数据库并刷新缓存。</span>
+        <span class="notice-body">设置已写入数据库并刷新缓存。</span>
       </div>
 
       <!-- 站点信息 -->
-      <section class="card stack">
-        <div class="panel-title" style="font-size: var(--fs-base)">站点信息</div>
-        <div class="grid two">
+      <section class="console-section">
+        <div class="console-section-head">
+          <div class="console-section-text">
+            <h2 class="console-section-title">站点信息</h2>
+            <p class="console-section-note">展示在落地页与下载页的对外文案。</p>
+          </div>
+        </div>
+        <div class="form-grid">
           <div class="field">
             <label class="label" for="s-name">站点名称</label>
             <input id="s-name" v-model="form.siteName" class="input" maxlength="60" />
@@ -189,31 +194,31 @@ const envWhitelist = computed(() => asPatternList(env.value?.relayNetworkWhiteli
           </div>
           <div class="field">
             <label class="label" for="s-version">客户端版本号</label>
-            <input id="s-version" v-model="form.clientVersion" class="input" maxlength="40" placeholder="0.1.0" />
+            <input id="s-version" v-model="form.clientVersion" class="input mono" maxlength="40" placeholder="0.1.0" />
             <span class="hint">展示在落地页与下载页，不等于构建产物版本。</span>
           </div>
+          <div class="field field-wide">
+            <label class="label" for="s-tagline">一句话价值主张</label>
+            <input id="s-tagline" v-model="form.siteTagline" class="input" maxlength="200" />
+            <span class="hint">落地页 Hero 下方的副标题。</span>
+          </div>
+          <div class="field field-wide">
+            <label class="label" for="s-announce">平台公告</label>
+            <textarea
+              id="s-announce"
+              v-model="form.announcement"
+              class="textarea"
+              maxlength="300"
+              placeholder="留空表示不显示公告条"
+            />
+            <span class="hint">非空时会在落地页顶部显示一条公告。</span>
+          </div>
         </div>
-        <div class="field">
-          <label class="label" for="s-tagline">一句话价值主张</label>
-          <input id="s-tagline" v-model="form.siteTagline" class="input" maxlength="200" />
-          <span class="hint">落地页 Hero 下方的副标题。</span>
-        </div>
-        <div class="field">
-          <label class="label" for="s-announce">平台公告</label>
-          <textarea
-            id="s-announce"
-            v-model="form.announcement"
-            class="textarea"
-            maxlength="300"
-            placeholder="留空表示不显示公告条"
-          />
-          <span class="hint">非空时会在落地页顶部显示一条公告。</span>
-        </div>
-        <label class="switch">
+        <label class="switch switch-row">
           <input v-model="form.registrationOpen" type="checkbox" />
           <span>开放自助注册（关闭后仅管理员可开号；首个账号始终可注册）</span>
         </label>
-        <p class="hint">
+        <p class="hint hint-measure">
           注册开关同时受环境变量
           <span class="mono">MCLINK_REGISTRATION_OPEN</span> 约束：环境变量关闭时，这里的开关不会覆盖它（当前环境值：
           {{ env?.registrationOpen ? '开放' : '关闭' }}）。
@@ -221,12 +226,23 @@ const envWhitelist = computed(() => asPatternList(env.value?.relayNetworkWhiteli
       </section>
 
       <!-- 客户端下载 -->
-      <section class="card stack">
-        <div class="panel-title" style="font-size: var(--fs-base)">客户端下载</div>
-        <div class="grid two">
+      <section class="console-section">
+        <div class="console-section-head">
+          <div class="console-section-text">
+            <h2 class="console-section-title">客户端下载</h2>
+            <p class="console-section-note">下载页的按钮地址与校验值。</p>
+          </div>
+        </div>
+        <div class="form-grid">
           <div class="field">
             <label class="label" for="s-url">下载地址</label>
-            <input id="s-url" v-model="form.clientDownloadUrl" class="input mono" maxlength="300" placeholder="/downloads/mclink-client-setup.exe" />
+            <input
+              id="s-url"
+              v-model="form.clientDownloadUrl"
+              class="input mono"
+              maxlength="300"
+              placeholder="/downloads/mclink-client-setup.exe"
+            />
             <span class="hint">可以是站内相对路径（放在下载目录）或外部链接。</span>
           </div>
           <div class="field">
@@ -238,18 +254,23 @@ const envWhitelist = computed(() => asPatternList(env.value?.relayNetworkWhiteli
       </section>
 
       <!-- 默认配额与房间 -->
-      <section class="card stack">
-        <div class="panel-title" style="font-size: var(--fs-base)">默认配额与房间策略</div>
-        <div class="grid two">
+      <section class="console-section">
+        <div class="console-section-head">
+          <div class="console-section-text">
+            <h2 class="console-section-title">默认配额与房间策略</h2>
+            <p class="console-section-note">新注册账号与新建房间的初始值，房主可在建房时下调。</p>
+          </div>
+        </div>
+        <div class="form-grid">
           <div class="field">
-            <label class="label">新用户默认月度流量配额</label>
+            <span class="label">新用户默认月度流量配额</span>
             <label class="switch">
               <input v-model="form.quotaUnlimited" type="checkbox" />
               <span>不限制</span>
             </label>
-            <div v-if="!form.quotaUnlimited" class="row">
+            <div v-if="!form.quotaUnlimited" class="quota-row">
               <input v-model="form.quotaGb" class="input" type="number" min="0" step="0.5" />
-              <span class="muted">GB</span>
+              <span class="quota-unit">GB</span>
             </div>
             <span class="hint">当前存储值：{{ currentQuotaText }}</span>
           </div>
@@ -282,31 +303,31 @@ const envWhitelist = computed(() => asPatternList(env.value?.relayNetworkWhiteli
       </section>
 
       <!-- 环境变量只读项 -->
-      <section class="card stack">
-        <div class="row-between">
-          <div>
-            <div class="panel-title" style="font-size: var(--fs-base)">来自环境变量的只读项</div>
-            <p class="panel-sub">这些值由部署环境决定，界面上不可修改；改完需要重新部署主控。</p>
+      <section class="console-section">
+        <div class="console-section-head">
+          <div class="console-section-text">
+            <h2 class="console-section-title">来自环境变量的只读项</h2>
+            <p class="console-section-note">这些值由部署环境决定，界面上不可修改；改完需要重新部署主控。</p>
           </div>
           <Badge tone="neutral">只读</Badge>
         </div>
         <div class="kv">
           <span class="kv-k">中继端口</span>
-          <span class="kv-v mono">
-            {{ env?.relayPort ?? '—' }}
-            <span class="faint" style="font-size: var(--fs-xs)">MCLINK_RELAY_PORT / easytier.relayPort</span>
+          <span class="kv-v">
+            <span class="readout">{{ env?.relayPort ?? '未配置' }}</span>
+            <span class="cell-sub">MCLINK_RELAY_PORT / easytier.relayPort</span>
           </span>
           <span class="kv-k">中继白名单</span>
-          <span class="kv-v mono truncate" :title="envWhitelist.join(', ')">
-            {{ envWhitelist.length > 0 ? envWhitelist.join(', ') : '（未配置）' }}
-            <span class="faint" style="font-size: var(--fs-xs); font-family: var(--font-sans)">
-              只有匹配的网络名才会被中继转发，默认 mclink-room-*
+          <span class="kv-v">
+            <span class="mono wrap-anywhere">
+              {{ envWhitelist.length > 0 ? envWhitelist.join(', ') : '（未配置）' }}
             </span>
+            <span class="cell-sub">只有匹配的网络名才会被中继转发，默认 mclink-room-*</span>
           </span>
           <span class="kv-k">注册开关</span>
           <span class="kv-v">
             <Badge :tone="env?.registrationOpen ? 'ok' : 'neutral'">{{ env?.registrationOpen ? '开放' : '关闭' }}</Badge>
-            <span class="faint" style="font-size: var(--fs-xs)">MCLINK_REGISTRATION_OPEN</span>
+            <span class="cell-sub">MCLINK_REGISTRATION_OPEN</span>
           </span>
         </div>
       </section>
@@ -315,45 +336,35 @@ const envWhitelist = computed(() => asPatternList(env.value?.relayNetworkWhiteli
 </template>
 
 <style scoped>
-.two {
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-}
-.kv {
+.form-grid {
   display: grid;
-  grid-template-columns: 112px minmax(0, 1fr);
-  gap: var(--s-2) var(--s-3);
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--s-4) var(--s-5);
+  align-items: start;
+}
+.field-wide {
+  grid-column: 1 / -1;
+}
+.switch-row {
+  margin-top: var(--s-4);
+}
+.hint-measure {
+  margin-top: 6px;
+  max-width: 74ch;
+}
+.quota-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+.quota-unit {
   font-size: var(--fs-sm);
-  align-items: baseline;
+  color: var(--paper-dim);
+  font-family: var(--font-mono);
 }
-.kv-k {
-  color: var(--text-faint);
-  font-size: var(--fs-xs);
-}
-.kv-v {
+.notice-body {
+  flex: 1;
   min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
-  flex-wrap: wrap;
-}
-.err-bar {
-  display: flex;
-  align-items: center;
-  gap: var(--s-3);
-  padding: var(--s-3) var(--s-4);
-  border-radius: var(--r-md);
-  background: var(--danger-bg);
-  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
-  font-size: var(--fs-sm);
-}
-.ok-bar {
-  display: flex;
-  align-items: center;
-  gap: var(--s-3);
-  padding: var(--s-3) var(--s-4);
-  border-radius: var(--r-md);
-  background: var(--ok-bg);
-  border: 1px solid color-mix(in srgb, var(--ok) 28%, transparent);
-  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
 }
 </style>

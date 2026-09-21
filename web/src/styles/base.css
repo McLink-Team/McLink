@@ -114,7 +114,7 @@ textarea {
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(244, 239, 230, 0.18) transparent;
+  scrollbar-color: var(--rule-strong) transparent;
 }
 *::-webkit-scrollbar {
   width: 11px;
@@ -124,13 +124,13 @@ textarea {
   background: transparent;
 }
 *::-webkit-scrollbar-thumb {
-  background: rgba(244, 239, 230, 0.16);
+  background: var(--scroll-thumb);
   border-radius: 999px;
   border: 3px solid transparent;
   background-clip: content-box;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: rgba(244, 239, 230, 0.3);
+  background: var(--scroll-thumb-hover);
   background-clip: content-box;
 }
 
@@ -335,8 +335,8 @@ dt + dd {
     color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
 }
 .btn:hover:not(:disabled) {
-  background: rgba(244, 239, 230, 0.06);
-  border-color: rgba(244, 239, 230, 0.3);
+  background: var(--surface-hair-strong);
+  border-color: var(--rule-hover);
 }
 .btn:active:not(:disabled) {
   transform: translateY(1px);
@@ -348,25 +348,25 @@ dt + dd {
 .btn-primary {
   background: var(--signal);
   border-color: var(--signal);
-  color: #1a1206;
+  color: var(--on-signal);
   font-weight: 600;
 }
 .btn-primary:hover:not(:disabled) {
-  background: #f2b357;
-  border-color: #f2b357;
+  background: var(--signal-bright);
+  border-color: var(--signal-bright);
 }
 .btn-ghost {
   border-color: transparent;
   color: var(--paper-dim);
 }
 .btn-ghost:hover:not(:disabled) {
-  background: rgba(244, 239, 230, 0.05);
+  background: var(--surface-hair);
   color: var(--paper);
   border-color: transparent;
 }
 .btn-danger {
-  border-color: rgba(217, 112, 95, 0.42);
-  color: #efb0a5;
+  border-color: var(--fault-line);
+  color: var(--fault-text);
 }
 .btn-danger:hover:not(:disabled) {
   background: var(--fault-wash);
@@ -406,22 +406,22 @@ dt + dd {
 }
 .badge-ok {
   color: var(--link);
-  border-color: rgba(143, 191, 106, 0.34);
+  border-color: var(--link-line);
   background: var(--link-wash);
 }
 .badge-warn {
   color: var(--warn);
-  border-color: rgba(217, 164, 65, 0.34);
+  border-color: var(--warn-line);
   background: var(--warn-wash);
 }
 .badge-danger {
   color: var(--fault);
-  border-color: rgba(217, 112, 95, 0.34);
+  border-color: var(--fault-line);
   background: var(--fault-wash);
 }
 .badge-info {
   color: var(--sky);
-  border-color: rgba(134, 168, 196, 0.34);
+  border-color: var(--sky-line);
   background: var(--sky-wash);
 }
 .badge-neutral {
@@ -429,7 +429,7 @@ dt + dd {
 }
 .badge-brand {
   color: var(--signal);
-  border-color: rgba(233, 164, 65, 0.38);
+  border-color: var(--signal-line);
   background: var(--signal-wash);
 }
 
@@ -643,7 +643,7 @@ dt + dd {
   vertical-align: middle;
 }
 .table tbody tr:hover td {
-  background: rgba(244, 239, 230, 0.035);
+  background: var(--surface-hair);
 }
 .table tbody tr:last-child td {
   border-bottom: 0;
@@ -759,31 +759,31 @@ dt + dd {
   font-size: var(--fs-sm);
 }
 .alert-warn {
-  border-color: rgba(217, 164, 65, 0.34);
+  border-color: var(--warn-line);
   background: var(--warn-wash);
-  color: #f0d8a6;
+  color: var(--warn-text);
 }
 .alert-danger {
-  border-color: rgba(217, 112, 95, 0.34);
+  border-color: var(--fault-line);
   background: var(--fault-wash);
-  color: #f2c3b9;
+  color: var(--fault-text);
 }
 .alert-ok {
-  border-color: rgba(143, 191, 106, 0.34);
+  border-color: var(--link-line);
   background: var(--link-wash);
-  color: #d6e9c4;
+  color: var(--link-text);
 }
 .alert-info {
-  border-color: rgba(134, 168, 196, 0.34);
+  border-color: var(--sky-line);
   background: var(--sky-wash);
-  color: #cfdde8;
+  color: var(--sky-text);
 }
 
 /* 泛型链接：下划线偏移随字体调过，不贴字底 */
 .link {
   color: var(--signal);
   text-decoration: underline;
-  text-decoration-color: rgba(233, 164, 65, 0.4);
+  text-decoration-color: var(--signal-line);
   text-underline-offset: 3px;
   text-decoration-thickness: 1px;
   transition: text-decoration-color var(--dur-fast) var(--ease);
@@ -1083,19 +1083,19 @@ dt + dd {
   overflow-wrap: anywhere;
 }
 .notice-warn {
-  border-color: rgba(217, 164, 65, 0.34);
+  border-color: var(--warn-line);
   background: var(--warn-wash);
-  color: #f0d8a6;
+  color: var(--warn-text);
 }
 .notice-danger {
-  border-color: rgba(217, 112, 95, 0.34);
+  border-color: var(--fault-line);
   background: var(--fault-wash);
-  color: #f2c3b9;
+  color: var(--fault-text);
 }
 .notice-ok {
-  border-color: rgba(143, 191, 106, 0.34);
+  border-color: var(--link-line);
   background: var(--link-wash);
-  color: #d6e9c4;
+  color: var(--link-text);
 }
 
 /* ------------------------------------------------------------ 分段控件
@@ -1126,7 +1126,7 @@ dt + dd {
 }
 .seg-item:hover {
   color: var(--paper);
-  background: rgba(244, 239, 230, 0.05);
+  background: var(--surface-hair);
 }
 .seg-item.active {
   background: var(--ink-700);
