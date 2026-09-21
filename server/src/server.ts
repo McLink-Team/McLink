@@ -151,6 +151,27 @@ export function createServer(app: App): RunningServer {
         return;
       }
 
+      /*
+       * ---- 静态：Linux 版 EasyTier 二进制 ----
+       * 子节点装的时候优先从这里取，国内节点就不用去 GitHub（或其代理）下载了。
+       * 是不是"有"取决于主控是怎么装的：从源码包装的会带上
+       * `deploy/vendor/linux-x86_64/`（打包脚本会塞进去），纯 git clone 的没有 ——
+       * 没有就返回 404，装节点的脚本会退回到 GitHub（可带代理）。
+       */
+      if (url.pathname === Routes.agentCoreBin || url.pathname === Routes.agentCliBin) {
+        const name = url.pathname === Routes.agentCoreBin ? 'easytier-core' : 'easytier-cli';
+        const target = path.join(REPO_ROOT, 'deploy', 'vendor', 'linux-x86_64', name);
+        if (!fs.existsSync(target)) {
+          throw HttpError.notFound(
+            `主控上没有 ${name}（deploy/vendor/linux-x86_64/）。` +
+              '可在开发机执行 `pnpm fetch:easytier --all` 后把它放进该目录，或让子节点走 GitHub。',
+          );
+        }
+        streamFile(ctx, target, 0);
+        logRequest(ctx, started);
+        return;
+      }
+
       // ---- 静态：客户端安装包 ----
       if (url.pathname.startsWith('/downloads/')) {
         const rel = url.pathname.slice('/downloads/'.length);

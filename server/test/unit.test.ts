@@ -25,6 +25,7 @@ import {
 import { resolveFrom } from '../src/services/mailer.ts';
 import { emailGateProblem } from '../src/services/email-gate.ts';
 import { normalizePort } from '../src/services/nodes.ts';
+import { isDecorationLine } from '../src/easytier/process.ts';
 import { endpointHost, endpointPort, nodeClientEndpoint, nodeConnectPort, nodeListenPort } from '../src/db/nodes.ts';
 import type { NodeRow } from '../src/db/nodes.ts';
 import type { UserRow } from '../src/db/users.ts';
@@ -446,6 +447,21 @@ describe('子节点端口：运行端口 / 链接端口分离', () => {
     assert.equal(normalizePort('abc'), null);
     assert.equal(normalizePort(undefined), null);
     assert.equal(normalizePort(11010.9), 11010);
+  });
+});
+
+describe('日志视图：滤掉纯装饰行', () => {
+  test('只把"整行都是分隔符"的行当装饰，正常日志不受影响', () => {
+    // easytier-core 启动横幅
+    assert.ok(isDecorationLine('-----------------------------------'));
+    assert.ok(isDecorationLine('====='));
+    assert.ok(isDecorationLine('  --------  '), '两侧空白应被容忍');
+    // 正常日志绝不能被误判
+    assert.ok(!isDecorationLine('2026-09-21T21:15:00  INFO CORE::INSTANCE: new listener added'));
+    assert.ok(!isDecorationLine('---- 启动完成 ----'), '夹着文字的不能算装饰');
+    assert.ok(!isDecorationLine('--'), '太短的不算（可能是有意义的短横线）');
+    assert.ok(!isDecorationLine('-#'), '混了别的不算');
+    assert.ok(!isDecorationLine('error: cannot bind 0.0.0.0:11010'));
   });
 });
 

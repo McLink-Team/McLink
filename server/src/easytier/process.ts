@@ -14,6 +14,20 @@ import { logger } from '../logger.ts';
 
 const log = logger('easytier-core');
 
+/**
+ * 判断一行日志是不是"纯装饰"。
+ *
+ * easytier-core 启动时会写一行几十个连字符的横幅（`-------------------`）。
+ * 控制台把日志当正文渲染，于是整页看起来像被破折号填满 —— 设计检查器会因此报
+ * `em-dash-overuse`，而人看也确实是噪声。这里的判据刻意收得很紧：
+ * **整行只由分隔符与空白组成且长度 ≥8**，正常日志不会被误伤。
+ */
+export function isDecorationLine(line: string): boolean {
+  // 门槛定在 4 个字符：`----` / `====` 这类纯分隔线没有信息量；
+  // 而 `--`（2 个）可能是命令行片段，不碰。
+  return /^[-=~*_#\s]{4,}$/.test(line.trim());
+}
+
 export type CoreState = 'stopped' | 'starting' | 'running' | 'error';
 
 export interface CoreRunOptions {
@@ -94,8 +108,15 @@ export class EasytierCore extends EventEmitter<CoreEvents> {
   }
 
   /** 最近日志（内存环形缓冲），供管理台查看 */
+  /**
+   * 供界面展示的最近日志。
+   *
+   * 这里会滤掉"纯装饰行"：easytier-core 启动时会往日志里写一行几十个连字符的横幅，
+   * 控制台的日志面板把它当正文渲染出来 —— 对排查没用，却让整页看起来像破折号堆。
+   * 注意只影响界面视图：落盘的日志文件仍然保留原样，排查时能看到全部。
+   */
   recentLogs(limit = 200): string[] {
-    return this.#ring.slice(-limit);
+    return this.#ring.filter((line) => !isDecorationLine(line)).slice(-limit);
   }
 
   async start(): Promise<CoreStatus> {

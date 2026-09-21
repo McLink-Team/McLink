@@ -1,8 +1,9 @@
 /** 管理员接口：仪表盘、节点管理、房间管理、用户管理、流量、审计、中继控制 */
-import { Routes, emailProblem, regionLabel, type PlatformSettings, type SmtpEncryption } from '@mclink/shared';
+import { Routes, DEFAULT_GITHUB_PROXY, emailProblem, regionLabel, type PlatformSettings, type SmtpEncryption } from '@mclink/shared';
+import fs from 'node:fs';
 import type { App } from '../app.ts';
 import type { Router } from '../http/kit.ts';
-import { optInt, optStr, paging, req, requireAdmin } from './helpers.ts';
+import { optBool, optInt, optStr, paging, req, requireAdmin } from './helpers.ts';
 import { HttpError } from '../util/errors.ts';
 import { logger } from '../logger.ts';
 import { toNode } from '../db/nodes.ts';
@@ -127,6 +128,8 @@ export function registerAdminRoutes(router: Router, app: App): void {
       host: optStr(body, 'host', 120),
       listenPort: optInt(body, 'listenPort', 1, 65535),
       connectPort: optInt(body, 'connectPort', 1, 65535),
+      domestic: optBool(body, 'domestic') === true,
+      githubProxy: optStr(body, 'githubProxy', 200),
     };
     return {
       enrollKey: key,
@@ -140,6 +143,8 @@ export function registerAdminRoutes(router: Router, app: App): void {
         host: options.host ?? null,
         listenPort: options.listenPort ?? app.config.easytier.relayPort,
         connectPort: options.connectPort ?? options.listenPort ?? app.config.easytier.relayPort,
+        domestic: options.domestic,
+        githubProxy: options.domestic ? normalizeGithubProxy(options.githubProxy) : null,
       },
     };
   }, { auth: true, admin: true });
@@ -538,18 +543,31 @@ export function registerAdminRoutes(router: Router, app: App): void {
   router.get(Routes.adminRelay, (ctx) => {
     requireAdmin(ctx);
     const sample = app.relay.latest();
+    const et = app.config.easytier;
     return {
       runtime: app.relay.status(),
       configToml: app.relay.renderConfig(),
       configFile: app.relay.configFilePath,
       logFile: app.relay.logFilePath,
       cliVersion: app.relay.cliVersion,
-      coreBin: app.config.easytier.coreBin,
-      cliBin: app.config.easytier.cliBin,
+      coreBin: et.coreBin,
+      cliBin: et.cliBin,
+      /**
+       * 诊断信息：中继没在运行时，"为什么"必须能从界面上直接读出来。
+       * 之前只写了日志 —— 运维在控制台看到「未运行」却无从下手（实测踩过）。
+       */
+      diagnostics: {
+        autoStart: app.config.autoStartRelay,
+        coreExists: fs.existsSync(et.coreBin),
+        cliExists: fs.existsSync(et.cliBin),
+        relayPort: et.relayPort,
+        // 启动时的告警（例如"没有可用的 easytier-core"）挑与中继相关的带出来
+        warnings: app.warnings.filter((w) => /easytier|中继|relay|core|cli/i.test(w)),
+      },
       peers: sample?.peers ?? [],
       logs: app.relay.recentLogs(150),
-      whitelist: app.config.easytier.relayNetworkWhitelist,
-      whitelistPatterns: splitPatterns(app.config.easytier.relayNetworkWhitelist),
+      whitelist: et.relayNetworkWhitelist,
+      whitelistPatterns: splitPatterns(et.relayNetworkWhitelist),
     };
   }, { auth: true, admin: true });
 
@@ -625,7 +643,16 @@ export function registerAdminRoutes(router: Router, app: App): void {
 function buildAgentCommand(
   app: App,
   key: string,
-  options: { region?: string; name?: string; host?: string; listenPort?: number; connectPort?: number } = {},
+  options: {
+    region?: string;
+    name?: string;
+    host?: string;
+    listenPort?: number;
+    connectPort?: number;
+    /** 是否为国内节点：是则带上 GitHub 加速前缀，下载 EasyTier 不至于超时 */
+    domestic?: boolean;
+    githubProxy?: string;
+  } = {},
 ): string {
   const base = app.config.publicBaseUrl || `http://${publicHostOf(app)}`;
   const listen = options.listenPort ?? app.config.easytier.relayPort;
@@ -634,7 +661,7 @@ function buildAgentCommand(
   const name = options.name ?? 'relay-sh';
   // 没给主机名时留一个明显的占位符，让管理员知道必须替换
   const host = options.host ?? '<把这个换成子节点的公网域名或IP>';
-  return [
+  const parts = [
     `curl -fsSL ${base}/agent/install.sh | sudo bash -s --`,
     `--master ${base}`,
     `--key ${key}`,
@@ -642,7 +669,23 @@ function buildAgentCommand(
     `--name ${name}`,
     `--endpoint ${host}:${connect}`,
     `--listen-port ${listen}`,
-  ].join(' ');
+  ];
+  /*
+   * 国内节点才带代理前缀。装的时候 EasyTier 的下载顺序是
+   * 「本机已有 → 从主控取 → GitHub（此处加代理）」，所以只有当主控自己也没带
+   * Linux 二进制时，这个前缀才会真正被用到 —— 但那时它就是能不能装上的分水岭。
+   */
+  if (options.domestic) {
+    const proxy = normalizeGithubProxy(options.githubProxy);
+    parts.push(`--github-proxy ${proxy}`);
+  }
+  return parts.join(' ');
+}
+
+/** 把用户填的代理前缀归一化成"以 / 结尾"的形式；空值回退到内置默认 */
+function normalizeGithubProxy(raw: string | undefined): string {
+  const value = (raw ?? '').trim() || DEFAULT_GITHUB_PROXY;
+  return value.endsWith('/') ? value : `${value}/`;
 }
 
 /** 兜底用的"本机地址"：优先公网基础 URL 的主机名，其次回退中继公网主机 */

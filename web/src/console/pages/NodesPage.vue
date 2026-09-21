@@ -5,6 +5,7 @@
  */
 import { computed, onMounted, reactive, ref } from 'vue';
 import {
+  DEFAULT_GITHUB_PROXY,
   REGIONS,
   Routes,
   formatBitrate,
@@ -48,6 +49,9 @@ interface EnrollKeyResult {
     host: string | null;
     listenPort: number;
     connectPort: number;
+    /** 是否为国内节点（是则命令里带了 GitHub 加速前缀） */
+    domestic: boolean;
+    githubProxy: string | null;
   };
 }
 
@@ -129,6 +133,13 @@ const enrollForm = reactive({
   host: '',
   listenPort: '11010',
   connectPort: '',
+  /**
+   * 国内节点：装的时候要下 EasyTier 二进制。
+   * 取值顺序是「本机已有 → 从主控取 → GitHub」，所以代理只在主控自己没带二进制时
+   * 才真正被用到 —— 但那时它就是能不能装上的区别。
+   */
+  domestic: true,
+  githubProxy: DEFAULT_GITHUB_PROXY,
 });
 
 async function openEnroll(): Promise<void> {
@@ -166,6 +177,8 @@ async function createEnrollKey(): Promise<void> {
       host: enrollForm.host.trim() || undefined,
       listenPort: listen,
       connectPort: connect,
+      domestic: enrollForm.domestic,
+      githubProxy: enrollForm.domestic ? enrollForm.githubProxy.trim() || undefined : undefined,
     });
     enrollCreated.value = result;
     enrollNote.value = '';
@@ -494,6 +507,30 @@ async function removeNode(node: RelayNode): Promise<void> {
           </div>
         </div>
 
+        <!-- 国内节点：EasyTier 二进制的下载路径 -->
+        <div class="enroll-domestic">
+          <label class="switch switch-row">
+            <input v-model="enrollForm.domestic" type="checkbox" />
+            <span>国内节点（下载 EasyTier 走 GitHub 加速）</span>
+          </label>
+          <div v-if="enrollForm.domestic" class="field" style="margin-top: var(--s-2)">
+            <label class="label" for="enroll-proxy">GitHub 加速前缀</label>
+            <input
+              id="enroll-proxy"
+              v-model="enrollForm.githubProxy"
+              class="input mono"
+              placeholder="https://ghproxy.net/"
+              maxlength="200"
+            />
+            <span class="hint">
+              装节点的脚本取值顺序是：本机已有 → 从主控下载 → GitHub（用这个前缀）。
+              主控若自带 Linux 二进制就完全不碰 GitHub；这类公益代理会失效，
+              失效了就换一个（<span class="mono">gh-proxy.com</span> /
+              <span class="mono">ghfast.top</span> 实测可用）。
+            </span>
+          </div>
+        </div>
+
         <div v-if="enrollError" class="notice notice-danger">{{ enrollError }}</div>
 
         <div v-if="enrollCreated" class="key-block">
@@ -515,6 +552,10 @@ async function removeNode(node: RelayNode): Promise<void> {
             端口不同时，记得在外部把
             <span class="mono">{{ enrollCreated.params.connectPort }}</span>
             映射到本机的 <span class="mono">{{ enrollCreated.params.listenPort }}</span>。
+            <template v-if="enrollCreated.params.githubProxy">
+              已按国内节点处理：EasyTier 下载会走
+              <span class="mono">{{ enrollCreated.params.githubProxy }}</span>。
+            </template>
           </p>
         </div>
 
@@ -693,6 +734,12 @@ async function removeNode(node: RelayNode): Promise<void> {
 .enroll-row .input {
   flex: 1;
   min-width: 0;
+}
+/* 国内节点那一块：与上面的端口表单用发丝线隔开，避免看成同一个字段组 */
+.enroll-domestic {
+  margin-top: var(--s-3);
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--rule-faint);
 }
 /* 新密钥块：用一条上发丝线起头，不再套第二层卡片 */
 .key-block {

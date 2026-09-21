@@ -32,6 +32,8 @@ ENDPOINT=""
 # 运行端口 / 链接端口：默认都取 --endpoint 的端口；NAT 后面两者可以不同
 LISTEN_PORT=""
 CONNECT_PORT=""
+# GitHub 加速前缀（国内节点用）；空 = 直连 GitHub
+GITHUB_PROXY="${MCLINK_GITHUB_PROXY:-}"
 NODE_NAME=""
 CAPACITY_PEERS="500"
 TAGS=""
@@ -83,6 +85,12 @@ mclink 子节点（区域中继）一键安装脚本（Debian 12 x86_64）
   --connect-port <端口>      **链接端口**：主控下发给客户端用的端口，默认取 --endpoint
                             的端口。两者相同时（多数情况）不用写。
 
+国内节点加速：
+  --github-proxy <前缀>      GitHub 加速前缀，例如 https://ghproxy.net/
+                            （或环境变量 MCLINK_GITHUB_PROXY）
+                            EasyTier 二进制按这个顺序取：本机已有 → 从主控下载 →
+                            GitHub（国内建议加本参数，否则可能超时）。
+
 可选：
   --name <名称>              节点显示名，默认取主机名
   --capacity-peers <n>       可承载的最大 peer 数，默认 500
@@ -115,6 +123,7 @@ while [[ $# -gt 0 ]]; do
     --endpoint)          [[ $# -ge 2 ]] || die "--endpoint 缺少参数"; ENDPOINT="$2"; shift 2 ;;
     --listen-port)       [[ $# -ge 2 ]] || die "--listen-port 缺少参数"; LISTEN_PORT="$2"; shift 2 ;;
     --connect-port)      [[ $# -ge 2 ]] || die "--connect-port 缺少参数"; CONNECT_PORT="$2"; shift 2 ;;
+    --github-proxy)      [[ $# -ge 2 ]] || die "--github-proxy 缺少参数"; GITHUB_PROXY="$2"; shift 2 ;;
     --name)              [[ $# -ge 2 ]] || die "--name 缺少参数"; NODE_NAME="$2"; shift 2 ;;
     --capacity-peers)    [[ $# -ge 2 ]] || die "--capacity-peers 缺少参数"; CAPACITY_PEERS="$2"; shift 2 ;;
     --tags)              [[ $# -ge 2 ]] || die "--tags 缺少参数"; TAGS="$2"; shift 2 ;;
@@ -163,6 +172,15 @@ for _p in "$LISTEN_PORT" "$CONNECT_PORT"; do
 done
 unset _p
 ENDPOINT="${ENDPOINT_HOST}:${CONNECT_PORT}"
+
+# GitHub 加速前缀统一成"以 / 结尾"，避免用户写成 https://ghproxy.net 时拼出坏 URL
+if [[ -n "$GITHUB_PROXY" ]]; then
+  case "$GITHUB_PROXY" in
+    http://*|https://*) : ;;
+    *) die "--github-proxy 必须以 http:// 或 https:// 开头: $GITHUB_PROXY" ;;
+  esac
+  [[ "${GITHUB_PROXY}" == */ ]] || GITHUB_PROXY="${GITHUB_PROXY}/"
+fi
 
 case "$INSTALL_DIR" in
   /*) : ;;
@@ -329,10 +347,33 @@ install_easytier() {
     [[ -f "${seed}/easytier-cli" ]] && cp -f "${seed}/easytier-cli" "${et_dir}/easytier-cli" || true
   fi
 
-  # 2) 否则从 GitHub Releases 下载（用 -f 而不是 -x：复制过来的文件可能还没可执行位）
+  # 2) 其次从**主控**取：主控若带着 Linux 二进制（用 pack-server-source 打的源码包就有），
+  #    国内节点就完全不需要碰 GitHub。没有则 404，继续往下走。
+  if [[ ! -f "${et_dir}/easytier-core" || ! -f "${et_dir}/easytier-cli" ]]; then
+    local from_master=0
+    for pair in "easytier-core:/agent/easytier-core" "easytier-cli:/agent/easytier-cli"; do
+      local bin="${pair%%:*}" path="${pair#*:}"
+      [[ -f "${et_dir}/${bin}" ]] && continue
+      if curl -fsSL --connect-timeout 10 --max-time 120 -o "${et_dir}/${bin}.tmp" "${MASTER}${path}"; then
+        mv -f "${et_dir}/${bin}.tmp" "${et_dir}/${bin}"
+        from_master=1
+      else
+        rm -f "${et_dir}/${bin}.tmp"
+      fi
+    done
+    if (( from_master == 1 )); then
+      ok "已从主控取得 EasyTier 二进制（无需访问 GitHub）"
+    fi
+  fi
+
+  # 3) 最后才是 GitHub Releases，可加国内加速前缀（用 -f 而不是 -x：复制过来的文件可能还没可执行位）
   if [[ ! -f "${et_dir}/easytier-core" || ! -f "${et_dir}/easytier-cli" ]]; then
     local url tmp
     url="https://github.com/EasyTier/EasyTier/releases/download/${ET_VERSION}/easytier-linux-x86_64-${ET_VERSION}.zip"
+    if [[ -n "$GITHUB_PROXY" ]]; then
+      url="${GITHUB_PROXY}${url}"
+      log "使用 GitHub 加速前缀：${GITHUB_PROXY}"
+    fi
     tmp="$(mktemp -d)"
     log "下载 EasyTier ${ET_VERSION}：${url}"
     if curl -fL --retry 3 --connect-timeout 20 --retry-delay 3 -o "${tmp}/et.zip" "$url"; then
@@ -358,7 +399,12 @@ install_easytier() {
     [[ -f "${et_dir}/easytier-cli" ]] || warn "缺少 easytier-cli：本节点将无法上报逐房间流量"
   else
     warn "没有可用的 easytier-core：服务可以启动并注册，但不会真的提供中继"
-    warn "稍后在源码目录重新执行本脚本（不要加 --skip-easytier）即可补齐二进制"
+    warn "已尝试：本机自带产物 → 主控 /agent/ → GitHub Releases"
+    if [[ -z "$GITHUB_PROXY" ]]; then
+      warn "国内机器建议加 --github-proxy https://ghproxy.net/ 重跑（GitHub 直连常常超时）"
+    else
+      warn "已使用加速前缀 ${GITHUB_PROXY}，仍失败的话换一个前缀或改用 --source 指向本机已有产物"
+    fi
   fi
   return 0
 }
