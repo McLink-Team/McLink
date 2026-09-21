@@ -908,16 +908,62 @@ async function register(cfg, log) {
     log.warn('主控未下发 relayConfigToml，将沿用本地已有配置');
   }
 
-  return saveState(
-    cfg,
-    {
-      nodeId,
-      nodeToken,
-      launchArgs: launchArgs.length > 0 ? launchArgs : ['-c', CONFIG_PLACEHOLDER],
-      configRevision: 0,
-    },
-    log,
-  );
+  try {
+    return saveState(
+      cfg,
+      {
+        nodeId,
+        nodeToken,
+        launchArgs: launchArgs.length > 0 ? launchArgs : ['-c', CONFIG_PLACEHOLDER],
+        configRevision: 0,
+      },
+      log,
+    );
+  } catch (err) {
+    /*
+     * 走到这里是最坏的一种状态：主控那边**注册已经成功、一次性密钥已被消耗**，
+     * 但令牌没能落盘。必须把这件事说透 —— 否则下次重启只会看到"密钥已被使用"，
+     * 完全看不出"其实注册成功过、只是令牌丢了"。
+     */
+    const wrapped = new Error(
+      `节点令牌写入失败（${err?.code ?? err?.message}）：${cfg.tokenFile}。` +
+        `⚠ 注册已经成功、这把一次性密钥已被消耗，但令牌没保存下来。` +
+        `请先修好目录归属（sudo chown -R mclink:mclink ${cfg.stateDir}），` +
+        `然后到管理台重新签发一把注册密钥再跑。`,
+    );
+    wrapped.code = 'TOKEN_NOT_PERSISTED';
+    throw wrapped;
+  }
+}
+
+/**
+ * 注册前先确认状态目录可写。
+ *
+ * 为什么必须在**注册之前**检查：注册密钥是一次性的。如果先注册成功、
+ * 再发现令牌写不下来，那把密钥就白扔了 —— 而 systemd 之后每次重启都会拿着
+ * 同一把废密钥去注册，得到"注册密钥已被使用"，无限重启（实测 restart counter 132）。
+ * 与其让它烧掉密钥并陷入循环，不如在动手之前就说清楚。
+ */
+function assertStateWritable(cfg, log) {
+  const probe = path.join(cfg.stateDir, '.mclink-write-probe');
+  try {
+    fs.mkdirSync(cfg.stateDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(probe, 'ok', { mode: 0o600 });
+  } catch (err) {
+    throw new Error(
+      `状态目录不可写：${cfg.stateDir}（${err?.code ?? err?.message}）。` +
+        `agent 以当前用户运行，需要能在这里写节点令牌与中继配置。` +
+        `请先修好归属：sudo chown -R mclink:mclink ${cfg.stateDir}，再重跑。` +
+        `（注册密钥是一次性的，此时还没有被消耗掉。）`,
+    );
+  } finally {
+    try {
+      fs.rmSync(probe, { force: true });
+    } catch {
+      /* 探针文件清不掉不影响判断 */
+    }
+  }
+  log.debug('状态目录可写', { dir: cfg.stateDir });
 }
 
 /* ---------------------------------------------------------------- 心跳 */
@@ -1013,6 +1059,8 @@ async function main() {
     log.info('已加载本地节点令牌', { nodeId: state.nodeId ?? '(未知)', file: cfg.tokenFile });
   } else {
     try {
+      // 先确认写不写得下，再去消耗那把一次性密钥
+      assertStateWritable(cfg, log);
       state = await register(cfg, log);
       log.info('注册密钥已完成使命，可以从 node.env 中删除 MCLINK_NODE_ENROLL_KEY');
     } catch (err) {
@@ -1020,8 +1068,16 @@ async function main() {
       if (err instanceof ApiError && err.code === 'forbidden') {
         log.error('注册密钥无效 / 已被使用 / 已被吊销：请在管理台重新签发后重试');
       }
+      if (err?.code === 'TOKEN_NOT_PERSISTED') {
+        log.error('▲ 注意：这次注册其实**已经成功**，密钥被消耗了，只是令牌没写下来。');
+      }
+      /*
+       * 这类错误是"配置不对"，重试一百次也是同一个结果：
+       * 所以返回 3，配合 systemd 单元的 RestartPreventExitCode=3 停掉重启循环 ——
+       * 让服务明明白白地处于 failed，而不是每 3 秒重启一次把真正的原因刷没。
+       */
       log.close();
-      return 1;
+      return 3;
     }
   }
 

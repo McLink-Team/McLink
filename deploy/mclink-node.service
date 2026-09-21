@@ -15,6 +15,12 @@ Documentation=file:///opt/mclink-node/app/docs/deployment.md
 After=network-online.target
 Wants=network-online.target
 
+# 重试要有上限：配置错了（注册密钥已用、状态目录不可写）agent 会立刻退出，
+# 而 Restart=always 会每 3 秒拉一次、永远拉下去 —— 实测有人看到 restart counter 132，
+# 真正的报错被刷得看不见。这里限制 300 秒内最多 10 次，超了就让服务停在 failed。
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
 [Service]
 Type=simple
 User=mclink
@@ -27,6 +33,9 @@ ExecStart=/usr/bin/node /opt/mclink-node/app/agent.mjs
 # agent 自带指数退避重启核心；整进程挂掉时由 systemd 兜底
 Restart=always
 RestartSec=3
+# agent 用退出码 3 表示"配置不对，重试没有意义"（密钥无效/已用、状态目录不可写）：
+# 见到它就不再拉起，把失败状态直接暴露给运维。
+RestartPreventExitCode=3
 TimeoutStopSec=15
 KillMode=mixed
 KillSignal=SIGTERM
