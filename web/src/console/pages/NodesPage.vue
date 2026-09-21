@@ -71,7 +71,8 @@ const statusOptions: Array<{ value: NodeStatus; label: string }> = [
   { value: 'online', label: '在线' },
   { value: 'degraded', label: '降级' },
   { value: 'offline', label: '离线' },
-  { value: 'pending', label: '待审核' },
+  // 「待上线」= 已注册但还没收到第一次心跳；没有人工审批这一步
+  { value: 'pending', label: '待上线' },
   { value: 'disabled', label: '已禁用' },
 ];
 

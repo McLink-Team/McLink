@@ -137,7 +137,9 @@ export function nodeLabel(status: NodeStatus): string {
     case 'offline':
       return '离线';
     case 'pending':
-      return '待审核';
+      // 注意用词：这**不是**"等管理员审核"，而是"已注册、还没收到第一次心跳"。
+      // 以前叫「待审核」，会让人去找一个根本不存在的"通过"按钮。
+      return '待上线';
     case 'disabled':
       return '已禁用';
     default:
