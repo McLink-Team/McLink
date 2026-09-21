@@ -362,14 +362,36 @@ async function applyAcl(aclToml) {
 
 /* ------------------------------------------------------------- 窗口/托盘 */
 
+/**
+ * 窗口做成**无边框 + 自绘标题栏**。
+ *
+ * 为什么不用系统标题栏：Windows 原生的那条灰白标题栏与这套暖墨/琥珀的界面
+ * 完全是两种语言，摆在一起像两个软件拼起来的。参照 MCTier 的做法自绘一条，
+ * 把窗口控制、连接状态和身份信息合并成一行。
+ *
+ * 保留的关键能力（去掉 frame 容易顺手丢掉这些）：
+ *   · `thickFrame` 默认 true → 窗口仍可拖拽改变大小，Win+方向键仍能贴边
+ *   · 双击标题栏最大化/还原，由渲染层发 IPC 实现
+ *   · `titleBarStyle: 'hidden'` 让系统只保留阴影与圆角，不给标题栏
+ */
+const WINDOW_DEFAULTS = {
+  width: 520,
+  height: 780,
+  minWidth: 420,
+  minHeight: 600,
+  maxWidth: 1100,
+  backgroundColor: '#121110',
+};
+
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1120,
-    height: 760,
-    minWidth: 940,
-    minHeight: 640,
+    ...WINDOW_DEFAULTS,
     show: false,
-    backgroundColor: '#05070f',
+    frame: false,
+    titleBarStyle: 'hidden',
+    // 无边框但仍可调整大小与贴边
+    resizable: true,
+    maximizable: true,
     autoHideMenuBar: true,
     title: 'mclink',
     icon: appIconPath(),
@@ -386,6 +408,15 @@ function createWindow() {
   loadRenderer(mainWindow);
 
   mainWindow.once('ready-to-show', () => mainWindow?.show());
+
+  /** 最大化状态变化时通知渲染层，好把"最大化/还原"图标切换过来 */
+  const pushMaximized = () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('win:maximized', mainWindow.isMaximized());
+    }
+  };
+  mainWindow.on('maximize', pushMaximized);
+  mainWindow.on('unmaximize', pushMaximized);
 
   mainWindow.on('close', (event) => {
     // 关闭窗口时收进托盘，除非用户显式退出
@@ -568,6 +599,35 @@ function updateTray() {
 /* ------------------------------------------------------------------ IPC */
 
 function registerIpc() {
+  /* ------------------------------------------------ 自绘标题栏的窗口控制 */
+  const withMain = (fn) => () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return null;
+    return fn(mainWindow);
+  };
+  ipcMain.handle('win:minimize', withMain((w) => (w.minimize(), true)));
+  ipcMain.handle(
+    'win:toggleMaximize',
+    withMain((w) => {
+      if (w.isMaximized()) w.unmaximize();
+      else w.maximize();
+      return w.isMaximized();
+    }),
+  );
+  ipcMain.handle('win:isMaximized', withMain((w) => w.isMaximized()));
+  /**
+   * 关闭按钮 = 收进托盘（与点系统关闭按钮一致），不直接退出。
+   * 真正的退出在托盘菜单里，避免误点把正在跑的房间网络一起关掉。
+   */
+  ipcMain.handle(
+    'win:close',
+    withMain((w) => {
+      w.close();
+      return true;
+    }),
+  );
+  ipcMain.handle('win:hide', withMain((w) => (w.hide(), true)));
+  ipcMain.handle('win:hideToTray', withMain((w) => (w.hide(), true)));
+
   ipcMain.handle('app:info', () => ({
     version: app.getVersion(),
     platform: process.platform,
