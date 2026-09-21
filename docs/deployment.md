@@ -93,6 +93,44 @@ sudo bash deploy/install-server.sh \
 /etc/systemd/system/mclink-server.service
 ```
 
+### 2.1.1 发布客户端安装包（让玩家能直接下载）
+
+主控把**下载目录里的文件**直接当静态资源提供，所以「发布」就是把安装包放进那个目录。
+路径来自 `MCLINK_DOWNLOADS_DIR`，一键安装脚本写死为 `/opt/mclink/data/downloads`：
+
+```bash
+# 在服务器上确认实际路径（装的时候用了 --dir 的话会不同）
+sudo grep MCLINK_DOWNLOADS_DIR /etc/mclink/mclink.env
+#   MCLINK_DOWNLOADS_DIR=/opt/mclink/data/downloads
+```
+
+```bash
+# 1) 从本地把安装包传上去（文件名保持原样，别改名成 setup.exe 之类）
+scp client/release/McLink-Setup-0.1.0-x64.exe root@cnnic.link:/tmp/
+
+# 2) 服务器上：挪进下载目录并交给 mclink 用户
+#    数据目录是 0750 且属于 mclink，root 直接放进去的文件服务读不到（表现为下载页 404）
+sudo install -o mclink -g mclink -m 0644 \
+  /tmp/McLink-Setup-0.1.0-x64.exe /opt/mclink/data/downloads/
+
+# 3) 核对：哈希要与本地一致，且能被未登录的请求取到
+sha256sum /opt/mclink/data/downloads/McLink-Setup-0.1.0-x64.exe
+curl -sI https://cnnic.link/downloads/McLink-Setup-0.1.0-x64.exe | head -5   # 200 + Content-Length
+curl -s -r 0-1 https://cnnic.link/downloads/McLink-Setup-0.1.0-x64.exe | xxd | head -1  # MZ（支持断点续传）
+```
+
+最后在管理台「平台设置」里登记三项，下载页才会把它标成**主产物**并显示校验值：
+
+| 设置项 | 值 |
+| --- | --- |
+| 客户端下载地址 | `/downloads/McLink-Setup-0.1.0-x64.exe` |
+| 客户端版本 | `0.1.0` |
+| SHA-256 | 第 3 步算出来的值 |
+
+> 忘了登记也不会给玩家 404：服务端在设置里指定的文件不存在时，会回退到下载目录里
+> 实际存在的 Windows 产物（只是没有"主产物"排序与已登记的校验值）。
+> 目录里可以同时放多个产物（`.exe/.zip/.msi/.apk/.dmg/.deb/.AppImage` 都会被列出）。
+
 ### 2.2 反向代理与证书
 
 ```bash
