@@ -44,6 +44,14 @@ interface RelayResponse {
   cliVersion: string | null;
   coreBin: string;
   cliBin: string;
+  /** 中继没在运行时用来解释"为什么"（旧版主控没有这个字段） */
+  diagnostics?: {
+    autoStart: boolean;
+    coreExists: boolean;
+    cliExists: boolean;
+    relayPort: number;
+    warnings: string[];
+  };
   peers: RelayPeer[];
   logs: string[];
   /** 旧版主控给空格分隔字符串，新版可能额外给 whitelistPatterns */
@@ -280,6 +288,45 @@ async function applyAcl(): Promise<void> {
         <div v-if="runtime?.lastError" class="notice notice-danger relay-notice">
           <strong>最后错误：</strong>{{ runtime.lastError }}
         </div>
+
+        <!--
+          中继没在运行时把"为什么"直接讲出来。
+          之前这里只有一个「未运行」的徽章：主控找不到 easytier-core 时只在日志里写了一行，
+          控制台上看不出任何线索（实测有人因此以为是"需要另外部署一个中继"）。
+        -->
+        <div v-if="runtime && !runtime.running" class="notice notice-warn relay-notice">
+          <strong>中继未运行</strong>
+          <ul class="relay-why">
+            <li v-if="data.diagnostics && !data.diagnostics.autoStart">
+              主控中继被停用了（安装时用了 <span class="mono">--no-relay</span>，或环境变量
+              <span class="mono">MCLINK_AUTOSTART_RELAY=false</span>）。
+              此时房间会完全依赖子节点；没有子节点就建不了房。
+              想启用：把该变量改成 <span class="mono">true</span> 后 <span class="mono"
+                >systemctl restart mclink-server</span
+              >。
+            </li>
+            <li v-else-if="data.diagnostics && !data.diagnostics.coreExists">
+              找不到 <span class="mono">easytier-core</span>：主控在该路径下没有找到可执行文件
+              （见下方「核心二进制」）。把 Linux 版二进制放进去，或用
+              <span class="mono">MCLINK_ET_CORE</span> 指向已有路径，然后重启主控。
+              <br />
+              最快的办法：在开发机执行 <span class="mono">pnpm fetch:easytier --all</span>，
+              把 <span class="mono">deploy/vendor/linux-x86_64/</span> 整个目录拷到主控的
+              <span class="mono">vendor/easytier/</span>，再
+              <span class="mono">sudo systemctl restart mclink-server</span>。
+            </li>
+            <li v-else-if="!data.cliVersion">
+              找不到 <span class="mono">easytier-cli</span>：中继本身可能能起来，但流量统计、
+              ACL 下发与 peer 列表都会不可用（见下方「CLI 二进制」）。
+            </li>
+            <li v-else>进程未处于运行状态，请查看下方日志或稍后重试。</li>
+          </ul>
+          <div v-if="data.diagnostics && data.diagnostics.warnings.length > 0" class="relay-warnings">
+            <div v-for="(w, i) in data.diagnostics.warnings" :key="i" class="mono wrap-anywhere">
+              {{ w }}
+            </div>
+          </div>
+        </div>
         <p v-else class="hint hint-row">
           未记录到错误<template v-if="runtime?.startedAt">；中继启动于 {{ formatRelativeTime(runtime.startedAt) }}</template>。
         </p>
@@ -401,6 +448,26 @@ default_action = 1"
 <style scoped>
 .relay-notice {
   margin-top: var(--s-4);
+}
+/* 「为什么没在运行」的条目：贴左边线、留出行距，避免一坨文字糊在一起 */
+.relay-why {
+  margin: var(--s-2) 0 0;
+  padding-left: 1.1em;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+}
+.relay-warnings {
+  margin-top: var(--s-3);
+  padding-top: var(--s-2);
+  border-top: 1px solid var(--rule-faint);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--fs-xs);
+  color: var(--paper-dim);
 }
 .hint-row {
   margin-top: var(--s-4);

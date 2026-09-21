@@ -5,6 +5,18 @@
 
 export const API_PREFIX = '/api/v1';
 
+/**
+ * 子节点安装时用的 GitHub 加速前缀（默认值）。
+ *
+ * 为什么需要它：子节点的 EasyTier 二进制原本直接从 GitHub Releases 下载，
+ * 国内机器经常超时甚至完全连不上 —— 结果就是"节点装上了、中继却起不来"。
+ *
+ * 为什么是"可配置 + 有默认"而不是写死：这类公益代理会失效。实测 5 个里已经有 2 个
+ * 连不上了（mirror.ghproxy.com / ghproxy.cc），所以默认值只是"开箱能用"，
+ * 装机命令里会把这个值显式带上，改的时候不用动代码。
+ */
+export const DEFAULT_GITHUB_PROXY = 'https://ghproxy.net/';
+
 export const Routes = {
   /* ---------- 公开 ---------- */
   meta: '/meta',
@@ -47,6 +59,12 @@ export const Routes = {
   /** 主控托管的安装脚本与 agent（目标机器据此一条命令装好，不必先拿到仓库） */
   agentInstallScript: '/agent/install.sh',
   agentScript: '/agent/agent.mjs',
+  /**
+   * 主控托管的 EasyTier Linux 二进制。
+   * 子节点安装时**优先**从这里取：主控若能提供，国内节点就完全不需要碰 GitHub。
+   */
+  agentCoreBin: '/agent/easytier-core',
+  agentCliBin: '/agent/easytier-cli',
 
   /* ---------- 管理台 ---------- */
   adminLogin: '/admin/login',

@@ -439,6 +439,35 @@ curl -fsSL https://cnnic.link/agent/install.sh | sudo bash -s -- \
 排查：`curl -fsSL https://cnnic.link/agent/install.sh | head -n 3` 应输出 `#!/usr/bin/env bash`；
 若输出 `<!doctype html>`，说明反代把 `/agent/` 改写到了前端静态目录。
 
+### 国内节点：EasyTier 二进制的下载顺序与 GitHub 加速
+
+子节点要拿到 Linux 版 `easytier-core` / `easytier-cli`。脚本按这个顺序尝试，越靠前越稳：
+
+| 顺序 | 来源 | 说明 |
+| --- | --- | --- |
+| 1 | 本机已有产物 | `deploy/vendor/linux-x86_64/`（`pnpm fetch:easytier --all` 生成的），或 `--source` 指向的源码目录 |
+| 2 | **从主控下载** | `GET /agent/easytier-core`、`GET /agent/easytier-cli`。主控若带着这两个文件（用 `pnpm pack:server` 打的源码包就带），国内节点**完全不需要碰 GitHub** |
+| 3 | GitHub Releases | 可加 `--github-proxy <前缀>` 走加速，例如 `--github-proxy https://ghproxy.net/` |
+
+主控**自己**装的时候（`install-server.sh`）同样支持 `--github-proxy`，因为主控的中继也依赖这两个二进制——
+直连 GitHub 超时的典型后果就是控制台里「主控中继 = 未运行」。
+
+管理台「签发注册密钥」里的**「国内节点」**勾选框做的就是第 3 步：勾上就把
+`--github-proxy` 加进那条命令（默认 `https://ghproxy.net/`，可自定义）。
+
+> 这类公益代理会失效——实测 5 个里已有 2 个连不上。所以默认值只是"开箱能用"，
+> 装机命令里会把值显式带上，换的时候不用改代码。当前实测可用：
+> `https://ghproxy.net/`、`https://gh-proxy.com/`、`https://ghfast.top/`。
+
+给主控补上 Linux 二进制（这样国内节点连代理都不需要）：
+
+```bash
+# 开发机
+pnpm fetch:easytier --all
+pnpm pack:server                      # 生成的包会带上 deploy/vendor/linux-x86_64/
+# 或者只补二进制：直接把 deploy/vendor/linux-x86_64/ 拷到主控的同一路径下
+```
+
 ---
 
 ## 9. 上线检查清单

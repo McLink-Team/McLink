@@ -28,6 +28,7 @@ ADMIN_PASSWORD=""
 ENABLE_RELAY="true"
 PUBLIC_BASE_URL=""
 RELAY_PUBLIC_HOST=""
+GITHUB_PROXY="${MCLINK_GITHUB_PROXY:-}"
 SMTP_HOST=""
 SMTP_PORT=""
 SMTP_SECURE=""
@@ -72,6 +73,8 @@ mclink 主控一键安装 / 升级脚本（Debian 12 x86_64）
   --admin-password <密码>    初始管理员密码；不传则随机生成并只打印一次
   --public-url <URL>         对外访问地址，例如 https://cnnic.link
   --relay-public-host <主机> 客户端连接中继用的公网主机名/IP；默认从 --public-url 推导
+  --github-proxy <前缀>      GitHub 加速前缀（国内机器下载 EasyTier 用），
+                            例如 https://ghproxy.net/；留空则直连 GitHub
   --no-relay                 不启动主控自带中继（MCLINK_AUTOSTART_RELAY=false），
                              必须已部署子节点，否则无法创建房间
 
@@ -116,6 +119,7 @@ while [[ $# -gt 0 ]]; do
     --admin-password)     [[ $# -ge 2 ]] || die "--admin-password 缺少参数"; ADMIN_PASSWORD="$2"; ADMIN_PASSWORD_FROM_ARG="true"; shift 2 ;;
     --public-url)         [[ $# -ge 2 ]] || die "--public-url 缺少参数"; PUBLIC_BASE_URL="$2"; shift 2 ;;
     --relay-public-host)  [[ $# -ge 2 ]] || die "--relay-public-host 缺少参数"; RELAY_PUBLIC_HOST="$2"; shift 2 ;;
+    --github-proxy)       [[ $# -ge 2 ]] || die "--github-proxy 缺少参数"; GITHUB_PROXY="$2"; shift 2 ;;
     --no-relay)           ENABLE_RELAY="false"; shift ;;
     --smtp-host)          [[ $# -ge 2 ]] || die "--smtp-host 缺少参数"; SMTP_HOST="$2"; shift 2 ;;
     --smtp-port)          [[ $# -ge 2 ]] || die "--smtp-port 缺少参数"; SMTP_PORT="$2"; shift 2 ;;
@@ -146,6 +150,15 @@ for pair in "端口:$HTTP_PORT" "中继端口:$RELAY_PORT"; do
   if (( value < 1 || value > 65535 )); then die "${name}超出范围(1-65535): $value"; fi
 done
 [[ "$HTTP_PORT" != "$RELAY_PORT" ]] || die "HTTP 端口与中继端口不能相同"
+
+# GitHub 加速前缀统一成"以 / 结尾"，避免用户写成 https://ghproxy.net 时拼出坏 URL
+if [[ -n "$GITHUB_PROXY" ]]; then
+  case "$GITHUB_PROXY" in
+    http://*|https://*) : ;;
+    *) die "--github-proxy 必须以 http:// 或 https:// 开头: $GITHUB_PROXY" ;;
+  esac
+  [[ "${GITHUB_PROXY}" == */ ]] || GITHUB_PROXY="${GITHUB_PROXY}/"
+fi
 if [[ -n "$ADMIN_PASSWORD" ]]; then
   # systemd EnvironmentFile 对空白、引号、# 很敏感，这里直接拒绝而不是做转义
   case "$ADMIN_PASSWORD" in
@@ -402,6 +415,11 @@ install_easytier() {
   if [[ ! -f "${et_dir}/easytier-core" || ! -f "${et_dir}/easytier-cli" ]]; then
     local url tmp
     url="https://github.com/EasyTier/EasyTier/releases/download/${ET_VERSION}/easytier-linux-x86_64-${ET_VERSION}.zip"
+    # 国内机器直连 GitHub 常常超时（后果是"主控中继起不来"），所以支持加速前缀
+    if [[ -n "$GITHUB_PROXY" ]]; then
+      url="${GITHUB_PROXY}${url}"
+      log "使用 GitHub 加速前缀：${GITHUB_PROXY}"
+    fi
     tmp="$(mktemp -d)"
     log "下载 EasyTier ${ET_VERSION}：${url}"
     if curl -fL --retry 3 --connect-timeout 20 --retry-delay 3 -o "${tmp}/et.zip" "$url"; then

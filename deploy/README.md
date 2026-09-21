@@ -99,6 +99,17 @@ curl -fsSL https://cnnic.link/agent/install.sh | sudo bash -s -- \
 （`/agent/install.sh`、`/agent/agent.mjs`），目标机器不需要先拿到本仓库，
 也不需要 scp 任何文件。
 
+**国内节点**：勾选签发对话框里的「国内节点」，命令会多带一个 `--github-proxy https://ghproxy.net/`。
+不过更稳的做法是让主控带上 Linux 二进制——那样子节点根本不碰 GitHub：
+
+```bash
+# 开发机（下载 Linux 产物并打包含二进制的源码包）
+pnpm fetch:easytier --all
+pnpm pack:server
+```
+
+EasyTier 二进制的取值顺序是：**本机已有产物 → 从主控下载 → GitHub（可加代理前缀）**。
+
 要点：
 
 * **两个端口的区别**（NAT / 端口映射部署必读）：
