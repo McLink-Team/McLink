@@ -354,7 +354,22 @@ build_app() {
   else
     ensure_pnpm
     log "安装依赖（pnpm install --frozen-lockfile）…"
-    ( cd "$APP_DIR" && pnpm install --frozen-lockfile ) || die "pnpm install 失败"
+    if ! ( cd "$APP_DIR" && pnpm install --frozen-lockfile ); then
+      # 这一条踩过：某个 package.json 改了但 pnpm-lock.yaml 没跟着更新时，
+      # frozen-lockfile 会直接失败。默认报错只有一行 ERR_PNPM_OUTDATED_LOCKFILE，
+      # 不说该找谁，所以在部署脚本里把处置办法讲清楚。
+      warn "——————————————————————————————————————————————"
+      warn "pnpm install 失败。若上面出现 ERR_PNPM_OUTDATED_LOCKFILE，说明仓库里的"
+      warn "pnpm-lock.yaml 与某个 package.json 不一致（通常是改依赖后没提交 lockfile）。"
+      warn ""
+      warn "处置：在开发机上执行 pnpm install 更新 pnpm-lock.yaml 并提交，然后再跑本脚本。"
+      warn "自检命令：pnpm verify:lockfile（应为 0 退出）"
+      warn ""
+      warn "应急：pnpm install --no-frozen-lockfile 可以装上，但依赖版本可能偏离 lockfile，"
+      warn "      不建议用于生产。"
+      warn "——————————————————————————————————————————————"
+      die "pnpm install 失败"
+    fi
   fi
 
   if [[ "$SKIP_WEB" == "true" ]]; then
