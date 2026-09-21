@@ -346,14 +346,16 @@ dt + dd {
   cursor: not-allowed;
 }
 .btn-primary {
-  background: var(--signal);
-  border-color: var(--signal);
-  color: var(--on-signal);
+  /* 用 CTA 令牌而不是 --signal：亮色下 --signal 是给文字用的深琥珀，
+     当底色会闷（原因写在 tokens.css 的亮色块里） */
+  background: var(--cta-bg);
+  border-color: var(--cta-bg);
+  color: var(--cta-fg);
   font-weight: 600;
 }
 .btn-primary:hover:not(:disabled) {
-  background: var(--signal-bright);
-  border-color: var(--signal-bright);
+  background: var(--cta-bg-hover);
+  border-color: var(--cta-bg-hover);
 }
 .btn-ghost {
   border-color: transparent;

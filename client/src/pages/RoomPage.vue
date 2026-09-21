@@ -27,6 +27,7 @@ import {
   shareAddress,
   updateRoomPolicy,
 } from '../lib/store.ts';
+import type { PeerView } from '../lib/easytier-parse.ts';
 import { friendlyError } from '../lib/api.ts';
 import { copyText } from '../lib/clipboard.ts';
 import { isFavorite, shortcutsRevision, toggleFavorite } from '../lib/shortcuts.ts';
@@ -55,6 +56,31 @@ const session = computed(() => clientState.session);
 const room = computed(() => session.value?.room ?? null);
 const members = computed(() => session.value?.members ?? []);
 const pending = computed(() => members.value.filter((m) => m.status === 'pending'));
+
+/**
+ * 「连接路径」的清洗。
+ *
+ * `easytier-cli peer list` 是**按路径**列的，不是按节点：同一个成员可能同时出现一条
+ * P2P 直连和一条经中继的记录，本机自己也会出现在列表里。原样铺出来就是
+ * 「我自己出现两次、其中一条还标着 1000 ms」——玩家会以为网络坏了（实测截图就是这样）。
+ *
+ * 这里做两件事：剔除本机（按虚拟地址比对），并按虚拟地址归并同一节点的多条路径，
+ * 优先保留 P2P、其次延迟更低的。信息量不减：真正需要看的「谁和我是直连」还在。
+ */
+const visiblePeers = computed<PeerView[]>(() => {
+  // 注意：本机的 virtualIp 带掩码（10.200.14.1/24），而 peer list 里是裸地址。
+  // 不剥掉掩码就比不中，实测本机会以「经中继 1000.0 ms」的样子留在列表里。
+  const selfIp = (session.value?.virtualIp ?? '').split('/')[0];
+  const routeScore = (p: PeerView): number => (p.cost.startsWith('p2p') ? 0 : 10_000) + (p.latencyMs ?? 5_000);
+  const best = new Map<string, PeerView>();
+  for (const p of clientState.peers) {
+    if (selfIp && (p.ipv4 ?? '').split('/')[0] === selfIp) continue;
+    const key = p.ipv4 || p.hostname || '';
+    const prev = best.get(key);
+    if (!prev || routeScore(p) < routeScore(prev)) best.set(key, p);
+  }
+  return [...best.values()].sort((a, b) => routeScore(a) - routeScore(b));
+});
 
 const favorite = computed(() => {
   void shortcutsRevision.value;
@@ -310,9 +336,20 @@ async function doClose(): Promise<void> {
           <div class="stat-value">{{ formatBytes(clientState.localRxBytes + clientState.localTxBytes) }}</div>
         </div>
       </div>
+    </section>
 
-      <div v-if="clientState.peers.length > 0" class="roster">
-        <div v-for="p in clientState.peers" :key="p.ipv4 + p.hostname" class="roster-row">
+    <!-- 连接路径：easytier-cli 的输出是按路径列的，必须清洗后再铺（见 visiblePeers） -->
+    <section class="panel">
+      <div class="section-head">
+        <span class="title">连接路径</span>
+        <span class="grow" />
+        <span class="faint" style="font-size: var(--fs-xs)">
+          {{ visiblePeers.length > 0 ? `${visiblePeers.length} 条` : '暂无' }}
+        </span>
+      </div>
+
+      <div v-if="visiblePeers.length > 0" class="roster">
+        <div v-for="p in visiblePeers" :key="p.ipv4 + p.hostname" class="roster-row">
           <span class="grow roster-main">
             <span class="roster-name">{{ p.hostname || '未命名节点' }}</span>
             <span class="roster-sub">{{ p.ipv4 || '—' }}</span>
@@ -349,8 +386,8 @@ async function doClose(): Promise<void> {
           <span v-else-if="m.role === 'host'" class="badge badge-brand">房主</span>
           <span v-else-if="m.p2p" class="badge badge-ok">直连</span>
           <span v-else class="badge badge-neutral">成员</span>
-          <span class="mono faint roster-sub nowrap">
-            {{ m.latencyMs === null ? '—' : `${m.latencyMs.toFixed(0)} ms` }}
+          <span v-if="m.latencyMs !== null" class="mono faint roster-sub nowrap">
+            {{ `${m.latencyMs.toFixed(0)} ms` }}
           </span>
           <template v-if="isHost">
             <template v-if="m.status === 'pending'">

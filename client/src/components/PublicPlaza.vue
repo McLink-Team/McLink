@@ -33,6 +33,16 @@ const accessLabel = (room: Room): string =>
 const accessClass = (room: Room): string =>
   room.access === 'open' ? 'badge-ok' : room.access === 'password' ? 'badge-warn' : 'badge-info';
 
+/**
+ * 表格里的区域短名。
+ *
+ * `regionLabel('auto')` 是「自动选择（延迟优先）」——那是下拉框里的说法，
+ * 放进每行一格的表格里，一列十行全是这句，把真正有信息的区域名挤没了
+ * （实测截图：13 行里 13 个「自动选择（延迟优先）」）。
+ * 括号里的解释只在筛选下拉里出现一次就够了。
+ */
+const shortRegion = (id: string): string => (id === 'auto' ? '自动' : regionLabel(id));
+
 async function load(): Promise<void> {
   loading.value = true;
   error.value = '';
@@ -145,7 +155,7 @@ onMounted(() => {
               <div class="faint mono" style="font-size: var(--fs-xs)">{{ room.subnet }}</div>
             </td>
             <td class="truncate" style="max-width: 140px">{{ room.hostDisplayName }}</td>
-            <td class="faint">{{ regionLabel(room.zone) }}</td>
+            <td class="faint">{{ shortRegion(room.zone) }}</td>
             <td class="table-num">{{ room.onlineMembers }}/{{ room.policy.maxPlayers }}</td>
             <td><span class="badge" :class="accessClass(room)">{{ accessLabel(room) }}</span></td>
             <td style="text-align: right; white-space: nowrap">
