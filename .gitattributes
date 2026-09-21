@@ -1,0 +1,32 @@
+# 统一换行，避免 Windows 开发、Linux 部署之间出现整文件 diff
+* text=auto eol=lf
+
+# 明确标记二进制，避免被当成文本处理
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.zip binary
+*.exe binary
+*.dll binary
+*.sys binary
+*.sqlite binary
+*.apk binary
+
+# 这些文件必须是 CRLF，Windows 服务脚本才能正常执行
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 保持 LF，Debian 上直接可执行
+*.sh text eol=lf
+*.service text eol=lf
+
+# 生成物不参与 diff 统计
+server/public/** linguist-generated=true
+pnpm-lock.yaml linguist-generated=true

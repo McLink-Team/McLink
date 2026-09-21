@@ -1,0 +1,37 @@
+{
+  "name": "mclink",
+  "version": "0.1.0",
+  "private": true,
+  "description": "基于 EasyTier 的《我的世界》联机平台：主控 + 子节点 + Windows 客户端 + 管理控制台",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "engines": {
+    "node": ">=22.6"
+  },
+  "packageManager": "pnpm@10.33.2",
+  "scripts": {
+    "dev:server": "pnpm --filter @mclink/server dev",
+    "dev:web": "pnpm --filter @mclink/web dev",
+    "dev:client": "pnpm --filter @mclink/client dev",
+    "build": "pnpm --filter @mclink/web build && pnpm --filter @mclink/client build",
+    "build:web": "pnpm --filter @mclink/web build",
+    "build:client": "pnpm --filter @mclink/client build",
+    "dist:client": "pnpm --filter @mclink/client dist",
+    "start": "pnpm --filter @mclink/server start",
+    "test": "pnpm --filter @mclink/server test",
+    "typecheck": "pnpm -r typecheck",
+    "fetch:easytier": "node scripts/fetch-easytier.mjs",
+    "icons": "node scripts/make-icons.mjs",
+    "lab": "node scripts/lab.mjs"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron",
+      "electron-builder",
+      "esbuild"
+    ]
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}

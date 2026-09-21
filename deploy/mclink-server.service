@@ -1,0 +1,68 @@
+# mclink 主控（Master）systemd 单元
+#
+# 由 deploy/install-server.sh 安装到 /etc/systemd/system/mclink-server.service。
+# 脚本会按 --dir / --port 等参数把下面的路径替换成实际值，因此这里给出的是默认布局。
+#
+# 重要：主控需要
+#   1) spawn 子进程 easytier-core（因此不能用 NoNewPrivileges 之外的提权限制来阻断 fork/exec）；
+#   2) 读写数据目录（SQLite、生成的 EasyTier 配置、日志、下载目录）；
+#   3) 只监听端口，不需要任何 Linux capability（默认 MCLINK_RELAY_NO_TUN=true，中继不创建 TUN 设备）。
+#
+# 因此这里用 ProtectSystem=full + 精确的 ReadWritePaths，而**不是** ProtectSystem=strict：
+# strict 会让除 ReadWritePaths 之外的整个文件系统只读（含临时写入、Node 的缓存路径），
+# 排查成本很高，收益与 full 相差不大。
+
+[Unit]
+Description=mclink 主控（房间编排 / 子节点调度 / 共享中继）
+Documentation=file:///opt/mclink/app/docs/deployment.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mclink
+Group=mclink
+WorkingDirectory=/opt/mclink/app
+# 所有配置都来自这里；文件权限 600、owner mclink（见 install-server.sh）
+EnvironmentFile=/etc/mclink/mclink.env
+Environment=NODE_ENV=production
+# 用 Node 原生 TS 剥离直接跑 .ts，无需构建；node --watch 只在开发时用
+ExecStart=/usr/bin/node server/src/index.ts
+
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+# mixed：SIGTERM 只发给主进程（主进程会优雅关闭自己拉起的 easytier-core），
+# 超时后再对整组 SIGKILL，避免留下孤立的 easytier-core
+KillMode=mixed
+KillSignal=SIGTERM
+# 一个房间一个 EasyTier 对等体，对等体多时 fd 消耗不小
+LimitNOFILE=65535
+UMask=0027
+
+# 日志进 journald：journalctl -u mclink-server -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mclink-server
+
+# ---------------------------------------------------------------- 加固
+NoNewPrivileges=yes
+PrivateTmp=yes
+# /usr /boot /etc 只读；/opt 与 /var 仍可写（data 目录在 /opt/mclink/data）
+ProtectSystem=full
+ProtectHome=yes
+# 精确授权：只有数据目录可写（SQLite / easytier 配置 / 日志 / 下载）
+ReadWritePaths=/opt/mclink/data
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+# AF_NETLINK 是接口枚举需要的；不要删
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+# 注意：不要加 MemoryDenyWriteExecute=yes —— V8 的 JIT 需要可写可执行内存
+
+[Install]
+WantedBy=multi-user.target

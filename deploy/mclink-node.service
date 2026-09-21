@@ -1,0 +1,57 @@
+# mclink 子节点（区域中继）systemd 单元
+#
+# 由 deploy/install-node.sh 安装到 /etc/systemd/system/mclink-node.service。
+# 脚本会把路径替换成 --dir 指定的实际值，这里给的是默认布局。
+#
+# 这个单元只跑 deploy/agent.mjs（纯 Node），由它去 spawn 并守护 easytier-core。
+# 因此：
+#   * 加固项里必须给 /etc/mclink 写权限 —— agent 会把节点令牌与中继配置写在那里；
+#   * 需要给日志目录写权限；
+#   * 子节点中继配置里 no_tun = true，所以不需要任何 capability。
+
+[Unit]
+Description=mclink 子节点（区域中继）：注册到主控并托管 easytier-core
+Documentation=file:///opt/mclink-node/app/docs/deployment.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mclink
+Group=mclink
+WorkingDirectory=/opt/mclink-node/app
+EnvironmentFile=/etc/mclink/node.env
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node /opt/mclink-node/app/agent.mjs
+
+# agent 自带指数退避重启核心；整进程挂掉时由 systemd 兜底
+Restart=always
+RestartSec=3
+TimeoutStopSec=15
+KillMode=mixed
+KillSignal=SIGTERM
+LimitNOFILE=65535
+UMask=0027
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mclink-node
+
+# ---------------------------------------------------------------- 加固
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+# 精确授权：agent 只写这两个位置（令牌/配置 + 日志）
+ReadWritePaths=/etc/mclink /var/log/mclink
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

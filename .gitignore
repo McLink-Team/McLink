@@ -1,0 +1,53 @@
+# 依赖与缓存
+node_modules/
+.cache/
+.pnpm-store/
+.pnpm-debug.log*
+.npmrc
+
+# 构建产物
+dist/
+out/
+build/
+release/
+*.tsbuildinfo
+server/public/
+
+# 运行时数据（数据库、生成的 EasyTier 配置、日志、证书）
+server/data/
+client/data/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+logs/
+*.log
+easytier-panic.log
+core.*.dmp
+
+# EasyTier 二进制（体积大，用 scripts/fetch-easytier.mjs 获取）
+vendor/easytier/
+deploy/vendor/
+client/vendor/
+bin/easytier-core*
+bin/easytier-cli*
+bin/wintun.dll
+
+# 密钥与证书
+*.pem
+*.key
+!client/build/*.key
+secrets/
+.env
+.env.*
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 测试临时目录
+.tmp/
+tmp/

@@ -1,0 +1,319 @@
+#!/usr/bin/env node
+/**
+ * 主控服务端入口。
+ *
+ * 启动顺序：装配应用 → 初始化管理员 → 启动 HTTP/WebSocket → 拉起主控中继 → 启动后台任务。
+ * 任何一步失败都会打印可操作的提示，而不是抛栈让运维猜。
+ */
+import { Topics, type ForeignNetworkInfo, type RelayNode } from '@mclink/shared';
+import { createApp, disposeApp, ensureBootstrapAdmin, APP_VERSION, type App } from './app.ts';
+import { createServer } from './server.ts';
+import { logger } from './logger.ts';
+import { toRoom } from './db/rooms.ts';
+
+const log = logger('main');
+
+async function main(): Promise<void> {
+  const app = createApp();
+  const timers: NodeJS.Timeout[] = [];
+  let shuttingDown = false;
+
+  log.info(`mclink 主控 v${APP_VERSION} 启动中`, {
+    node: process.version,
+    platform: `${process.platform}/${process.arch}`,
+    dataDir: app.config.dataDir,
+    db: app.config.dbFile,
+  });
+  for (const warning of app.warnings) log.warn(warning);
+
+  await ensureBootstrapAdmin(app);
+  if (!app.users.findByUsername(app.config.bootstrapAdminUsername) && app.users.count() === 0) {
+    log.error('未能创建管理员账号，请检查配置');
+  }
+
+  const { server, hub, close } = createServer(app);
+
+  /**
+   * 把服务内部的领域事件翻译成 WebSocket 推送。
+   * 注意 ACL 只发给房主本人（sendToUser），不能发给整个房间话题——
+   * 那会把「踢了谁、封了哪个 IP」这类治理信息泄露给所有成员。
+   */
+  app.events.on('room.changed', (roomId) => {
+    const row = app.rooms.findById(roomId);
+    if (!row) return;
+    const members = app.roomService.members(roomId);
+    hub.publish(Topics.room(roomId), { type: 'room.members', roomId, members });
+    hub.publish(Topics.rooms, { type: 'room.update', roomId, room: toRoom(row) });
+  });
+
+  app.events.on('room.acl', ({ roomId, revision }) => {
+    const row = app.rooms.findById(roomId);
+    if (!row) return;
+    hub.sendToUser(row.host_user_id, {
+      type: 'room.acl',
+      roomId,
+      aclToml: app.roomService.aclToml(roomId),
+      revision,
+    });
+  });
+
+  app.events.on('room.kicked', ({ roomId, userId, reason }) => {
+    hub.sendToUser(userId, { type: 'room.kicked', roomId, reason });
+  });
+
+  app.events.on('room.closed', (roomId) => {
+    const row = app.rooms.findById(roomId);
+    if (!row) return;
+    const room = toRoom(row);
+    hub.publish(Topics.room(roomId), { type: 'room.update', roomId, room });
+    hub.publish(Topics.rooms, { type: 'room.update', roomId, room });
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(app.config.port, app.config.host, () => resolve());
+  });
+
+  const base = app.config.publicBaseUrl || `http://${app.config.host}:${app.config.port}`;
+  log.info('HTTP 服务已监听', { url: base, port: app.config.port });
+  if (!app.web.available) {
+    log.warn('未找到前端构建产物，将显示兜底页面。请先执行 pnpm build:web', { root: app.web.root });
+  }
+
+  /* ---------------------------------------------------- 主控中继 */
+
+  if (app.config.autoStartRelay) {
+    const coreExists = await fileExists(app.config.easytier.coreBin);
+    if (!coreExists) {
+      log.error(
+        `未找到 easytier-core（${app.config.easytier.coreBin}）。` +
+          '请运行 `pnpm fetch:easytier` 下载，或用 MCLINK_ET_CORE 指定路径。',
+      );
+    } else {
+      log.info('正在启动主控中继', {
+        port: app.config.easytier.relayPort,
+        whitelist: app.config.easytier.relayNetworkWhitelist,
+      });
+      const runtime = await app.relay.start();
+      if (runtime.running) {
+        log.info('主控中继已就绪', { listen: runtime.listen, network: runtime.networkName });
+      } else {
+        log.error('主控中继启动失败', { error: runtime.lastError });
+      }
+      const cli = await app.relay.ensureCli();
+      if (!cli) {
+        log.warn('easytier-cli 不可用：流量统计与 ACL 下发会被跳过');
+      }
+    }
+  } else {
+    log.warn('按配置跳过了主控中继的自动启动（MCLINK_AUTOSTART_RELAY=false）');
+  }
+
+  /* ---------------------------------------------------- 后台任务 */
+
+  // 1) 中继采样：把状态写进流量账本，并通过 WebSocket 推送
+  app.relay.on('sample', (sample) => {
+    const foreignWithRooms: ForeignNetworkInfo[] = sample.foreignNetworks.map((fn) => {
+      const room = app.rooms.findByNetworkName(fn.networkName);
+      return { ...fn, roomId: room?.id ?? null };
+    });
+
+    app.traffic.record({
+      scope: 'relay',
+      scopeId: 'master',
+      rxBytes: sample.totalRxBytes,
+      txBytes: sample.totalTxBytes,
+      rxBps: sample.rxBps,
+      txBps: sample.txBps,
+      peers: sample.peerCount,
+    });
+
+    let attributed = 0;
+    for (const fn of foreignWithRooms) {
+      app.traffic.record({
+        scope: 'room',
+        scopeId: fn.roomId ?? fn.networkName,
+        roomId: fn.roomId,
+        rxBytes: fn.rxBytes,
+        txBytes: fn.txBytes,
+        rxBps: fn.rxBps,
+        txBps: fn.txBps,
+        peers: fn.peerCount,
+      });
+      if (fn.roomId) {
+        app.rooms.incrementUsage(fn.roomId, fn.rxBytes, fn.txBytes, fn.peerCount);
+        attributed += 1;
+      }
+    }
+
+    // 每 6 秒推一次，避免高频刷新压垮浏览器
+    const now = Date.now();
+    if (now - lastPlatformPush > 6000) {
+      lastPlatformPush = now;
+      hub.publish(Topics.platform, {
+        type: 'traffic.tick',
+        report: {
+          ts: sample.ts,
+          totalRxBps: sample.rxBps,
+          totalTxBps: sample.txBps,
+          totalRxBytes: sample.totalRxBytes,
+          totalTxBytes: sample.totalTxBytes,
+          byRoom: foreignWithRooms.map((f) => ({
+            roomId: f.roomId ?? f.networkName,
+            name: f.roomId ? (app.rooms.findById(f.roomId)?.name ?? f.networkName) : f.networkName,
+            rxBps: f.rxBps,
+            txBps: f.txBps,
+            peers: f.peerCount,
+          })),
+          byNode: app.nodes.list().map((n) => ({
+            nodeId: n.id,
+            name: n.name,
+            rxBps: n.rx_bps,
+            txBps: n.tx_bps,
+            peers: n.peers,
+          })),
+        },
+      });
+      hub.publish(Topics.traffic, {
+        type: 'relay.update',
+        relay: { ...app.relay.status(), foreignNetworks: foreignWithRooms },
+      });
+    }
+    log.debug('中继采样', { peers: sample.peerCount, rooms: foreignWithRooms.length, attributed });
+  });
+
+  let lastPlatformPush = 0;
+  app.relay.startPolling(5000);
+
+  // 2) 节点健康检查 + 状态推送
+  timers.push(
+    setInterval(() => {
+      const wentOffline = app.nodeService.healthCheck();
+      for (const nodeId of wentOffline) {
+        const node = app.nodes.findById(nodeId);
+        if (node) hub.publish(Topics.nodes, { type: 'node.update', node: toNodePublic(node) });
+      }
+      if (wentOffline.length > 0) log.info('节点健康检查完成', { offline: wentOffline.length });
+    }, 15_000),
+  );
+
+  // 3) 房间过期与空房回收
+  timers.push(
+    setInterval(() => {
+      for (const row of app.rooms.findExpired()) {
+        app.rooms.close(row.id, 'expired');
+        log.info('房间已过期', { room: row.id, name: row.name });
+        hub.publish(Topics.rooms, { type: 'room.update', roomId: row.id, room: toRoom(row) });
+      }
+      for (const row of app.rooms.findIdle(app.config.roomIdleTimeoutSeconds)) {
+        app.rooms.close(row.id, 'closed');
+        log.info('空房已回收', { room: row.id, name: row.name });
+        hub.publish(Topics.rooms, { type: 'room.update', roomId: row.id, room: toRoom(row) });
+      }
+      // 成员在线状态刷新
+      const openRows = app.rooms.listAll({ status: 'open', limit: 200 }).rows;
+      for (const row of openRows) app.rooms.recalcCounts(row.id);
+    }, 30_000),
+  );
+
+  // 4) 会话清理与流量数据保留
+  timers.push(
+    setInterval(() => {
+      const sessions = app.users.purgeExpiredSessions();
+      const samples = app.traffic.prune(72);
+      if (sessions > 0 || samples > 0) {
+        log.debug('定期清理完成', { sessions, samples });
+      }
+    }, 3600_000),
+  );
+
+  // 5) 平台概览推送（给管理台与落地页的在线人数）
+  timers.push(
+    setInterval(async () => {
+      const nodeCounts = app.nodes.countByStatus();
+      hub.publish(Topics.platform, {
+        type: 'notice',
+        level: 'info',
+        message: JSON.stringify({
+          onlineNodes: (nodeCounts.online ?? 0) + (nodeCounts.degraded ?? 0),
+          openRooms: app.rooms.countOpen(),
+          onlinePlayers: app.rooms.onlinePlayers(),
+          wsClients: hub.clientCount,
+        }),
+      });
+    }, 20_000),
+  );
+
+  for (const timer of timers) timer.unref?.();
+
+  log.info('mclink 主控已就绪', { url: base, version: APP_VERSION });
+
+  /* ---------------------------------------------------- 优雅退出 */
+
+  const shutdown = async (signal: string): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    log.info(`收到 ${signal}，正在关闭…`);
+    for (const timer of timers) clearInterval(timer);
+    await app.relay.stop();
+    await close();
+    disposeApp(app);
+    log.info('已安全退出');
+    process.exit(0);
+  };
+
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('unhandledRejection', (reason) => {
+    log.error('未处理的 Promise 拒绝', { error: reason instanceof Error ? reason.message : String(reason) });
+  });
+  process.on('uncaughtException', (err) => {
+    log.error('未捕获异常', { error: err.message, stack: err.stack });
+  });
+}
+
+function toNodePublic(row: {
+  id: string;
+  name: string;
+  region: string;
+  endpoint: string;
+  status: string;
+  peers: number;
+  rooms: number;
+  rx_bps: number;
+  tx_bps: number;
+}): RelayNode {
+  return {
+    id: row.id,
+    name: row.name,
+    region: row.region,
+    endpoint: row.endpoint,
+    publicIp: null,
+    status: row.status as RelayNode['status'],
+    version: null,
+    capacityPeers: 0,
+    peers: row.peers,
+    rooms: row.rooms,
+    rxBps: row.rx_bps,
+    txBps: row.tx_bps,
+    weight: 0,
+    tags: [],
+    lastSeenAt: null,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+async function fileExists(file: string): Promise<boolean> {
+  try {
+    const fs = await import('node:fs/promises');
+    await fs.access(file);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+main().catch((err) => {
+  log.error('启动失败', { error: err instanceof Error ? err.message : String(err), stack: err instanceof Error ? err.stack : undefined });
+  process.exit(1);
+});
