@@ -653,7 +653,54 @@ Get-NetTCPConnection -LocalPort 12411 -ErrorAction SilentlyContinue |
 
 ---
 
-## 18. 其它常见小程序问题
+## 18. 客户端/网页报「主控返回了非 JSON 响应（HTTP 502/503/504）」
+
+**症状**：界面弹这句话。它说明**响应根本不是主控发的**——主控永远回 JSON，
+这个 HTML 错误页来自反向代理。
+
+| 状态码 | 含义 | 常见原因 |
+| --- | --- | --- |
+| 502 | 反代连不上主控 | 主控没起来 / 正在重启 / `proxy_pass` 端口写错 |
+| 503 | 反代认为后端不可用 | 上游被摘除、连接数打满 |
+| 504 | 反代**等到了主控，但主控没在超时内回** | 请求处理过慢，或反代超时设得太小 |
+
+**先分清是谁的问题**：
+
+```bash
+# 1) 主控自己在不在、快不快（绕开反代直连本机端口）
+curl -s -o /dev/null -w 'direct %{http_code} %{time_total}s\n' http://127.0.0.1:8787/api/v1/meta
+# 2) 反代超时设了多少（对照 /api/ 与 / 两个 location）
+sudo grep -n 'proxy_read_timeout' /etc/nginx/conf.d/*.conf
+# 3) 主控日志：慢请求与卡住的请求都会留痕
+sudo journalctl -u mclink-server --since '15 min ago' | grep -E '慢请求|请求仍未返回|请求处理超时'
+```
+
+第 3 步是关键：主控会在**请求还没返回**时（默认 30 秒）先记一条
+「请求仍未返回」，到 110 秒自己回一个 JSON 504（`server_timeout`），
+所以日志里能直接看到是哪个 method+path 卡住了，不必靠猜。
+
+**处置**：
+
+1. 若是 502/503：`systemctl status mclink-server`，多半是没启动或正在重启；
+   反代 `proxy_pass` 指向 `127.0.0.1:8787`（而不是别的端口）。
+2. 若是 504：先看第 3 步日志里卡住的是哪个接口。
+   * 下载/安装类（`/downloads/`、`/agent/`）超时 → 反代要单独开长超时并关掉缓冲，
+     规则见 `deploy/nginx.conf.example`；这两个路径**默认落在 `location /` 的 120s 里**，
+     慢线路上必然 504。
+   * 普通接口超时 → 常见是 SMTP 发信慢（主控侧 15s 超时）、或数据库很大时的一次聚合查询。
+3. 阈值可调（主控侧，改完重启）：
+
+   | 环境变量 | 默认 | 作用 |
+   | --- | --- | --- |
+   | `MCLINK_SLOW_REQUEST_MS` | `30000` | 多久没返回就先记一条 warn |
+   | `MCLINK_REQUEST_DEADLINE_MS` | `110000` | 多久没返回就由主控主动回 JSON 504 |
+
+   这两个值应当**小于**反代的 `proxy_read_timeout`，这样客户端拿到的是结构化错误
+   （带 `server_timeout` 与中文说明），而不是反代那张 HTML 页面。
+
+---
+
+## 19. 其它常见小程序问题
 
 | 症状 | 原因 | 处置 |
 | --- | --- | --- |

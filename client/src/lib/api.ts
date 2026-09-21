@@ -116,6 +116,19 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     try {
       payload = JSON.parse(text);
     } catch {
+      /**
+       * 响应不是 JSON —— 十有八九根本没到主控，而是**反向代理**回的 HTML 错误页：
+       * 502（后端起不来）、503（后端不可用）、504（等待超时）。
+       * 只说「非 JSON 响应」玩家看不懂也做不了什么，这里直接给出判断与下一步。
+       */
+      if (res.status === 502 || res.status === 503 || res.status === 504) {
+        throw new ApiRequestError(
+          res.status,
+          'proxy_error',
+          `主控暂时没有响应（HTTP ${res.status}）。这是反向代理给出的错误页，通常意味着主控正在重启，` +
+            '或这个请求处理得太久、超过了代理的等待时间。请稍后重试；若反复出现，让管理员查主控日志里的「慢请求」记录。',
+        );
+      }
       throw new ApiRequestError(res.status, 'bad_response', `主控返回了非 JSON 响应（HTTP ${res.status}）`);
     }
   }

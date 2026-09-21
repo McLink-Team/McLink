@@ -76,6 +76,17 @@ server {
         proxy_read_timeout 120s;
     }
 
+    # --------------------------------------------------- 子节点安装脚本与二进制
+    location /agent/ {
+        proxy_pass http://mclink_master;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        # 子节点安装要顺带下一个 7–23MB 的 easytier 二进制：走 location / 的 120s 时，
+        # 慢线路上会超时成 HTTP 504，安装脚本随即报「返回了非 JSON 响应」这类怪错。
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+    }
+
     location /api/ {
         proxy_pass http://mclink_master;
         proxy_http_version 1.1;
