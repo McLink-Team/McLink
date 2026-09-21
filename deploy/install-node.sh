@@ -312,7 +312,11 @@ ensure_user() {
 prepare_dirs() {
   mkdir -p "$APP_DIR" "$DATA_DIR" "$CONF_DIR" "$LOG_DIR" "${APP_DIR}/vendor/easytier"
   chown -R "root:root" "$APP_DIR"
-  chown -R "${RUN_USER}:${RUN_USER}" "$DATA_DIR" "$LOG_DIR"
+  # CONF_DIR 必须给 mclink 写权限：agent 以 mclink 身份运行，要把节点令牌
+  # （/etc/mclink/node-token.json）写在这里。漏掉这一条会造成一个很隐蔽的故障：
+  #   注册成功（一次性密钥被消耗）→ 令牌写不下 → 下次重启重新注册 → "密钥已被使用"
+  #   → systemd 无限重启。实测踩过（restart counter 涨到 132）。
+  chown -R "${RUN_USER}:${RUN_USER}" "$CONF_DIR" "$DATA_DIR" "$LOG_DIR"
   chmod 0750 "$CONF_DIR" "$DATA_DIR" "$LOG_DIR"
 }
 

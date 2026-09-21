@@ -159,6 +159,30 @@ grep MCLINK_ET_CLI /etc/mclink/mclink.env
 
 **注册相关的特定错误**：
 
+* **`注册密钥已被使用` + restart counter 一直涨**（实测踩过：查到 132 次）：
+  这是最隐蔽的一种 —— **第一次注册其实成功了**，密钥被消耗掉，但 agent 没能把节点令牌
+  写到 `/etc/mclink/node-token.json`（早期版本 `install-node.sh` 漏了把 `/etc/mclink`
+  归属给 `mclink` 用户，目录是 root:0750，agent 以 `mclink` 身份跑，写不进去）。
+  于是每次重启都拿同一把废密钥去注册，systemd 就无限重启。
+
+  ```bash
+  # 1) 先确认令牌到底在不在、目录归属对不对
+  ls -l /etc/mclink/node-token.json
+  ls -ld /etc/mclink
+  #   期望 owner 是 mclink:mclink；若是 root:root，就是这个问题
+
+  # 2) 停掉循环、修归属
+  sudo systemctl stop mclink-node
+  sudo chown -R mclink:mclink /etc/mclink
+
+  # 3) 到管理台「节点」页**重新签发**一把注册密钥（旧的那把已经用掉了），
+  #    然后用新命令重跑安装脚本
+  ```
+
+  现在的版本不会再把密钥白白烧掉：agent 在注册**之前**会先探测状态目录是否可写，
+  不可写就直接报错退出（退出码 3）并明确告诉你"密钥还没被消耗"。
+  单元文件也加了 `RestartPreventExitCode=3` 与 `StartLimitBurst=10`，
+  配置类错误不会再来一次无限重启。
 * `找不到 mclink-node.service（应与 install-node.sh 放在同一目录）`：
   用 `curl | sudo bash` 一键安装时目标机上没有仓库，自然也没有这个文件（2026-09 之前的脚本
   在这个场景下必然失败）。现在脚本会依次找：本机同目录 → `--source`/父目录的 `deploy/` →
