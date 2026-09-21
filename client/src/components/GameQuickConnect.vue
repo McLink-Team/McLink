@@ -197,7 +197,7 @@ async function copy(text: string, tag: string): Promise<void> {
 
     <div class="hint" style="margin-top: 12px">
       通用说明：有些游戏只显示「局域网房间列表」，这种情况不需要手填地址 ——
-      只要大家都进了同一个 mclink 房间，游戏里就能直接看到对方的房间。
+      只要大家都进了同一个 McLink 房间，游戏里就能直接看到对方的房间。
       端口如果和游戏里显示的不一致，以游戏内显示的为准。
     </div>
   </div>

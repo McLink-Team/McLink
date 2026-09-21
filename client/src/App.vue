@@ -100,7 +100,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown));
       <span class="muted">正在初始化…</span>
     </div>
 
-    <LoginPage v-else-if="!loggedIn" />
+    <LoginPage v-else-if="!loggedIn" :version="appVersion" />
 
     <!-- 平台要求验证邮箱时先过这一关：服务端会拒绝未验证账号建房/进房 -->
     <VerifyEmail v-else-if="mustVerifyEmail" />
@@ -125,7 +125,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown));
           <button class="btn btn-sm btn-ghost" type="button" @click="clearError()">关闭</button>
         </div>
 
-        <CreateJoin v-if="view === 'home'" />
+        <CreateJoin v-if="view === 'home'" :version="appVersion" @open-settings="goto('settings')" />
         <RoomPage v-else-if="view === 'room'" />
         <SettingsPage v-else-if="view === 'settings'" />
         <LogPanel v-else :logs="clientState.coreLogs" @copy="copy" />
@@ -152,7 +152,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown));
         </nav>
         <div class="foot-meta faint">
           <span class="truncate">{{ escHint || clientState.user?.displayName || '' }}</span>
-          <span class="mono nowrap">v{{ appVersion }}</span>
+          <!-- 主屏自己底部居中带一行版本号，这里就不再重复 -->
+          <span v-if="view !== 'home'" class="mono nowrap">McLink v{{ appVersion }}</span>
         </div>
       </footer>
     </template>

@@ -124,6 +124,19 @@ export interface RoomPolicy {
   strictPorts: boolean;
   /** 房间公告 */
   motd: string | null;
+  /**
+   * 局域网广播直通（EasyTier 的 `enable_udp_broadcast_relay`）。
+   *
+   * 开启后，Minecraft「多人游戏」列表里能直接看到房间，玩家不用手抄 IP。
+   * 但代价很实在：Windows 上它依靠 **WinDivert 内核网络过滤驱动**去抓物理网卡的 UDP 广播，
+   * 也就是每台开了这个开关的机器都会被装上一个**系统级网络驱动**。
+   * 实测这会与其它软件的网络栈冲突——有玩家反馈连上虚拟网络后网易云音乐等软件上不了网
+   * （`sc qc windivert` 里的驱动路径直接指向我们 vendored 的 EasyTier 目录，证据确凿）。
+   *
+   * 所以默认**关闭**（EasyTier 官方默认同样是关的）。想要"局域网列表里直接看到房间"的
+   * 房主可以自己打开；手动「直接连接 + 虚拟 IP」在任何情况下都能用。
+   */
+  allowBroadcast: boolean;
 }
 
 export const DEFAULT_ROOM_POLICY: RoomPolicy = {
@@ -136,6 +149,7 @@ export const DEFAULT_ROOM_POLICY: RoomPolicy = {
   allowedPorts: [],
   strictPorts: false,
   motd: null,
+  allowBroadcast: false,
 };
 
 export interface Room {

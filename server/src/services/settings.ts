@@ -5,10 +5,23 @@ import type { ServerConfig } from '../config.ts';
 
 export const SETTINGS_KEY = 'platform';
 
+/**
+ * 与 `client/electron-builder.yml` 的 `artifactName` 保持一致。
+ *
+ * 这两处必须同时改：`clientDownloadUrl` 既决定网页「下载客户端」按钮指向哪个文件，
+ * 也决定下载列表里哪个产物排在第一位、能拿到登记好的 sha256。
+ * 曾经默认值是 `/downloads/mclink-client-setup.exe`，而构建产物叫
+ * `mclink-client-<版本>-x64.exe` —— 全新部署上这个按钮会直接 404。
+ */
+export function clientArtifactName(version: string, arch = 'x64'): string {
+  return `McLink-Setup-${version}-${arch}.exe`;
+}
+
 export const DEFAULT_SETTINGS: PlatformSettings = {
-  siteName: 'mclink 联机',
+  siteName: 'McLink 联机',
   siteTagline: '基于 EasyTier 的《我的世界》联机平台 —— 单端口、低延迟、开箱即用',
-  clientDownloadUrl: '/downloads/mclink-client-setup.exe',
+  // 版本号要与下一行的 clientVersion 一致，改版本时两个一起改
+  clientDownloadUrl: `/downloads/${clientArtifactName('0.1.0')}`,
   clientVersion: '0.1.0',
   clientSha256: null,
   defaultQuotaBytes: null,

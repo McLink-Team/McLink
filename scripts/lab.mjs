@@ -677,7 +677,22 @@ async function main() {
   step(`连通主控 ${MASTER}`);
   const meta = await api('/meta');
   check('主控在线', Boolean(meta?.siteName), `站点名=${meta?.siteName}`);
+  check('品牌默认写成 McLink', /^McLink/.test(meta?.siteName ?? ''), meta?.siteName);
   console.log(colors.dim(`  EasyTier: ${meta.easytierVersion ?? '未知'}  中继端口: ${meta.relayPort}`));
+
+  step('下载入口指向真实存在的产物');
+  const downloads = await api('/downloads');
+  const artifacts = downloads?.artifacts ?? [];
+  check(
+    '下载列表里的主产物确实存在（不存在就回退到真实文件，而不是给玩家 404）',
+    artifacts.length === 0 || artifacts.some((a) => a.url === downloads.primary),
+    `primary=${downloads?.primary}，产物 ${artifacts.length} 个`,
+  );
+  check(
+    '/meta 的 clientDownloadUrl 与下载列表一致',
+    meta.clientDownloadUrl === downloads?.primary,
+    `${meta.clientDownloadUrl} vs ${downloads?.primary}`,
+  );
 
   step('管理员登录');
   const admin = await api('/auth/login', { method: 'POST', body: { username: ADMIN_USER, password: ADMIN_PASS } });
@@ -1099,6 +1114,65 @@ async function main() {
   check('房主可以取到自己的 ACL', typeof acl?.aclToml === 'string' && acl.aclToml.includes('[acl.acl_v1]'));
   const ticketWithAcl = await api(`/rooms/${roomA.room.id}/ticket?listenPort=${BASE_PORT + 1}`, { token: hostA.token });
   check('房主票据带 ACL，成员票据不带', ticketWithAcl.aclToml !== null && joinA.ticket.aclToml === null);
+
+  step('验证 RPC 端口：客户端上报优先，非法值回退推算');
+  const rpcArgOf = (t) => {
+    const args = t?.launchArgs ?? [];
+    const idx = args.indexOf('-r');
+    return idx >= 0 ? args[idx + 1] : null;
+  };
+  const reportedRpc = BASE_PORT + 700;
+  const ticketReported = await api(
+    `/rooms/${roomA.room.id}/ticket?listenPort=${BASE_PORT + 1}&rpcPort=${reportedRpc}`,
+    { token: hostA.token },
+  );
+  check(
+    '客户端上报的 RPC 端口被采纳',
+    rpcArgOf(ticketReported) === `127.0.0.1:${reportedRpc}`,
+    `期望 127.0.0.1:${reportedRpc}，实际 ${rpcArgOf(ticketReported)}`,
+  );
+  const ticketBadRpc = await api(
+    `/rooms/${roomA.room.id}/ticket?listenPort=${BASE_PORT + 1}&rpcPort=80`,
+    { token: hostA.token },
+  );
+  check(
+    '非法 RPC 端口（<1024）回退到按监听端口推算',
+    rpcArgOf(ticketBadRpc) === `127.0.0.1:${rpcFor(BASE_PORT + 1)}`,
+    `期望 127.0.0.1:${rpcFor(BASE_PORT + 1)}，实际 ${rpcArgOf(ticketBadRpc)}`,
+  );
+  check(
+    'RPC 端口始终绑定在回环地址上（不暴露给局域网）',
+    (rpcArgOf(ticketReported) ?? '').startsWith('127.0.0.1:'),
+    rpcArgOf(ticketReported) ?? 'null',
+  );
+  const devNameLine = /^dev_name = "(.+)"$/m.exec(ticketReported.configToml ?? '')?.[1] ?? null;
+  check('客户端网卡名固定为 McLink', devNameLine === 'McLink', `dev_name=${devNameLine}`);
+
+  const flagOf = (t, key) => new RegExp(`^${key} = (\\w+)$`, 'm').exec(t?.configToml ?? '')?.[1] ?? null;
+  check(
+    '默认房间不下发 UDP 广播直通（WinDivert 会破坏玩家机器上的其它软件）',
+    flagOf(ticketWithAcl, 'enable_udp_broadcast_relay') === 'false',
+    `enable_udp_broadcast_relay=${flagOf(ticketWithAcl, 'enable_udp_broadcast_relay')}`,
+  );
+  await api(`/rooms/${roomA.room.id}`, {
+    method: 'PATCH',
+    token: hostA.token,
+    body: { allowBroadcast: true },
+  });
+  const ticketBroadcast = await api(
+    `/rooms/${roomA.room.id}/ticket?listenPort=${BASE_PORT + 1}`,
+    { token: hostA.token },
+  );
+  check(
+    '只带 allowBroadcast 的 PATCH 也能落库（曾因漏在策略键清单里被静默丢弃）',
+    flagOf(ticketBroadcast, 'enable_udp_broadcast_relay') === 'true',
+    `enable_udp_broadcast_relay=${flagOf(ticketBroadcast, 'enable_udp_broadcast_relay')}`,
+  );
+  await api(`/rooms/${roomA.room.id}`, {
+    method: 'PATCH',
+    token: hostA.token,
+    body: { allowBroadcast: false },
+  });
 
   step('验证踢人：ACL 版本递增且黑名单生效');
   const ticketBeforeKick = await api(`/rooms/${roomA.room.id}/ticket?listenPort=${BASE_PORT + 1}`, { token: hostA.token });

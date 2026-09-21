@@ -192,4 +192,9 @@ onMounted(() => {
 .wrap {
   flex-wrap: wrap;
 }
+/* 窄窗里表格自己横向滚动，这两列各自占一行、不要折成三四行 */
+.table td:nth-child(3),
+.table td:nth-child(5) {
+  white-space: nowrap;
+}
 </style>

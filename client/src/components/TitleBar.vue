@@ -11,6 +11,7 @@
  * 误点代价太大；真正的退出放在托盘菜单里。
  */
 import { onMounted, onUnmounted, ref } from 'vue';
+import BrandMark from './BrandMark.vue';
 
 const props = defineProps<{
   /** 连接状态，决定信号灯的语义色 */
@@ -60,8 +61,8 @@ onUnmounted(() => offMaximized?.());
 <template>
   <header class="titlebar" @dblclick="onDoubleClick">
     <div class="tb-brand">
-      <span class="tb-mark" aria-hidden="true" />
-      <span class="tb-name">mclink</span>
+      <BrandMark :size="14" />
+      <span class="tb-name">McLink</span>
     </div>
 
     <div class="tb-status" :title="label">
@@ -117,12 +118,6 @@ onUnmounted(() => offMaximized?.());
   display: flex;
   align-items: center;
   gap: 7px;
-}
-.tb-mark {
-  width: 13px;
-  height: 13px;
-  background: var(--signal);
-  clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%);
 }
 .tb-name {
   font-family: var(--font-display);

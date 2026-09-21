@@ -44,7 +44,7 @@ export function registerPublicRoutes(router: Router, app: App): void {
       relayPort: s.relayPort,
       easytierVersion: app.relay.cliVersion,
       clientVersion: s.clientVersion,
-      clientDownloadUrl: s.clientDownloadUrl,
+      clientDownloadUrl: resolveClientDownloadUrl(app),
       stats: {
         onlineNodes: online,
         totalNodes: app.nodes.count(),
@@ -96,7 +96,7 @@ export function registerPublicRoutes(router: Router, app: App): void {
     const artifacts = listDownloads(app);
     return {
       clientVersion: app.settings.current.clientVersion,
-      primary: app.settings.current.clientDownloadUrl,
+      primary: resolveClientDownloadUrl(app),
       artifacts,
     };
   });
@@ -147,6 +147,24 @@ export function buildOverview(app: App): PlatformOverview {
       listen: `${relay.listen}`,
     },
   };
+}
+
+/**
+ * 「下载客户端」按钮真正应该指向哪个文件。
+ *
+ * 设置里的 `clientDownloadUrl` 由管理员维护，但有两类情况会让它指向不存在的文件：
+ *   1. 客户端换了版本号（产物名里带版本），设置没跟着改；
+ *   2. 老部署的库里存着历史默认值（曾经是 `mclink-client-setup.exe`，从来不存在）。
+ * 于是：设置里指定的文件**确实在下载目录里**时以它为准；否则退回下载目录里实际
+ * 存在的 Windows 产物。这样即使管理员没配，玩家点下载也不会拿到 404。
+ */
+export function resolveClientDownloadUrl(app: App): string {
+  const s = app.settings.current;
+  const artifacts = listDownloads(app);
+  const wanted = s.clientDownloadUrl ? path.basename(s.clientDownloadUrl) : '';
+  if (wanted && artifacts.some((a) => a.filename === wanted)) return s.clientDownloadUrl;
+  const windows = artifacts.filter((a) => a.platform === 'windows');
+  return windows[0]?.url ?? artifacts[0]?.url ?? s.clientDownloadUrl;
 }
 
 /** 扫描下载目录，列出可下载的客户端产物 */

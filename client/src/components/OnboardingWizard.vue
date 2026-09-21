@@ -1,29 +1,20 @@
 <script setup lang="ts">
 /**
- * 首次使用向导：4 步把「权限 → 服务器 → 房间 → 游戏里怎么连」讲完。
+ * 首次使用向导：3 步把「权限 → 房间 → 游戏里怎么连」讲完。
  *
  * 只在第一次启动时自动弹出（localStorage 标记由 lib/onboarding.ts 管理），
  * 「跳过」只关掉本次，「不再显示」才会写标记；设置页里可以重新打开。
  */
 import { computed, onMounted, ref } from 'vue';
-import { MASTER_URL } from '../lib/api.ts';
 import { closeOnboarding } from '../lib/onboarding.ts';
 import { relaunchElevated } from '../lib/store.ts';
 import type { AppInfo } from '../lib/bridge.ts';
 
-const STEP_TITLES = ['管理员权限', '服务器地址', '建房 / 进房', '在游戏里怎么连'];
+const STEP_TITLES = ['管理员权限', '建房 / 进房', '在游戏里怎么连'];
 
 const step = ref(0);
 const info = ref<AppInfo | null>(null);
 
-const master = computed(() => MASTER_URL);
-const masterHost = computed(() => {
-  try {
-    return new URL(MASTER_URL).host;
-  } catch {
-    return MASTER_URL;
-  }
-});
 const last = computed(() => step.value === STEP_TITLES.length - 1);
 
 onMounted(async () => {
@@ -40,7 +31,7 @@ function finish(persist: boolean): void {
     <div class="card modal-card stack">
       <div class="row-between">
         <div>
-          <div style="font-weight: 650; font-size: var(--fs-lg)">欢迎使用 mclink</div>
+          <div style="font-weight: 650; font-size: var(--fs-lg)">欢迎使用 McLink</div>
           <div class="hint">第 {{ step + 1 }} / {{ STEP_TITLES.length }} 步 · {{ STEP_TITLES[step] }}</div>
         </div>
         <div class="row" style="gap: 4px">
@@ -51,7 +42,7 @@ function finish(persist: boolean): void {
       <!-- ① 管理员权限 -->
       <div v-if="step === 0" class="stack">
         <div>
-          mclink 会在本机拉起 EasyTier 核心来建一张虚拟局域网。Windows 上创建虚拟网卡（wintun）需要管理员权限，
+          McLink 会在本机拉起 EasyTier 核心来建一张虚拟局域网。Windows 上创建虚拟网卡（wintun）需要管理员权限，
           没有权限的话你能登录、能建房，但成员之间连不通。
         </div>
         <div v-if="info && info.elevated" class="alert alert-ok">当前已以管理员身份运行，无需额外操作。</div>
@@ -66,32 +57,28 @@ function finish(persist: boolean): void {
         <div class="hint">也可以之后在「设置」标签里再提权，随时都来得及。</div>
       </div>
 
-      <!-- ② 服务器地址 -->
+      <!-- ② 建房 / 进房 -->
       <div v-else-if="step === 1" class="stack">
-        <div>服务器地址已经内置在客户端里（<span class="mono">{{ masterHost }}</span>），不需要你配置，也没有可以填错的地方。</div>
-        <div class="readonly-line mono">{{ master }}</div>
+        <div>
+          <span style="font-weight: 600">自己开：</span>点「创建房间」，选一个离大家近的区域（不确定就选「自动选择」），
+          创建后立刻会得到联机地址和 6 位加入码。
+        </div>
+        <div>
+          <span style="font-weight: 600">加入朋友：</span>把对方给的 6 位加入码填进「加入房间」；
+          如果房主设了密码或开了审批，按提示走即可。
+        </div>
         <div class="hint">
-          平台不开放自建主控：房间凭证（网络名/密钥）只由官方主控签发，
-          地址写死在客户端里可以避免玩家被诱导连到假冒主控。
+          房主是流量汇合点，所以房主最好选网络稳定的那台机器；玩家之间默认会尝试 P2P 直连，直连不成才走中继。
         </div>
       </div>
 
-      <!-- ③ 建房 / 进房 -->
-      <div v-else-if="step === 2" class="stack">
-        <div><span style="font-weight: 600">自己开：</span>点「创建新房间」，选一个离大家近的区域（不确定就选「自动选择」），创建后立刻会得到联机地址和 6 位加入码。</div>
-        <div><span style="font-weight: 600">加入朋友：</span>把对方给的 6 位加入码填进「加入朋友的房间」；如果房主设了密码或开了审批，按提示走即可。</div>
-        <div class="hint">
-          房主是流量汇合点，所以房主最好选网络稳定的机器；玩家之间默认会尝试 P2P 直连，直连不成才走中继。
-        </div>
-      </div>
-
-      <!-- ④ 游戏里怎么连 -->
+      <!-- ③ 游戏里怎么连 -->
       <div v-else class="stack">
         <div>以《我的世界》Java 版为例：房主在游戏里「对局域网开放」（或开好服务端）之后，玩家这样进：</div>
         <div class="steps">
           <div>① 启动游戏 → 主菜单点「多人游戏」</div>
           <div>② 点「直接连接」（基岩版是「服务器 → 添加服务器」）</div>
-          <div>③ 把 mclink 房间页上的「联机地址」粘贴进去 → 加入服务器</div>
+          <div>③ 把 McLink 房间页上的「联机地址」粘贴进去 → 加入服务器</div>
         </div>
         <div class="hint">
           有些游戏只显示「局域网房间列表」，那种情况什么都不用填，房间里的游戏会自动出现在列表里。
@@ -122,7 +109,7 @@ function finish(persist: boolean): void {
   z-index: 400;
 }
 .modal-card {
-  width: min(560px, 100%);
+  width: min(520px, 100%);
   max-height: 88vh;
   overflow: auto;
 }
@@ -135,20 +122,5 @@ function finish(persist: boolean): void {
   border: 1px solid var(--border);
   background: var(--surface-hair-strong);
   font-size: var(--fs-sm);
-}
-.readonly-line {
-  display: flex;
-  align-items: center;
-  height: 36px;
-  padding: 0 var(--s-3);
-  border-radius: var(--r-sm);
-  border: 1px dashed var(--border-strong);
-  background: var(--surface-hair);
-  color: var(--text-dim);
-  font-size: var(--fs-sm);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  user-select: text;
 }
 </style>

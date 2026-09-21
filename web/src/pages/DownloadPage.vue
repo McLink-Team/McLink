@@ -85,7 +85,7 @@ const requirements: Array<{ label: string; value: string }> = [
               <path d="M3 20h18" />
             </svg>
           </span>
-          <span class="brand-text">mclink</span>
+          <span class="brand-text">McLink</span>
         </RouterLink>
         <div class="nav-actions">
           <RouterLink class="btn btn-ghost" to="/">返回首页</RouterLink>
@@ -170,7 +170,7 @@ const requirements: Array<{ label: string; value: string }> = [
             <p class="hint" style="margin-top: var(--s-2)">
               管理员请在主控的下载目录（默认 <span class="mono">server/downloads</span>，可由
               <span class="mono">MCLINK_DOWNLOADS_DIR</span> 指定）放入
-              <span class="mono">mclink-client-setup.exe</span> 等产物，
+              <span class="mono">McLink-Setup-&lt;版本&gt;-x64.exe</span> 等产物，
               然后在控制台「平台设置」里登记下载地址、版本号与 SHA-256 校验值。
             </p>
           </div>
@@ -227,7 +227,7 @@ const requirements: Array<{ label: string; value: string }> = [
           <section class="card stack">
             <div class="panel-title">关于 EasyTier 官方核心</div>
             <p class="muted" style="font-size: var(--fs-sm)">
-              mclink 的组网能力完全来自
+              McLink 的组网能力完全来自
               <a class="link" :href="EASYTier_REPO" target="_blank" rel="noreferrer noopener">EasyTier</a>
               （LGPL-3.0）。主控中继、子节点与客户端实例都是独立运行的
               <span class="mono">easytier-core</span> 进程，本平台未修改其源码，
@@ -251,9 +251,9 @@ const requirements: Array<{ label: string; value: string }> = [
             <p class="muted" style="font-size: var(--fs-sm)">
               建议先校验再安装。Windows 上用 PowerShell：
             </p>
-            <pre class="code">Get-FileHash .\mclink-client-setup.exe -Algorithm SHA256</pre>
+            <pre class="code">Get-FileHash .\McLink-Setup-0.1.0-x64.exe -Algorithm SHA256</pre>
             <p class="muted" style="font-size: var(--fs-sm)">Linux / macOS 上：</p>
-            <pre class="code">sha256sum mclink-client-setup.exe</pre>
+            <pre class="code">sha256sum McLink-Setup-0.1.0-x64.exe</pre>
             <p class="hint">
               与「可用产物」里该文件显示的 SHA-256 不一致时不要安装，
               并联系管理员确认来源（校验值由管理员在控制台「平台设置」的 clientSha256 中登记）。
@@ -283,7 +283,7 @@ const requirements: Array<{ label: string; value: string }> = [
     <footer class="foot">
       <div class="container row-between wrap">
         <span class="faint" style="font-size: var(--fs-xs)">
-          mclink v{{ clientVersion }} · 构建于 EasyTier（LGPL-3.0）之上
+          McLink v{{ clientVersion }} · 构建于 EasyTier（LGPL-3.0）之上
         </span>
         <span class="row" style="gap: var(--s-3); font-size: var(--fs-sm)">
           <a class="link" :href="EASYTier_REPO" target="_blank" rel="noreferrer noopener">EasyTier GitHub</a>

@@ -92,7 +92,7 @@ async function resend(): Promise<void> {
         <p class="hint" style="margin-top: 6px">
           {{ clientState.platform.emailServiceAvailable
             ? '这个平台要求绑定并验证邮箱后才能建房、进房。验证码会发到你的邮箱，15 分钟内有效。'
-            : '这个平台要求验证邮箱，但主控还没有配置邮件服务 —— 请联系管理员处理。' }}
+            : '这个平台要求验证邮箱，但平台还没有配置邮件服务 —— 请联系管理员处理。' }}
         </p>
       </div>
 

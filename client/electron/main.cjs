@@ -1,5 +1,5 @@
 /**
- * mclink Windows 客户端 —— Electron 主进程。
+ * McLink Windows 客户端 —— Electron 主进程。
  *
  * 职责划分：
  *   主进程  = 唯一有权启动/停止 easytier-core、读写配置、申请提权、管理托盘的角色
@@ -8,7 +8,7 @@
  * 之所以把核心进程生命周期放在主进程：渲染进程可能被回收/节流，
  * 而虚拟网络必须一直在后台跑着。
  */
-const { app, BrowserWindow, Tray, Menu, ipcMain, shell, dialog, nativeImage } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, shell, dialog, nativeImage, nativeTheme } = require('electron');
 const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -64,6 +64,35 @@ const coreLogs = [];
 /** 待恢复的启动参数（崩溃自动重启用） */
 let replay = null;
 
+/**
+ * 串行化「启动/停止核心进程」。
+ *
+ * 连接房间（`core:start`）与「应用 ACL 后重启核心」（applyAcl 的回退路径）是两条
+ * 独立入口，都会调用 startCore()；而 startCore() 内部要先 await stopCore()
+ * （最长等 5 秒）。两条入口交错时的实际时序是：A 停 → B 停 → A 起 → B 起，
+ * 第二个 easytier-core 抢不到监听端口，直接 failed to listen（os error 10048）
+ * 退出——玩家侧看到的就是「显示连上了，但一直进不去房间」。
+ *
+ * 这里用一条 Promise 链把启停排队，保证同一时刻只有一次启停在进行；
+ * 链条本身不会因为某一次失败而断开。
+ */
+let coreOpChain = Promise.resolve();
+/** 正在按计划重启核心：用于区分「我们主动停的」和「核心自己崩了」 */
+let coreRestarting = false;
+
+function withCoreLock(task) {
+  const run = coreOpChain.then(task, task);
+  coreOpChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function logLine(line, stream = 'stdout') {
   const entry = { ts: new Date().toISOString(), stream, line };
   coreLogs.push(entry);
@@ -115,6 +144,94 @@ function isElevated() {
 
 /* ------------------------------------------------------------ 核心进程 */
 
+/**
+ * 清理上次异常退出留下的 easytier-core 孤儿进程。
+ *
+ * 客户端被任务管理器强杀、或自己崩掉时，子进程不会跟着消失：它会继续占着虚拟
+ * 网卡与监听端口，于是下一次启动直接 failed to listen（os error 10048）。
+ * 单实例锁保证同一时刻只有一个 McLink，所以这些残留一定是上次的。
+ *
+ * 判定条件必须**同时**满足两条，这是实测踩出来的：
+ *   1. 可执行文件在本应用的 vendor 目录里 —— 用户机器上可能另装着自己玩的 EasyTier；
+ *   2. 命令行里出现本客户端的数据目录 —— 开发机上主控中继用的是同一份
+ *      `vendor/easytier/easytier-core.exe`（它的配置文件在 server/data 下），
+ *      只看第 1 条会把主控自己的中继一起杀掉。
+ * 两条都满足时，进程必然是「本客户端上次留下的」。
+ */
+function cleanupOrphanCores() {
+  const ownExe = path.resolve(VENDOR_DIR).toLowerCase();
+  const ownData = path.resolve(DATA_DIR).toLowerCase();
+  try {
+    if (process.platform === 'win32') {
+      /**
+       * 用 WMI 查进程路径与命令行。
+       *
+       * 为什么不直接 `taskkill /IM easytier-core.exe`：那会连用户自己装的 EasyTier 一起杀。
+       *
+       * 为什么里面套一层 try/catch 与 `@()`：实测这台机器上 Get-CimInstance
+       * 会偶发 `远程过程调用失败 (0x800706BE)`，此时命令整体失效、stdout 为空，
+       * 清理就静默失效了（第一次测孤儿清理就是这么失败了一次）。
+       * 所以 WMI 失败时退回旧的 Get-WmiObject，并把结果强制成数组。
+       */
+      const script = [
+        "$ErrorActionPreference='SilentlyContinue'",
+        "try { $p = @(Get-CimInstance Win32_Process -Filter \"Name='easytier-core.exe'\" -ErrorAction Stop) }",
+        // 注意用换行而不是 '; ' 拼接：`try { } ; catch { }` 在 PowerShell 里是语法错误
+        'catch { $p = @(Get-WmiObject Win32_Process -Filter "Name=\'easytier-core.exe\'") }',
+        "if ($null -eq $p -or $p.Count -eq 0) { '[]' }",
+        'else { $p | Select-Object ProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress }',
+      ].join('\n');
+      let res = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
+        encoding: 'utf8',
+        windowsHide: true,
+        timeout: 12000,
+      });
+      // 偶发的进程创建/管道失败再试一次；两次都不行就放弃，绝不能影响启动
+      if (res.error || res.status !== 0) {
+        logLine(`清理残留进程：第一次查询失败（${res.error?.message ?? `退出码 ${res.status}`}），重试一次`, 'stderr');
+        res = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
+          encoding: 'utf8',
+          windowsHide: true,
+          timeout: 12000,
+        });
+      }
+      if (res.error) {
+        logLine(`清理残留进程失败：${res.error.message}`, 'stderr');
+        return 0;
+      }
+      if (res.status !== 0) {
+        logLine(`清理残留进程失败：PowerShell 退出码 ${res.status}`, 'stderr');
+        return 0;
+      }
+      const raw = (res.stdout || '').trim();
+      if (!raw) return 0;
+      const parsed = JSON.parse(raw);
+      const rows = Array.isArray(parsed) ? parsed : [parsed];
+      let killed = 0;
+      for (const row of rows) {
+        const exe = typeof row?.ExecutablePath === 'string' ? path.resolve(row.ExecutablePath).toLowerCase() : '';
+        const cmd = typeof row?.CommandLine === 'string' ? row.CommandLine.toLowerCase() : '';
+        const pid = Number(row?.ProcessId);
+        if (!exe.startsWith(ownExe) || !cmd.includes(ownData)) continue;
+        if (!Number.isInteger(pid) || pid <= 0) continue;
+        try {
+          process.kill(pid);
+          killed += 1;
+        } catch {
+          /* 可能刚好自己退了 */
+        }
+      }
+      return killed;
+    }
+    const res = spawnSync('pkill', ['-f', `easytier-core.*${DATA_DIR}`], { windowsHide: true, timeout: 5000 });
+    return res.status === 0 ? 1 : 0;
+  } catch (err) {
+    // 清理是尽力而为，失败不能影响启动；但要留下线索，否则「没清理掉」永远查不出原因
+    logLine(`清理残留进程失败：${err.message}`, 'stderr');
+    return 0;
+  }
+}
+
 function freePort() {
   return new Promise((resolve, reject) => {
     const srv = net.createServer();
@@ -133,11 +250,33 @@ function writeFileAtomic(file, content) {
   fs.renameSync(tmp, file);
 }
 
+/** 端口没抢到时最多试几次（第 2 次之前会先清残留、再等端口释放） */
+const MAX_START_ATTEMPTS = 2;
+/** easytier-core 抢不到监听端口时打在日志里的样子 */
+const BIND_FAILURE_RE = /failed to listen|Address already in use|os error 10048|os error 98|WSAEADDRINUSE/i;
+
+function detectBindFailure(logFile) {
+  try {
+    const match = fs.readFileSync(logFile, 'utf8').match(BIND_FAILURE_RE);
+    return match ? match[0] : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * 启动 easytier-core。
+ * 启动 easytier-core（对外入口，串行执行）。
  * @param {{ configToml: string, launchArgs?: string[], instanceName?: string }} payload
  */
-async function startCore(payload) {
+function startCore(payload) {
+  return withCoreLock(() => startCoreInner(payload, 1));
+}
+
+/**
+ * 真正干活的启动流程。只允许被 startCore() 或它自己的重试调用——
+ * 直接调用会绕过串行队列，正是我们要消灭的那种交错。
+ */
+async function startCoreInner(payload, attempt) {
   if (core.child) await stopCore();
 
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -191,11 +330,13 @@ async function startCore(payload) {
       setState('stopped');
       return;
     }
+    // 主动重启期间（端口重试）既不该报「意外退出」，也不该再排队一次自动重启
+    if (coreRestarting) return;
     setState('error', `easytier-core 意外退出（退出码 ${code}）`);
     // 崩溃后自动重试一次，避免网络因为偶发问题一直断着
     if (replay) {
       setTimeout(() => {
-        if (!core.child && replay && !quitting) {
+        if (!core.child && replay && !quitting && !coreRestarting) {
           logLine('尝试自动重启 easytier-core…', 'info');
           startCore(replay).catch(() => {});
         }
@@ -204,13 +345,34 @@ async function startCore(payload) {
   });
 
   // EasyTier 没有就绪信号，用短延迟把「能起来」与「立刻崩溃」区分开
-  setTimeout(() => {
-    if (core.child && !quitting) {
-      core.startedAt = new Date().toISOString();
-      setState('running');
-    }
-  }, 1400);
+  await delay(1400);
+  if (!core.child || quitting) return coreStatus();
 
+  const bindError = detectBindFailure(logFile);
+  if (bindError) {
+    if (attempt < MAX_START_ATTEMPTS) {
+      logLine(`监听端口没能占上（${bindError}），清理残留后重试…`, 'stderr');
+      coreRestarting = true;
+      try {
+        await stopCore();
+        await delay(1500);
+      } finally {
+        coreRestarting = false;
+      }
+      return startCoreInner(payload, attempt + 1);
+    }
+    logLine(`监听端口仍然被占用（${bindError}）：通常是残留进程或其它虚拟网络软件占着它。`, 'stderr');
+    coreRestarting = true;
+    try {
+      await stopCore();
+    } finally {
+      coreRestarting = false;
+    }
+    return setState('error', '监听端口被占用，虚拟网络无法建立');
+  }
+
+  core.startedAt = new Date().toISOString();
+  setState('running');
   return coreStatus();
 }
 
@@ -369,12 +531,17 @@ async function applyAcl(aclToml) {
  *   · `titleBarStyle: 'hidden'` 让系统只保留阴影与圆角，不给标题栏
  */
 const WINDOW_DEFAULTS = {
-  width: 520,
-  height: 780,
-  minWidth: 420,
-  minHeight: 600,
+  width: 460,
+  height: 720,
+  minWidth: 400,
+  minHeight: 640,
   maxWidth: 1100,
-  backgroundColor: '#121110',
+  /**
+   * 窗口底色只能在原生层给（这时还读不到 CSS 变量）：
+   * 取 tokens.css 里 --ink-900 / --paper 的同一对值，跟随系统亮暗，
+   * 免得亮色系统上先闪一下暖墨底。
+   */
+  backgroundColor: nativeTheme.shouldUseDarkColors ? '#121110' : '#f5f0e7',
 };
 
 function createWindow() {
@@ -387,7 +554,7 @@ function createWindow() {
     resizable: true,
     maximizable: true,
     autoHideMenuBar: true,
-    title: 'mclink',
+    title: 'McLink',
     icon: appIconPath(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -474,7 +641,7 @@ function createTray() {
   const iconPath = appIconPath();
   const image = iconPath ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty();
   tray = new Tray(image.isEmpty() ? nativeImage.createEmpty() : image);
-  tray.setToolTip('mclink 《我的世界》联机');
+  tray.setToolTip('McLink 《我的世界》联机');
   tray.on('double-click', () => {
     showMainWindow();
   });
@@ -487,7 +654,7 @@ function updateTray() {
     core.state === 'running' ? '已连接' : core.state === 'starting' ? '正在连接…' : core.state === 'error' ? '连接异常' : '未连接';
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: `mclink —— ${label}`, enabled: false },
+      { label: `McLink —— ${label}`, enabled: false },
       { type: 'separator' },
       {
         label: '显示主窗口',
@@ -598,7 +765,8 @@ function registerIpc() {
       return setState('error', err.message);
     }
   });
-  ipcMain.handle('core:stop', () => stopCore());
+  // 停也进同一个队列：否则「连接还在排队」时点断开，会把刚起来的核心立刻掐掉
+  ipcMain.handle('core:stop', () => withCoreLock(() => stopCore()));
   ipcMain.handle('core:status', () => coreStatus());
   ipcMain.handle('core:logs', (_e, limit) => coreLogs.slice(-(Number(limit) || 400)));
   ipcMain.handle('core:resourceUsage', () => {
@@ -670,6 +838,15 @@ if (!singleInstance) {
     if (!isElevated()) {
       logLine('当前未以管理员身份运行：创建虚拟网卡（TUN）会失败，请使用「以管理员身份重启」。', 'stderr');
     }
+    /**
+     * 等窗口画出来之后再清残留：查进程要起一次 PowerShell（几百毫秒），
+     * 放在启动路径上会让双击图标到出现界面的那一下变慢。
+     * 1.2 秒后执行，早于任何人能点完「连接」。
+     */
+    setTimeout(() => {
+      const orphans = cleanupOrphanCores();
+      if (orphans > 0) logLine(`已清理上一次残留的 easytier-core 进程 ${orphans} 个`, 'stderr');
+    }, 1200);
   });
 
   app.on('window-all-closed', () => {

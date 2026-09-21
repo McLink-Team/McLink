@@ -168,7 +168,7 @@
     "relayPort": 11010,
     "easytierVersion": "easytier-cli 2.6.4-8428a89d",
     "clientVersion": "0.1.0",
-    "clientDownloadUrl": "/downloads/mclink-client-setup.exe",
+    "clientDownloadUrl": "/downloads/McLink-Setup-0.1.0-x64.exe",
     "stats": {
       "onlineNodes": 2,
       "totalNodes": 3,

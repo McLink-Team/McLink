@@ -64,6 +64,9 @@ const locked = ref(false);
 
 let realtime: RealtimeClient | null = null;
 
+/** 平台公告（后台「平台设置」里配；为空则不显示公告条） */
+const announcement = computed(() => meta.value?.announcement ?? null);
+
 const stats = computed(() => meta.value?.stats ?? null);
 const primaryDownload = computed<DownloadArtifact | null>(() => {
   if (downloads.value.length > 0) return downloads.value[0] ?? null;
@@ -77,7 +80,14 @@ const primaryDownload = computed<DownloadArtifact | null>(() => {
   };
 });
 const liveRegions = computed(() => regions.value.filter((r) => r.id !== 'auto'));
-const onlineRegions = computed(() => liveRegions.value.filter((r) => r.onlineNodes > 0).length);
+/**
+ * 只展示**当前真的可用**的区域。
+ *
+ * 以前这里把内置的 9 个区域全列出来，没部署的那些显示"待部署" —— 那是给自建的人看的，
+ * 对玩家是噪声（还顺带暴露了平台有哪些区域没铺）。现在只列有在线中继的区域。
+ */
+const shownRegions = computed(() => liveRegions.value.filter((r) => r.onlineNodes > 0));
+const onlineRegions = computed(() => shownRegions.value.length);
 
 async function load(): Promise<void> {
   try {
@@ -144,7 +154,7 @@ const steps = [
       <div class="container topbar-inner">
         <RouterLink to="/" class="wordmark">
           <span class="wordmark-mark" aria-hidden="true" />
-          <span>mclink</span>
+          <span>McLink</span>
         </RouterLink>
 
         <nav class="nav">
@@ -160,6 +170,17 @@ const steps = [
         </div>
       </div>
     </header>
+
+    <!-- -------------------------------------------------------- 公告条
+         后台「平台设置 → 平台公告」里填了才会出现。
+         注意：这个字段从第一版起就存在、接口也一直返回，但**从来没有任何界面渲染过它** ——
+         于是"设了公告却不生效"。现在落地页与客户端都显示它。 -->
+    <div v-if="announcement" class="announce" role="status">
+      <div class="container announce-inner">
+        <span class="announce-tag">公告</span>
+        <p class="announce-text">{{ announcement }}</p>
+      </div>
+    </div>
 
     <!-- ------------------------------------------------------------ 首屏 -->
     <section class="hero">
@@ -286,8 +307,8 @@ const steps = [
               <dd>6 位加入码；支持房间密码、房主审批、公开或仅凭码可见。</dd>
               <dt>自动就近中继</dt>
               <dd>按华东/华南/华北/华中/西南/西北/东北/香港/海外调度，区域没节点时全局兜底。</dd>
-              <dt>局域网广播透传</dt>
-              <dd>开启后游戏「多人游戏」列表里能直接看到房间，不必手抄 IP。</dd>
+              <dt>局域网广播直通</dt>
+              <dd>可选开关（默认关）：打开后游戏「多人游戏」列表里能直接看到房间，不必手抄 IP。</dd>
               <dt>房间聊天</dt>
               <dd>文字与表情、未读徽章、系统消息；房主可删除刷屏消息。</dd>
               <dt>游戏快连</dt>
@@ -366,7 +387,8 @@ const steps = [
         <div class="section-head">
           <h2>区域与可用中继</h2>
           <p class="muted">
-            建房时选择区域，主控按实时负载与容量挑选该区域的中继，并始终附加主控自身作为兜底入口。
+            下面是目前已接入的区域中继。建房时主控按实时负载与容量挑选，并始终附加主控自身作为兜底入口，
+            所以即使某个区域暂时没有节点，房间也能正常开。
           </p>
         </div>
 
@@ -375,27 +397,20 @@ const steps = [
             <thead>
               <tr>
                 <th>区域</th>
-                <th>部署建议</th>
                 <th class="table-num">在线节点</th>
                 <th class="table-num">承载玩家</th>
-                <th>状态</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="r in liveRegions" :key="r.id">
+              <tr v-for="r in shownRegions" :key="r.id">
                 <td class="region-name">{{ r.label }}</td>
-                <td class="faint">{{ r.hint }}</td>
                 <td class="table-num">{{ r.onlineNodes }}</td>
                 <td class="table-num">{{ r.peers }}</td>
-                <td>
-                  <span class="badge" :class="r.onlineNodes > 0 ? 'badge-ok' : 'badge-neutral'">
-                    <span class="led" :class="r.onlineNodes > 0 ? 'led-ok' : ''" />
-                    {{ r.onlineNodes > 0 ? '可用' : '待部署' }}
-                  </span>
-                </td>
               </tr>
-              <tr v-if="liveRegions.length === 0">
-                <td colspan="5" class="faint">正在读取区域状态…</td>
+              <tr v-if="shownRegions.length === 0">
+                <td colspan="3" class="faint">
+                  暂时没有已接入的区域中继，房间会经由主控中继转发。区域中继上线后这里会自动出现。
+                </td>
               </tr>
             </tbody>
           </table>
@@ -444,13 +459,6 @@ const steps = [
               也可以直接踢人——服务端会重算该房间的 ACL 并推送到房主的实例。
             </p>
           </details>
-          <details>
-            <summary>能自己部署一套吗？</summary>
-            <p>
-              可以，而且这是它的默认形态。仓库里的 <code>deploy/</code> 提供 Debian x86 一键安装脚本、
-              systemd 单元与子节点 agent；落地页与客户端下载也由你自己的主控托管。
-            </p>
-          </details>
         </div>
       </div>
     </section>
@@ -461,7 +469,7 @@ const steps = [
         <div>
           <div class="wordmark" style="margin-bottom: var(--s-3)">
             <span class="wordmark-mark" aria-hidden="true" />
-            <span>mclink</span>
+            <span>McLink</span>
           </div>
           <p class="faint footer-blurb">
             基于 EasyTier 的《我的世界》联机平台。EasyTier 以 LGPL-3.0 发布，
@@ -495,6 +503,34 @@ const steps = [
 .page {
   min-height: 100%;
   background: var(--ink-900);
+}
+
+/* ------------------------------------------------------------ 公告条
+ * 顶栏下面的一条窄带：只用发丝线与一个等宽小标签，不做色块、不做图标。 */
+.announce {
+  background: var(--signal-wash);
+  border-bottom: 1px solid var(--rule);
+}
+.announce-inner {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-3);
+  padding: var(--s-3) 0;
+}
+.announce-tag {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  letter-spacing: var(--track-wide);
+  text-transform: uppercase;
+  color: var(--signal);
+}
+.announce-text {
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+  color: var(--paper-2);
+  overflow-wrap: anywhere;
 }
 
 /* ---------------------------------------------------------------- 顶栏 */

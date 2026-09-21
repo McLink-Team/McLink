@@ -377,6 +377,7 @@ async function recomputeAcl(): Promise<void> {
               最多 {{ detail.room.policy.maxPlayers }} 人 ·
               {{ detail.room.policy.allowP2p ? '允许 P2P' : '全部走中继' }} ·
               {{ detail.room.policy.strictPorts ? '严格端口' : '宽松端口' }} ·
+              {{ detail.room.policy.allowBroadcast ? '局域网广播直通' : '广播直通关闭' }} ·
               端口
               {{ asStringList(detail.room.policy.allowedPorts).length > 0 ? asStringList(detail.room.policy.allowedPorts).join(', ') : '不限' }}
             </span>

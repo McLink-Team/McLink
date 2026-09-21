@@ -30,7 +30,7 @@ import type { AppEventBus } from '../app.ts';
 import { HttpError } from '../util/errors.ts';
 import { logger } from '../logger.ts';
 import { randomBytesBuf, shortId } from '../util/id.ts';
-import { buildLaunchArgs, renderAcl, renderEasytierToml, rpcPortalForListenPort, CONFIG_PLACEHOLDER, type AclSpec } from '../easytier/config.ts';
+import { buildLaunchArgs, renderAcl, renderEasytierToml, rpcPortalForListenPort, usableRpcPort, CONFIG_PLACEHOLDER, type AclSpec } from '../easytier/config.ts';
 import { buildRoomAcl } from '../easytier/acl.ts';
 import { RoomRepo, toMember, toRoom, toRoomForUser, type JoinedRoomRow, type MemberRow } from '../db/rooms.ts';
 import { NodeRepo, type NodeRow } from '../db/nodes.ts';
@@ -79,6 +79,16 @@ export interface CreateRoomInput {
   policy?: Partial<RoomPolicy>;
   /** 客户端选择的本地监听端口，用于生成配置 */
   listenPort?: number;
+  /**
+   * 客户端选择的 RPC 端口（只监听 127.0.0.1）。
+   *
+   * 为什么让客户端挑而不是主控推算：RPC 端口要绑在**玩家自己的机器**上，
+   * 而 Windows 里「看起来空着」的端口可能落在 Hyper-V / WSL / Docker 保留的
+   * 端口段内（`netsh int ipv4 show excludedportrange protocol=tcp`），
+   * 显式绑定会直接 WSAEACCES(10013)。排除段只有本机知道，所以由客户端探测后上报，
+   * 主控只负责校验范围；没带这个参数时回退到按 listenPort 推算（老客户端兼容）。
+   */
+  rpcPort?: number;
   ttlMinutes?: number | null;
   /** 请求的 Host 头，用于在未显式配置公网地址时推导主控中继地址 */
   hostHint?: string | null;
@@ -278,6 +288,7 @@ export class RoomService {
         input.userId,
         input.listenPort ?? this.settings.current.relayPort,
         input.hostHint,
+        input.rpcPort,
       ),
       pending: false,
     };
@@ -291,6 +302,8 @@ export class RoomService {
     password?: string | null;
     deviceName?: string | null;
     listenPort?: number;
+    /** 见 CreateRoomInput.rpcPort */
+    rpcPort?: number;
     hostHint?: string | null;
   }): JoinResult {
     const row = this.rooms.findByCode(input.code.toUpperCase());
@@ -323,7 +336,13 @@ export class RoomService {
           virtualIp: hostIpCidr(row.subnet_slot),
           seat: 0,
         })),
-        ticket: this.ticket(row.id, input.userId, input.listenPort ?? this.settings.current.relayPort, input.hostHint),
+        ticket: this.ticket(
+          row.id,
+          input.userId,
+          input.listenPort ?? this.settings.current.relayPort,
+          input.hostHint,
+          input.rpcPort,
+        ),
         pending: false,
       };
     }
@@ -386,7 +405,13 @@ export class RoomService {
       member: toMember(member),
       ticket: pending
         ? null
-        : this.ticket(row.id, input.userId, input.listenPort ?? this.settings.current.relayPort, input.hostHint),
+        : this.ticket(
+            row.id,
+            input.userId,
+            input.listenPort ?? this.settings.current.relayPort,
+            input.hostHint,
+            input.rpcPort,
+          ),
       pending,
     };
   }
@@ -588,7 +613,17 @@ export class RoomService {
   }
 
   /** 生成客户端启动 EasyTier 所需的一切 */
-  ticket(roomId: string, userId: string, listenPort: number, hostHint?: string | null): RoomTicket {
+  ticket(
+    roomId: string,
+    userId: string,
+    listenPort: number,
+    hostHint?: string | null,
+    /**
+     * 客户端上报的 RPC 端口。校验放在 API 层（1024–65535），这里只做兜底：
+     * 没给或明显不可用时按 listenPort 推算，保证老客户端与脚本调用照常工作。
+     */
+    rpcPort?: number | null,
+  ): RoomTicket {
     const row = this.getRow(roomId);
     const member = this.rooms.findMember(roomId, userId);
     if (!member || member.status === 'kicked') {
@@ -658,8 +693,25 @@ export class RoomService {
          * 客户端必须保持一致，否则玩家会「连上主控却进不了房间」。
          */
         bindDevice: false,
-        // 让 Minecraft 的局域网广播能跨虚拟网络，玩家在「多人游戏」里就能直接看到房间
-        enableUdpBroadcastRelay: true,
+        /**
+         * 固定虚拟网卡名。
+         *
+         * EasyTier 默认让系统自己命名，于是每次重装/重启都可能多出一张「以太网 3」
+         * 「以太网 4」——玩家在 Windows 网络设置里认不出哪张是 McLink，旧网卡还会
+         * 一直躺在那里。写死名字后重复连接复用同一张网卡，卸载时也只需要删这一张。
+         *
+         * 长度受约束：Linux 网卡名上限 15 字符，这里 5 个字符留足余量。
+         */
+        devName: 'McLink',
+        /**
+         * 局域网广播直通：**由房主的房间策略决定，默认关闭**。
+         *
+         * 打开它，MC 的「多人游戏」列表里能直接看到房间；但 Windows 上它要靠 WinDivert
+         * 内核网络过滤驱动抓物理网卡的 UDP 广播 —— 等于给每个玩家的机器装一个系统级网络驱动，
+         * 实测会与其它软件的网络栈冲突（有玩家反馈连上后网易云音乐等软件上不了网）。
+         * 详情见 RoomPolicy.allowBroadcast 的注释。
+         */
+        enableUdpBroadcastRelay: room.policy.allowBroadcast,
         // 允许成员间直连；关闭后一律走中继
         disableP2p: !room.policy.allowP2p,
         /**
@@ -703,7 +755,7 @@ export class RoomService {
       // 客户端只需把 %CONFIG% 换成它落盘的配置路径即可启动
       launchArgs: buildLaunchArgs({
         configFile: CONFIG_PLACEHOLDER,
-        rpcPortal: `127.0.0.1:${rpcPortalForListenPort(listenPort)}`,
+        rpcPortal: `127.0.0.1:${usableRpcPort(rpcPort) ?? rpcPortalForListenPort(listenPort)}`,
         rpcPortalWhitelist: ['127.0.0.1/32'],
       }),
       aclToml: isHost ? this.aclTomlFor(roomId, room) : null,

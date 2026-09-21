@@ -8,9 +8,31 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta
       name="description"
-      content="mclink —— 基于 EasyTier 的《我的世界》联机平台。主控单端口承载所有房间，玩家按区域就近接入，一条加入码就能一起玩。"
+      content="McLink —— 基于 EasyTier 的《我的世界》联机平台。主控单端口承载所有房间，玩家按区域就近接入，一条加入码就能一起玩。"
     />
-    <title>mclink · 《我的世界》联机平台</title>
+    <title>McLink · 《我的世界》联机平台</title>
+    <script>
+      /*
+       * 亮/暗主题：必须在首屏绘制前跑，否则会闪一下。
+       * 逻辑与 packages/shared/src/design/theme.ts 一致，这里内联一份（模块化加载太晚）。
+       * 改了这里记得同步那个文件。
+       */
+      (function () {
+        try {
+          var forced = new URLSearchParams(location.search).get('theme');
+          var theme =
+            forced === 'light' || forced === 'dark'
+              ? forced
+              : window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
+                ? 'light'
+                : 'dark';
+          document.documentElement.dataset.theme = theme;
+          document.documentElement.style.colorScheme = theme;
+        } catch (e) {
+          document.documentElement.dataset.theme = 'dark';
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="app"></div>

@@ -196,6 +196,20 @@ export function rpcPortalForListenPort(listenPort: number): number {
 }
 
 /**
+ * 校验客户端上报的 RPC 端口，不合法返回 null。
+ *
+ * 存在意义：上面那个推算函数只保证「同一台机器上不同实例不撞车」，它推不出
+ * 玩家机器上哪些端口是**被系统保留**的——Windows 的 Hyper-V / WSL / Docker 会占住
+ * 成段的端口（`netsh int ipv4 show excludedportrange protocol=tcp`），
+ * 显式绑定到这些端口会直接 WSAEACCES(10013)，而按空闲端口探测过的客户端知道答案。
+ * 因此只要上报值合法就用它；低端口需要管理员权限，一律拒绝。
+ */
+export function usableRpcPort(port: number | null | undefined): number | null {
+  if (typeof port !== 'number' || !Number.isInteger(port)) return null;
+  return port >= 1024 && port <= 65535 ? port : null;
+}
+
+/**
  * 拼装 easytier-core 的完整命令行。
  * 把「配置文件 + 命令行」两处知识收敛到一个函数，避免调用方各写一遍。
  */
