@@ -147,44 +147,46 @@ function usagePercent(user: AdminUser): number | null {
 </script>
 
 <template>
-  <div class="stack" style="gap: var(--s-5)">
-    <div class="row-between wrap">
-      <div>
-        <div class="panel-title">用户管理</div>
-        <p class="panel-sub">共 {{ total }} 个账号。配额按自然月计算，重置已用流量不影响其它设置。</p>
+  <div class="console-page">
+    <header class="console-head">
+      <div class="console-head-text">
+        <h1 class="console-head-title">用户管理</h1>
+        <p class="console-head-sub">共 {{ total }} 个账号。配额按自然月计算，重置已用流量不影响其它设置。</p>
       </div>
-      <button class="btn" type="button" :disabled="loading" @click="load">
-        <span v-if="loading" class="spinner" />
-        刷新
-      </button>
-    </div>
+      <div class="console-head-actions">
+        <button class="btn" type="button" :disabled="loading" @click="load">
+          <span v-if="loading" class="spinner" />
+          刷新
+        </button>
+      </div>
+    </header>
 
-    <section class="card filters">
-      <div class="field grow">
-        <label class="label" for="u-search">搜索</label>
-        <input
-          id="u-search"
-          v-model="filters.search"
-          class="input"
-          type="search"
-          placeholder="用户名 / 显示名"
-          @keyup.enter="applyFilters"
-        />
-      </div>
-      <div class="row" style="align-self: end">
-        <button class="btn" type="button" @click="applyFilters">搜索</button>
+    <section class="console-section">
+      <div class="filter-bar">
+        <div class="field grow">
+          <label class="label" for="u-search">搜索</label>
+          <input
+            id="u-search"
+            v-model="filters.search"
+            class="input"
+            type="search"
+            placeholder="用户名 / 显示名"
+            @keyup.enter="applyFilters"
+          />
+        </div>
+        <button class="btn filter-submit" type="button" @click="applyFilters">搜索</button>
       </div>
     </section>
 
-    <section class="card stack">
-      <div v-if="loading && users.length === 0" class="stack">
-        <div v-for="i in 5" :key="i" class="skeleton" style="height: 40px" />
+    <section class="console-section">
+      <div v-if="loading && users.length === 0" class="stack-tight">
+        <div v-for="i in 5" :key="i" class="skeleton" style="height: 36px" />
       </div>
 
-      <div v-else-if="error" class="row-between">
-        <div>
-          <div class="panel-title" style="font-size: var(--fs-base)">加载失败</div>
-          <p class="panel-sub">{{ error }}</p>
+      <div v-else-if="error" class="console-section-head">
+        <div class="console-section-text">
+          <div class="console-sub-title">加载失败</div>
+          <p class="console-section-note">{{ error }}</p>
         </div>
         <button class="btn" type="button" @click="load">重试</button>
       </div>
@@ -204,39 +206,41 @@ function usagePercent(user: AdminUser): number | null {
                 <th class="table-num">已用流量</th>
                 <th class="table-num">房间</th>
                 <th>注册时间</th>
-                <th style="text-align: right">操作</th>
+                <th class="col-actions">操作</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="u in users" :key="u.id">
                 <td>
                   <div class="mono">{{ u.username }}</div>
-                  <div class="faint mono" style="font-size: var(--fs-xs)">{{ u.id }}</div>
+                  <div class="cell-sub">{{ u.id }}</div>
                 </td>
                 <td>
-                  {{ u.displayName }}
-                  <Badge v-if="isSelf(u)" tone="info">我</Badge>
+                  <div class="name-line">
+                    <span>{{ u.displayName }}</span>
+                    <Badge v-if="isSelf(u)" tone="info">我</Badge>
+                  </div>
                 </td>
-                <td><Badge :tone="u.role === 'admin' ? 'brand' : 'neutral'">{{ u.role === 'admin' ? '管理员' : '玩家' }}</Badge></td>
+                <td>
+                  <Badge :tone="u.role === 'admin' ? 'brand' : 'neutral'">{{ u.role === 'admin' ? '管理员' : '玩家' }}</Badge>
+                </td>
                 <td>
                   <Badge :tone="u.banned ? 'danger' : 'ok'" dot>{{ u.banned ? '已封禁' : '正常' }}</Badge>
                 </td>
-                <td class="mono" style="font-size: var(--fs-xs)">
-                  {{ u.quotaBytes === null ? '不限' : formatBytes(u.quotaBytes) }}
-                  <div class="faint">
-                    最多房间 {{ u.maxRooms === null ? '平台默认' : u.maxRooms }}
-                  </div>
+                <td>
+                  <div class="mono quota-line">{{ u.quotaBytes === null ? '不限' : formatBytes(u.quotaBytes) }}</div>
+                  <div class="cell-sub">最多房间 {{ u.maxRooms === null ? '平台默认' : u.maxRooms }}</div>
                 </td>
                 <td class="table-num">
-                  {{ formatBytes(u.usedBytes) }}
+                  <div class="mono">{{ formatBytes(u.usedBytes) }}</div>
                   <div v-if="usagePercent(u) !== null" class="bar" :title="`${usagePercent(u)?.toFixed(1)}%`">
                     <span class="bar-fill" :style="{ width: `${usagePercent(u)}%` }" />
                   </div>
                 </td>
                 <td class="table-num">{{ u.hostedRooms }}</td>
-                <td class="muted" style="font-size: var(--fs-xs)">{{ formatDateTime(u.createdAt) }}</td>
+                <td class="cell-sub">{{ formatDateTime(u.createdAt) }}</td>
                 <td>
-                  <div class="row wrap" style="gap: var(--s-2); justify-content: flex-end">
+                  <div class="row-actions">
                     <button class="btn btn-sm" type="button" :disabled="busyId === u.id" @click="openQuota(u)">配额</button>
                     <button
                       class="btn btn-sm"
@@ -247,12 +251,7 @@ function usagePercent(user: AdminUser): number | null {
                     >
                       {{ u.role === 'admin' ? '撤销管理员' : '设为管理员' }}
                     </button>
-                    <button
-                      class="btn btn-sm"
-                      type="button"
-                      :disabled="busyId === u.id"
-                      @click="resetUsage(u)"
-                    >
+                    <button class="btn btn-sm" type="button" :disabled="busyId === u.id" @click="resetUsage(u)">
                       重置流量
                     </button>
                     <button
@@ -272,11 +271,9 @@ function usagePercent(user: AdminUser): number | null {
           </table>
         </div>
 
-        <div class="row-between">
-          <span class="faint" style="font-size: var(--fs-xs)">
-            第 {{ page + 1 }} / {{ pageCount }} 页 · 共 {{ total }} 条
-          </span>
-          <div class="row">
+        <div class="pager">
+          <span class="pager-count">第 {{ page + 1 }} / {{ pageCount }} 页 · 共 {{ total }} 条</span>
+          <div class="console-toolbar">
             <button class="btn btn-sm" type="button" :disabled="page === 0 || loading" @click="prevPage">上一页</button>
             <button class="btn btn-sm" type="button" :disabled="page + 1 >= pageCount || loading" @click="nextPage">
               下一页
@@ -287,12 +284,12 @@ function usagePercent(user: AdminUser): number | null {
     </section>
 
     <!-- 配额弹窗 -->
-    <div v-if="editing" class="overlay" @click.self="editing = null">
-      <div class="modal card stack" style="max-width: 460px">
-        <div class="row-between">
-          <div>
-            <div class="panel-title">配额与房间数</div>
-            <p class="panel-sub">{{ editing.displayName }} · {{ editing.username }}</p>
+    <div v-if="editing" class="modal-mask" @click.self="editing = null">
+      <div class="modal-panel quota-panel">
+        <div class="modal-head">
+          <div class="console-section-text">
+            <h2 class="console-sub-title modal-title">配额与房间数</h2>
+            <p class="console-section-note">{{ editing.displayName }} · {{ editing.username }}</p>
           </div>
           <button class="btn btn-ghost btn-sm" type="button" @click="editing = null">关闭</button>
         </div>
@@ -322,9 +319,9 @@ function usagePercent(user: AdminUser): number | null {
           <span class="hint">0 表示禁止创建房间。</span>
         </div>
 
-        <div v-if="editError" class="err-box">{{ editError }}</div>
+        <div v-if="editError" class="notice notice-danger">{{ editError }}</div>
 
-        <div class="row" style="justify-content: flex-end">
+        <div class="modal-foot">
           <button class="btn" type="button" @click="editing = null">取消</button>
           <button class="btn btn-primary" type="button" :disabled="saving" @click="saveQuota">
             <span v-if="saving" class="spinner" />
@@ -337,48 +334,71 @@ function usagePercent(user: AdminUser): number | null {
 </template>
 
 <style scoped>
-.filters {
+.filter-bar {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: var(--s-4);
   align-items: end;
 }
-.table-wrap {
-  overflow-x: auto;
+.filter-submit {
+  margin-bottom: 1px;
 }
-.bar {
-  height: 4px;
-  margin-top: 4px;
-  border-radius: 999px;
-  background: var(--surface-strong);
-  overflow: hidden;
+.name-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
 }
-.bar-fill {
-  display: block;
-  height: 100%;
-  background: var(--grad-brand);
+.quota-line {
+  font-size: var(--fs-sm);
 }
-.overlay {
-  position: fixed;
-  inset: 0;
-  z-index: var(--z-modal);
-  background: color-mix(in srgb, var(--bg-0) 68%, transparent);
-  backdrop-filter: blur(3px);
-  display: grid;
-  place-items: center;
-  padding: var(--s-4);
+.col-actions {
+  text-align: right;
 }
-.modal {
-  width: 100%;
-  background: var(--bg-1);
-  box-shadow: var(--shadow-lg);
+.row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
 }
-.err-box {
-  padding: var(--s-3);
-  border-radius: var(--r-sm);
-  background: var(--danger-bg);
-  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
-  color: var(--danger);
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-4);
+  flex-wrap: wrap;
+  margin-top: var(--s-4);
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--rule-faint);
+}
+.pager-count {
   font-size: var(--fs-xs);
+  color: var(--paper-faint);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.quota-panel {
+  max-width: 460px;
+}
+.modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s-4);
+  padding-bottom: var(--s-3);
+  border-bottom: 1px solid var(--rule-faint);
+}
+.modal-title {
+  font-family: var(--font-display);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+.modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s-2);
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--rule-faint);
 }
 </style>

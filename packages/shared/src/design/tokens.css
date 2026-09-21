@@ -77,6 +77,7 @@
   --link-text: #d6e9c4;
   --warn-text: #f0d8a6;
   --fault-text: #efb0a5;
+  --sky-text: #cfdde8;
 
   /* 交互反馈：hover 时的描边与滚动条，避免每个组件自己调 alpha */
   --rule-hover: rgba(244, 239, 230, 0.28);

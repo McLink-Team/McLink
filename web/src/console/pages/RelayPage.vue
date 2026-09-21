@@ -187,16 +187,16 @@ async function applyAcl(): Promise<void> {
 </script>
 
 <template>
-  <div class="stack" style="gap: var(--s-5)">
-    <div class="row-between wrap">
-      <div>
-        <div class="panel-title">主控中继</div>
-        <p class="panel-sub">
+  <div class="console-page">
+    <header class="console-head">
+      <div class="console-head-text">
+        <h1 class="console-head-title">主控中继</h1>
+        <p class="console-head-sub">
           单端口共享中继：所有房间复用同一个监听端口，靠网络名白名单决定是否转发，
           因此新增/关闭房间都不需要重启进程。
         </p>
       </div>
-      <div class="row">
+      <div class="console-head-actions">
         <button class="btn" type="button" :disabled="loading" @click="load">
           <span v-if="loading" class="spinner" />
           刷新
@@ -210,43 +210,42 @@ async function applyAcl(): Promise<void> {
           重启中继
         </button>
       </div>
-    </div>
+    </header>
 
     <div v-if="loading && !data" class="stack">
-      <div class="skeleton" style="height: 140px" />
-      <div class="skeleton" style="height: 220px" />
+      <div class="skeleton" style="height: 130px" />
+      <div class="skeleton" style="height: 200px" />
     </div>
 
-    <div v-else-if="error && !data" class="card">
-      <div class="row-between">
-        <div>
-          <div class="panel-title" style="font-size: var(--fs-base)">中继状态加载失败</div>
-          <p class="panel-sub">{{ error }}</p>
+    <section v-else-if="error && !data" class="console-section">
+      <div class="console-section-head">
+        <div class="console-section-text">
+          <div class="console-sub-title">中继状态加载失败</div>
+          <p class="console-section-note">{{ error }}</p>
         </div>
         <button class="btn" type="button" @click="load">重试</button>
       </div>
-    </div>
+    </section>
 
     <template v-else-if="data">
-      <div v-if="error" class="warn-bar">
-        <div class="row wrap" style="gap: var(--s-3)">
-          <Badge tone="danger">刷新失败</Badge>
-          <span class="grow">{{ error }}</span>
-          <button class="btn btn-sm" type="button" @click="load">重试</button>
-        </div>
+      <div v-if="error" class="notice notice-warn">
+        <Badge tone="danger">刷新失败</Badge>
+        <span class="notice-body">{{ error }}</span>
+        <button class="btn btn-sm" type="button" @click="load">重试</button>
       </div>
 
       <!-- 运行时 -->
-      <section class="card stack">
-        <div class="row-between">
-          <div class="panel-title" style="font-size: var(--fs-base)">运行时状态</div>
-          <div class="row">
+      <section class="console-section">
+        <div class="console-section-head">
+          <div class="console-section-text">
+            <h2 class="console-section-title">运行时状态</h2>
+            <p class="console-section-note">数据来自进程内采样，手动刷新会立即向 easytier-cli 拉一次。</p>
+          </div>
+          <div class="console-toolbar">
             <Badge :tone="runtime?.running ? 'ok' : 'danger'" dot :pulse="Boolean(runtime?.running)">
               {{ runtime?.running ? '运行中' : '未运行' }}
             </Badge>
-            <Badge :tone="data.cliVersion ? 'ok' : 'warn'">
-              CLI {{ data.cliVersion ?? '不可用' }}
-            </Badge>
+            <Badge :tone="data.cliVersion ? 'ok' : 'warn'">CLI {{ data.cliVersion ?? '不可用' }}</Badge>
           </div>
         </div>
 
@@ -255,54 +254,57 @@ async function applyAcl(): Promise<void> {
           <span class="kv-k">网络名</span><span class="kv-v mono">{{ runtime.networkName }}</span>
           <span class="kv-k">peer 数</span><span class="kv-v mono">{{ runtime.peerCount }}</span>
           <span class="kv-k">累计流量</span>
-          <span class="kv-v">
-            收 {{ formatBytes(runtime.rxBytes) }} / 发 {{ formatBytes(runtime.txBytes) }}
-          </span>
+          <span class="kv-v">收 {{ formatBytes(runtime.rxBytes) }} / 发 {{ formatBytes(runtime.txBytes) }}</span>
           <span class="kv-k">实时速率</span>
-          <span class="kv-v">{{ formatBitrate(foreignRxBps) }} / {{ formatBitrate(foreignTxBps) }}</span>
+          <span class="kv-v mono">{{ formatBitrate(foreignRxBps) }} / {{ formatBitrate(foreignTxBps) }}</span>
           <span class="kv-k">启动时间</span>
-          <span class="kv-v">{{ runtime.startedAt ? formatDateTime(runtime.startedAt) : '—' }}</span>
+          <span class="kv-v">{{ runtime.startedAt ? formatDateTime(runtime.startedAt) : '未记录' }}</span>
           <span class="kv-k">白名单</span>
-          <span class="kv-v mono truncate" :title="whitelistPatterns.join(', ')">
+          <span class="kv-v mono wrap-anywhere">
             {{ whitelistPatterns.length > 0 ? whitelistPatterns.join(', ') : '（未配置，任何网络都会被拒绝转发）' }}
           </span>
-          <span class="kv-k">核心二进制</span><span class="kv-v mono truncate" :title="data.coreBin">{{ data.coreBin }}</span>
-          <span class="kv-k">CLI 二进制</span><span class="kv-v mono truncate" :title="data.cliBin">{{ data.cliBin }}</span>
+          <span class="kv-k">核心二进制</span><span class="kv-v mono wrap-anywhere">{{ data.coreBin }}</span>
+          <span class="kv-k">CLI 二进制</span><span class="kv-v mono wrap-anywhere">{{ data.cliBin }}</span>
           <span class="kv-k">配置文件</span>
-          <span class="kv-v mono truncate" :title="data.configFile">
-            {{ data.configFile }}
+          <span class="kv-v mono wrap-anywhere">
+            <span>{{ data.configFile }}</span>
             <button class="btn btn-sm btn-ghost" type="button" @click="copyText(data.configFile, '配置路径')">复制</button>
           </span>
           <span class="kv-k">日志文件</span>
-          <span class="kv-v mono truncate" :title="data.logFile">
-            {{ data.logFile }}
+          <span class="kv-v mono wrap-anywhere">
+            <span>{{ data.logFile }}</span>
             <button class="btn btn-sm btn-ghost" type="button" @click="copyText(data.logFile, '日志路径')">复制</button>
           </span>
         </div>
 
-        <div v-if="runtime?.lastError" class="err-box">
+        <div v-if="runtime?.lastError" class="notice notice-danger relay-notice">
           <strong>最后错误：</strong>{{ runtime.lastError }}
         </div>
-        <p v-else class="hint">
+        <p v-else class="hint hint-row">
           未记录到错误<template v-if="runtime?.startedAt">；中继启动于 {{ formatRelativeTime(runtime.startedAt) }}</template>。
         </p>
       </section>
 
       <!-- 配置 -->
-      <section class="card stack">
-        <div class="row-between">
-          <div>
-            <div class="panel-title" style="font-size: var(--fs-base)">生成的 EasyTier 配置（relay.toml）</div>
-            <p class="panel-sub">由主控按环境变量与平台设置渲染，只读；修改请改环境变量或平台设置。</p>
+      <section class="console-section">
+        <div class="console-section-head">
+          <div class="console-section-text">
+            <h2 class="console-section-title">生成的 EasyTier 配置（relay.toml）</h2>
+            <p class="console-section-note">由主控按环境变量与平台设置渲染，只读；修改请改环境变量或平台设置。</p>
           </div>
           <button class="btn btn-sm" type="button" @click="copyText(configToml, '配置内容')">复制全文</button>
         </div>
-        <pre class="code-block">{{ configToml || '（无配置内容）' }}</pre>
+        <pre class="code-block code-block-lg">{{ configToml || '（无配置内容）' }}</pre>
       </section>
 
       <!-- peers -->
-      <section class="card stack">
-        <div class="panel-title" style="font-size: var(--fs-base)">已连接 peers（{{ peers.length }}）</div>
+      <section class="console-section">
+        <div class="console-section-head">
+          <div class="console-section-text">
+            <h2 class="console-section-title">已连接 peers（{{ peers.length }}）</h2>
+            <p class="console-section-note">当前中继上看到的对端与隧道信息。</p>
+          </div>
+        </div>
         <div v-if="peers.length === 0" class="empty">
           暂无 peer 采样数据。若中继正在运行但没有数据，通常是 easytier-cli 不可用。
         </div>
@@ -324,14 +326,16 @@ async function applyAcl(): Promise<void> {
             <tbody>
               <tr v-for="p in peers" :key="p.peerId">
                 <td class="table-num">{{ p.peerId }}</td>
-                <td class="truncate" style="max-width: 200px">{{ p.hostname || '—' }}</td>
-                <td class="mono" style="font-size: var(--fs-xs)">{{ p.ipv4 || '—' }}</td>
-                <td class="mono truncate" style="font-size: var(--fs-xs); max-width: 220px" :title="p.networkName">
-                  {{ p.networkName || '—' }}
-                </td>
-                <td class="muted" style="font-size: var(--fs-xs)">{{ p.tunnelProto || '—' }}</td>
-                <td class="table-num">{{ p.latencyMs === null ? '—' : `${p.latencyMs} ms` }}</td>
-                <td class="table-num">{{ p.lossRate === null ? '—' : p.lossRate }}</td>
+                <td v-if="p.hostname" class="wrap-anywhere">{{ p.hostname }}</td>
+                <td v-else class="cell-void">未上报</td>
+                <td v-if="p.ipv4" class="mono cell-sub">{{ p.ipv4 }}</td>
+                <td v-else class="cell-void">未上报</td>
+                <td v-if="p.networkName" class="mono cell-sub">{{ p.networkName }}</td>
+                <td v-else class="cell-void">未上报</td>
+                <td v-if="p.tunnelProto" class="cell-sub">{{ p.tunnelProto }}</td>
+                <td v-else class="cell-void">未协商</td>
+                <td class="table-num">{{ p.latencyMs === null ? '未测得' : `${p.latencyMs} ms` }}</td>
+                <td class="table-num">{{ p.lossRate === null ? '未测得' : p.lossRate }}</td>
                 <td class="table-num">{{ formatBytes(p.rxBytes) }}</td>
                 <td class="table-num">{{ formatBytes(p.txBytes) }}</td>
               </tr>
@@ -341,25 +345,27 @@ async function applyAcl(): Promise<void> {
       </section>
 
       <!-- ACL 下发 -->
-      <section class="card stack">
-        <div>
-          <div class="panel-title" style="font-size: var(--fs-base)">下发自定义 ACL</div>
-          <p class="panel-sub">
-            文本必须包含 <span class="mono">[acl.acl_v1]</span> 段。支持 <span class="mono">acl set</span> 的 EasyTier
-            版本会热更新（不中断连接）；旧版本会写入配置并重启中继生效。
-          </p>
+      <section class="console-section">
+        <div class="console-section-head">
+          <div class="console-section-text">
+            <h2 class="console-section-title">下发自定义 ACL</h2>
+            <p class="console-section-note">
+              文本必须包含 <span class="mono">[acl.acl_v1]</span> 段。支持 <span class="mono">acl set</span> 的 EasyTier
+              版本会热更新（不中断连接）；旧版本会写入配置并重启中继生效。
+            </p>
+          </div>
         </div>
         <textarea
           v-model="aclText"
-          class="textarea mono"
+          class="textarea mono acl-input"
           rows="8"
           placeholder="[acl.acl_v1]
 default_action = 1"
         />
-        <div v-if="aclError" class="err-box">{{ aclError }}</div>
-        <div class="row-between wrap">
-          <span class="hint">留空不会清空 ACL；如需恢复默认守卫规则，请重启中继并清空自定义 ACL。</span>
-          <div class="row">
+        <div v-if="aclError" class="notice notice-danger relay-notice">{{ aclError }}</div>
+        <div class="acl-foot">
+          <span class="hint hint-measure">留空不会清空 ACL；如需恢复默认守卫规则，请重启中继并清空自定义 ACL。</span>
+          <div class="console-toolbar">
             <button class="btn btn-ghost" type="button" @click="aclText = ''">清空输入</button>
             <button class="btn btn-primary" type="button" :disabled="busy !== null" @click="applyAcl">
               <span v-if="busy === 'acl'" class="spinner" />
@@ -370,13 +376,13 @@ default_action = 1"
       </section>
 
       <!-- 日志 -->
-      <section class="card stack">
-        <div class="row-between">
-          <div>
-            <div class="panel-title" style="font-size: var(--fs-base)">中继日志尾部（{{ logs.length }} 行）</div>
-            <p class="panel-sub">读取进程内最近的输出，滚动到底部查看最新。</p>
+      <section class="console-section">
+        <div class="console-section-head">
+          <div class="console-section-text">
+            <h2 class="console-section-title">中继日志尾部（{{ logs.length }} 行）</h2>
+            <p class="console-section-note">读取进程内最近的输出，滚动到底部查看最新。</p>
           </div>
-          <div class="row">
+          <div class="console-toolbar">
             <label class="switch">
               <input v-model="autoScroll" type="checkbox" />
               <span>自动滚到底</span>
@@ -393,66 +399,32 @@ default_action = 1"
 </template>
 
 <style scoped>
-.table-wrap {
-  overflow-x: auto;
+.relay-notice {
+  margin-top: var(--s-4);
 }
-.kv {
-  display: grid;
-  grid-template-columns: 112px minmax(0, 1fr);
-  gap: var(--s-2) var(--s-3);
-  font-size: var(--fs-sm);
-  align-items: baseline;
+.hint-row {
+  margin-top: var(--s-4);
 }
-.kv-k {
-  color: var(--text-faint);
+.cell-void {
   font-size: var(--fs-xs);
+  color: var(--paper-faint);
 }
-.kv-v {
-  min-width: 0;
+.acl-input {
+  margin-bottom: var(--s-3);
+}
+.acl-foot {
   display: flex;
-  align-items: center;
-  gap: var(--s-2);
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--s-4);
   flex-wrap: wrap;
 }
-.code-block {
-  margin: 0;
-  padding: var(--s-3);
-  border-radius: var(--r-sm);
-  background: color-mix(in srgb, var(--bg-0) 60%, transparent);
-  border: 1px solid var(--border);
-  color: var(--text-dim);
-  font-size: var(--fs-xs);
-  max-height: 320px;
-  overflow: auto;
-  white-space: pre;
+.hint-measure {
+  max-width: 66ch;
 }
-.log-block {
-  margin: 0;
-  padding: var(--s-3);
-  border-radius: var(--r-sm);
-  background: color-mix(in srgb, var(--bg-0) 85%, transparent);
-  border: 1px solid var(--border);
-  color: var(--text-dim);
-  font-size: var(--fs-xs);
-  line-height: 1.5;
-  height: 300px;
-  overflow: auto;
-  white-space: pre;
-}
-.warn-bar {
-  padding: var(--s-3) var(--s-4);
-  border-radius: var(--r-md);
-  background: var(--warn-bg);
-  border: 1px solid color-mix(in srgb, var(--warn) 28%, transparent);
-  font-size: var(--fs-sm);
-}
-.err-box {
-  padding: var(--s-3);
-  border-radius: var(--r-sm);
-  background: var(--danger-bg);
-  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
-  color: var(--danger);
-  font-size: var(--fs-xs);
-  word-break: break-word;
+.notice-body {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 </style>

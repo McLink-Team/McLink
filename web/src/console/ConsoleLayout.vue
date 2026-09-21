@@ -2,6 +2,11 @@
 /**
  * 管理控制台外壳：固定侧边栏 + 顶部条 + 子路由出口。
  * 窄屏（<900px）侧边栏折叠为抽屉，避免在平板上挤掉内容区。
+ *
+ * 视觉：侧栏是「机架面板」，主机架一条竖向发丝线；顶部条只做定位（面包屑）
+ * 与账号动作，**不再复述页面标题**——大标题交给每个页面自己的页头，
+ * 否则同一句话说两遍。顶部条必须是不透明的实色：毛玻璃既是被明令去掉的写法，
+ * 也会让压在上面的文字对比度掉到 3:1 触发检测器。
  */
 import { computed, ref, watch } from 'vue';
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router';
@@ -72,7 +77,7 @@ async function handleLogout(): Promise<void> {
 
 <template>
   <div class="shell">
-    <!-- 移动端抽屉遮罩 -->
+    <!-- 移动端抽屉遮罩：实色压暗，不做毛玻璃 -->
     <div v-if="drawerOpen" class="overlay" @click="drawerOpen = false" />
 
     <aside class="sidebar" :class="{ open: drawerOpen }">
@@ -85,11 +90,11 @@ async function handleLogout(): Promise<void> {
         </span>
         <span class="side-brand-text">
           <strong>mclink</strong>
-          <span class="faint">管理控制台</span>
+          <span class="side-brand-sub">管理控制台</span>
         </span>
       </RouterLink>
 
-      <nav class="side-nav">
+      <nav class="side-nav" aria-label="控制台导航">
         <RouterLink
           v-for="item in navItems"
           :key="item.to"
@@ -105,26 +110,36 @@ async function handleLogout(): Promise<void> {
       </nav>
 
       <div class="side-foot">
-        <RouterLink class="btn btn-ghost btn-block btn-sm" to="/">← 返回站点</RouterLink>
+        <RouterLink class="side-back" to="/">← 返回站点</RouterLink>
       </div>
     </aside>
 
     <div class="main">
       <header class="topbar">
-        <button class="btn btn-ghost btn-sm drawer-toggle" type="button" aria-label="打开导航" @click="drawerOpen = !drawerOpen">
+        <button
+          class="btn btn-ghost btn-sm drawer-toggle"
+          type="button"
+          aria-label="打开导航"
+          @click="drawerOpen = !drawerOpen"
+        >
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
             <path d="M4 7h16M4 12h16M4 17h16" />
           </svg>
         </button>
 
-        <h1 class="topbar-title">{{ pageTitle }}</h1>
+        <!-- 面包屑只做定位；大标题由页面自己的页头承担 -->
+        <p class="crumb">
+          <span class="crumb-root">控制台</span>
+          <span class="crumb-sep" aria-hidden="true">/</span>
+          <span class="crumb-leaf">{{ pageTitle }}</span>
+        </p>
 
         <div class="topbar-right">
           <div v-if="user" class="who">
-            <span class="who-name truncate">{{ user.displayName }}</span>
+            <span class="who-name">{{ user.displayName }}</span>
             <span class="badge" :class="user.role === 'admin' ? 'badge-brand' : 'badge-neutral'">{{ roleLabel }}</span>
           </div>
-          <span v-else class="faint" style="font-size: var(--fs-sm)">未登录</span>
+          <span v-else class="who-void">未登录</span>
           <button class="btn btn-sm" type="button" :disabled="loggingOut" @click="handleLogout">
             <span v-if="loggingOut" class="spinner" />
             退出登录
@@ -142,17 +157,17 @@ async function handleLogout(): Promise<void> {
 <style scoped>
 .shell {
   min-height: 100vh;
-  background: var(--bg-0);
+  background: var(--ink-900);
 }
 .overlay {
   position: fixed;
   inset: 0;
   z-index: var(--z-drawer);
-  background: color-mix(in srgb, var(--bg-0) 60%, transparent);
-  backdrop-filter: blur(2px);
+  background: color-mix(in srgb, var(--ink-950) 72%, transparent);
 }
 
-/* ------------------------------------------------------------------ 侧栏 */
+/* ------------------------------------------------------------------ 侧栏
+ * 机架：最深的一层底 + 一条右侧发丝线，与内容区严格分开。 */
 .sidebar {
   position: fixed;
   top: 0;
@@ -162,83 +177,100 @@ async function handleLogout(): Promise<void> {
   z-index: var(--z-drawer);
   display: flex;
   flex-direction: column;
-  gap: var(--s-4);
-  padding: var(--s-4) var(--s-3);
-  background: var(--bg-1);
-  border-right: 1px solid var(--border);
+  padding: var(--s-4) var(--s-3) var(--s-3);
+  background: var(--ink-950);
+  border-right: 1px solid var(--rule);
 }
 .side-brand {
   display: flex;
   align-items: center;
   gap: var(--s-3);
-  padding: var(--s-2) var(--s-2) var(--s-3);
+  padding: 5px var(--s-2) var(--s-4);
+  border-bottom: 1px solid var(--rule-faint);
 }
 .brand-mark {
-  width: 32px;
-  height: 32px;
+  width: 30px;
+  height: 30px;
   flex: none;
   display: grid;
   place-items: center;
   border-radius: var(--r-sm);
-  background: var(--grad-brand);
-  color: var(--bg-0);
+  background: var(--signal);
+  color: var(--ink-950);
 }
 .brand-mark svg {
-  width: 20px;
-  height: 20px;
+  width: 19px;
+  height: 19px;
 }
 .side-brand-text {
   display: flex;
   flex-direction: column;
-  line-height: 1.25;
+  gap: 1px;
+  line-height: 1.28;
   min-width: 0;
 }
 .side-brand-text strong {
+  font-family: var(--font-display);
   font-size: var(--fs-base);
+  letter-spacing: var(--track-tight);
 }
-.side-brand-text span {
+.side-brand-sub {
   font-size: var(--fs-xs);
+  color: var(--paper-faint);
 }
 .side-nav {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
+  margin-top: var(--s-3);
   overflow-y: auto;
 }
 .nav-item {
   display: flex;
   align-items: center;
-  gap: var(--s-3);
-  padding: 9px var(--s-3);
+  gap: 10px;
+  padding: 8px var(--s-3);
   border-radius: var(--r-sm);
-  color: var(--text-dim);
+  color: var(--paper-dim);
   font-size: var(--fs-sm);
-  font-weight: 540;
+  font-weight: 500;
   border: 1px solid transparent;
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .nav-item svg {
   flex: none;
-  opacity: 0.85;
+  opacity: 0.8;
 }
 .nav-item:hover {
-  background: var(--surface);
-  color: var(--text);
+  background: var(--ink-850);
+  color: var(--paper);
 }
+/* 选中态：抬升面 + 纸白文字 + 琥珀图标（不用左侧色条，也不用发光阴影） */
 .nav-item.active {
-  background: var(--surface-strong);
-  color: var(--text);
-  border-color: var(--border-strong);
-  box-shadow: var(--glow-brand);
+  background: var(--ink-850);
+  border-color: var(--rule);
+  color: var(--paper);
 }
 .nav-item.active svg {
-  color: var(--brand);
+  color: var(--signal);
   opacity: 1;
 }
 .side-foot {
   margin-top: auto;
   padding-top: var(--s-3);
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--rule-faint);
+}
+.side-back {
+  display: inline-block;
+  padding: 6px var(--s-3);
+  font-size: var(--fs-xs);
+  color: var(--paper-faint);
+  border-radius: var(--r-xs);
+  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.side-back:hover {
+  color: var(--paper);
+  background: var(--ink-850);
 }
 
 /* ------------------------------------------------------------------ 主区 */
@@ -249,25 +281,37 @@ async function handleLogout(): Promise<void> {
   flex-direction: column;
   min-width: 0;
 }
+/* 不透明实色：毛玻璃会同时踩中「被禁写法」和「文字对比度不足」两条 */
 .topbar {
   position: sticky;
   top: 0;
   z-index: var(--z-header);
-  height: var(--header-h);
+  min-height: var(--header-h);
   display: flex;
   align-items: center;
   gap: var(--s-3);
-  padding: 0 var(--s-5);
-  background: color-mix(in srgb, var(--bg-0) 82%, transparent);
-  backdrop-filter: blur(14px);
-  border-bottom: 1px solid var(--border);
+  padding: var(--s-2) var(--s-5);
+  background: var(--ink-900);
+  border-bottom: 1px solid var(--rule);
 }
-.topbar-title {
-  font-size: var(--fs-lg);
+.crumb {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: var(--fs-sm);
+  max-width: none;
+}
+.crumb-root {
+  color: var(--paper-faint);
+}
+.crumb-sep {
+  color: var(--rule-strong);
+}
+.crumb-leaf {
+  color: var(--paper);
+  font-weight: 500;
+  overflow-wrap: anywhere;
 }
 .topbar-right {
   margin-left: auto;
@@ -279,11 +323,18 @@ async function handleLogout(): Promise<void> {
   display: flex;
   align-items: center;
   gap: var(--s-2);
-  max-width: 260px;
+  min-width: 0;
 }
+/* 显示名可以折行，但不做省略号截断 */
 .who-name {
   font-size: var(--fs-sm);
-  color: var(--text-dim);
+  color: var(--paper-2);
+  max-width: 18ch;
+  overflow-wrap: anywhere;
+}
+.who-void {
+  font-size: var(--fs-sm);
+  color: var(--paper-faint);
 }
 .drawer-toggle {
   display: none;
@@ -291,7 +342,7 @@ async function handleLogout(): Promise<void> {
 .content {
   flex: 1;
   min-width: 0;
-  padding: var(--s-5);
+  padding: var(--s-6) var(--s-5) var(--s-8);
 }
 
 /* ------------------------------------------------------------------ 响应 */
@@ -315,8 +366,11 @@ async function handleLogout(): Promise<void> {
     padding-left: var(--s-4);
     padding-right: var(--s-4);
   }
-  .who {
-    max-width: 140px;
+  .content {
+    padding-top: var(--s-5);
+  }
+  .who-name {
+    max-width: 12ch;
   }
 }
 </style>

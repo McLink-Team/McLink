@@ -137,7 +137,7 @@ function closeDetail(): void {
 
 const displayedSecret = computed(() => {
   const secret = detail.value?.networkSecret;
-  if (!secret) return '—';
+  if (!secret) return '未设置网络密钥';
   return secretVisible.value ? secret : '•'.repeat(Math.min(secret.length, 32));
 });
 
@@ -175,56 +175,64 @@ async function recomputeAcl(): Promise<void> {
 </script>
 
 <template>
-  <div class="stack" style="gap: var(--s-5)">
-    <div class="row-between wrap">
-      <div>
-        <div class="panel-title">房间管理</div>
-        <p class="panel-sub">共 {{ total }} 个房间。点击任意一行查看成员、网络密钥、ACL 与访问日志。</p>
+  <div class="console-page">
+    <header class="console-head">
+      <div class="console-head-text">
+        <h1 class="console-head-title">房间管理</h1>
+        <p class="console-head-sub">共 {{ total }} 个房间。点击任意一行查看成员、网络密钥、ACL 与访问日志。</p>
       </div>
-      <div class="row">
+      <div class="console-head-actions">
         <button class="btn" type="button" :disabled="loading" @click="load">
           <span v-if="loading" class="spinner" />
           刷新
         </button>
         <button class="btn btn-danger" type="button" :disabled="busy" @click="recomputeAcl">一键重算 ACL</button>
       </div>
-    </div>
+    </header>
 
-    <section class="card filters">
-      <div class="field">
-        <label class="label" for="r-status">状态</label>
-        <select id="r-status" v-model="filters.status" class="select" @change="applyFilters">
-          <option value="">全部状态</option>
-          <option value="open">开放中</option>
-          <option value="closed">已关闭</option>
-          <option value="expired">已过期</option>
-        </select>
+    <section class="console-section">
+      <div class="console-section-head">
+        <div class="console-section-text">
+          <h2 class="console-section-title">筛选</h2>
+          <p class="console-section-note">按状态与关键字缩小范围，回车即应用。</p>
+        </div>
       </div>
-      <div class="field grow">
-        <label class="label" for="r-search">搜索</label>
-        <input
-          id="r-search"
-          v-model="filters.search"
-          class="input"
-          type="search"
-          placeholder="房间名 / 加入码 / 房主显示名"
-          @keyup.enter="applyFilters"
-        />
-      </div>
-      <div class="row" style="align-self: end">
-        <button class="btn" type="button" @click="applyFilters">应用筛选</button>
+      <div class="filter-grid">
+        <div class="field">
+          <label class="label" for="r-status">状态</label>
+          <select id="r-status" v-model="filters.status" class="select" @change="applyFilters">
+            <option value="">全部状态</option>
+            <option value="open">开放中</option>
+            <option value="closed">已关闭</option>
+            <option value="expired">已过期</option>
+          </select>
+        </div>
+        <div class="field">
+          <label class="label" for="r-search">搜索</label>
+          <input
+            id="r-search"
+            v-model="filters.search"
+            class="input"
+            type="search"
+            placeholder="房间名 / 加入码 / 房主显示名"
+            @keyup.enter="applyFilters"
+          />
+        </div>
+        <div class="filter-actions">
+          <button class="btn" type="button" @click="applyFilters">应用筛选</button>
+        </div>
       </div>
     </section>
 
-    <section class="card stack">
-      <div v-if="loading && rooms.length === 0" class="stack">
-        <div v-for="i in 5" :key="i" class="skeleton" style="height: 40px" />
+    <section class="console-section">
+      <div v-if="loading && rooms.length === 0" class="stack-tight">
+        <div v-for="i in 5" :key="i" class="skeleton" style="height: 36px" />
       </div>
 
-      <div v-else-if="error" class="row-between">
-        <div>
-          <div class="panel-title" style="font-size: var(--fs-base)">加载失败</div>
-          <p class="panel-sub">{{ error }}</p>
+      <div v-else-if="error" class="console-section-head">
+        <div class="console-section-text">
+          <div class="console-sub-title">加载失败</div>
+          <p class="console-section-note">{{ error }}</p>
         </div>
         <button class="btn" type="button" @click="load">重试</button>
       </div>
@@ -245,47 +253,47 @@ async function recomputeAcl(): Promise<void> {
                 <th>虚拟网段</th>
                 <th class="table-num">累计流量</th>
                 <th>创建时间</th>
-                <th />
+                <th class="col-actions">操作</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="r in rooms" :key="r.id" class="clickable" @click="openDetail(r.id)">
                 <td>
-                  <div class="truncate" style="max-width: 200px">{{ r.name }}</div>
-                  <div class="faint mono" style="font-size: var(--fs-xs)">{{ r.id }}</div>
+                  <div class="wrap-anywhere room-name">{{ r.name }}</div>
+                  <div class="cell-sub">{{ r.id }}</div>
                 </td>
                 <td class="mono">{{ r.code }}</td>
-                <td class="truncate" style="max-width: 130px">{{ r.hostDisplayName }}</td>
+                <td class="wrap-anywhere">{{ r.hostDisplayName }}</td>
                 <td>{{ regionLabel(r.zone) }}</td>
                 <td>
                   <Badge :tone="roomTone(r.status)" dot>{{ roomLabel(r.status) }}</Badge>
-                  <div class="faint" style="font-size: var(--fs-xs); margin-top: 2px">{{ accessLabel(r.access) }}</div>
+                  <div class="cell-sub access-note">{{ accessLabel(r.access) }}</div>
                 </td>
                 <td class="table-num">{{ r.onlineMembers }} / {{ r.policy.maxPlayers }}</td>
                 <td class="mono">{{ r.subnet }}</td>
                 <td class="table-num">
-                  {{ formatBytes(r.usage.rxBytes + r.usage.txBytes) }}
-                  <div class="faint" style="font-size: var(--fs-xs)">
+                  <div class="mono">{{ formatBytes(r.usage.rxBytes + r.usage.txBytes) }}</div>
+                  <div class="cell-sub">
                     收 {{ formatBytes(r.usage.rxBytes) }} · 发 {{ formatBytes(r.usage.txBytes) }}
                   </div>
                 </td>
-                <td class="muted" style="font-size: var(--fs-xs)">
+                <td class="cell-sub">
                   {{ formatRelativeTime(r.createdAt) }}
-                  <div v-if="r.expiresAt" class="faint">至 {{ formatDateTime(r.expiresAt) }}</div>
+                  <div v-if="r.expiresAt" class="expire-note">至 {{ formatDateTime(r.expiresAt) }}</div>
                 </td>
-                <td style="text-align: right">
-                  <button class="btn btn-sm" type="button" @click.stop="openDetail(r.id)">详情</button>
+                <td>
+                  <div class="row-actions">
+                    <button class="btn btn-sm" type="button" @click.stop="openDetail(r.id)">详情</button>
+                  </div>
                 </td>
               </tr>
             </tbody>
           </table>
         </div>
 
-        <div class="row-between">
-          <span class="faint" style="font-size: var(--fs-xs)">
-            第 {{ page + 1 }} / {{ pageCount }} 页 · 共 {{ total }} 条
-          </span>
-          <div class="row">
+        <div class="pager">
+          <span class="pager-count">第 {{ page + 1 }} / {{ pageCount }} 页 · 共 {{ total }} 条</span>
+          <div class="console-toolbar">
             <button class="btn btn-sm" type="button" :disabled="page === 0 || loading" @click="prevPage">上一页</button>
             <button class="btn btn-sm" type="button" :disabled="page + 1 >= pageCount || loading" @click="nextPage">
               下一页
@@ -296,14 +304,14 @@ async function recomputeAcl(): Promise<void> {
     </section>
 
     <!-- 详情抽屉 -->
-    <div v-if="detailId" class="overlay" @click.self="closeDetail">
-      <div class="drawer card stack">
-        <div class="row-between">
-          <div>
-            <div class="panel-title">{{ detail?.room.name ?? '房间详情' }}</div>
-            <p class="panel-sub mono">{{ detailId }}</p>
+    <div v-if="detailId" class="modal-mask drawer-mask" @click.self="closeDetail">
+      <div class="modal-panel modal-panel-right drawer-panel">
+        <div class="drawer-head">
+          <div class="console-section-text">
+            <h2 class="console-head-title drawer-title">{{ detail?.room.name ?? '房间详情' }}</h2>
+            <p class="console-section-note mono wrap-anywhere">{{ detailId }}</p>
           </div>
-          <div class="row">
+          <div class="console-toolbar">
             <button
               v-if="detail"
               class="btn btn-sm btn-danger"
@@ -317,12 +325,12 @@ async function recomputeAcl(): Promise<void> {
           </div>
         </div>
 
-        <div v-if="detailLoading" class="stack">
-          <div v-for="i in 4" :key="i" class="skeleton" style="height: 36px" />
+        <div v-if="detailLoading" class="stack-tight">
+          <div v-for="i in 4" :key="i" class="skeleton" style="height: 32px" />
         </div>
 
-        <div v-else-if="detailError" class="row-between">
-          <span class="panel-sub">{{ detailError }}</span>
+        <div v-else-if="detailError" class="console-section-head">
+          <p class="console-section-note">{{ detailError }}</p>
           <button class="btn btn-sm" type="button" @click="detailId && openDetail(detailId)">重试</button>
         </div>
 
@@ -337,12 +345,17 @@ async function recomputeAcl(): Promise<void> {
               <Badge tone="neutral">{{ detail.room.visibility === 'public' ? '大厅可见' : '仅凭加入码' }}</Badge>
             </span>
             <span class="kv-k">房主</span>
-            <span class="kv-v">{{ detail.room.hostDisplayName }} <span class="faint mono">{{ detail.room.hostUserId }}</span></span>
+            <span class="kv-v">
+              {{ detail.room.hostDisplayName }}
+              <span class="cell-sub">{{ detail.room.hostUserId }}</span>
+            </span>
             <span class="kv-k">区域</span><span class="kv-v">{{ regionLabel(detail.room.zone) }}</span>
-            <span class="kv-k">虚拟网段</span><span class="kv-v mono">{{ detail.room.subnet }}（槽位 {{ detail.room.subnetSlot }}）</span>
-            <span class="kv-k">EasyTier 网络</span><span class="kv-v mono truncate" :title="detail.room.networkName">{{ detail.room.networkName }}</span>
+            <span class="kv-k">虚拟网段</span>
+            <span class="kv-v mono">{{ detail.room.subnet }}（槽位 {{ detail.room.subnetSlot }}）</span>
+            <span class="kv-k">EasyTier 网络</span>
+            <span class="kv-v mono wrap-anywhere">{{ detail.room.networkName }}</span>
             <span class="kv-k">中继节点</span>
-            <span class="kv-v mono">
+            <span class="kv-v mono wrap-anywhere">
               {{ asStringList(detail.room.relayNodeIds).length > 0 ? asStringList(detail.room.relayNodeIds).join(', ') : '仅主控兜底中继' }}
             </span>
             <span class="kv-k">累计流量</span>
@@ -364,102 +377,117 @@ async function recomputeAcl(): Promise<void> {
               最多 {{ detail.room.policy.maxPlayers }} 人 ·
               {{ detail.room.policy.allowP2p ? '允许 P2P' : '全部走中继' }} ·
               {{ detail.room.policy.strictPorts ? '严格端口' : '宽松端口' }} ·
-              端口 {{ asStringList(detail.room.policy.allowedPorts).length > 0 ? asStringList(detail.room.policy.allowedPorts).join(', ') : '不限' }}
+              端口
+              {{ asStringList(detail.room.policy.allowedPorts).length > 0 ? asStringList(detail.room.policy.allowedPorts).join(', ') : '不限' }}
             </span>
             <span class="kv-k">创建时间</span><span class="kv-v">{{ formatDateTime(detail.room.createdAt) }}</span>
           </div>
 
           <!-- 网络密钥 -->
-          <div class="secret-box">
-            <div class="row-between">
-              <span class="label">networkSecret</span>
-              <div class="row" style="gap: var(--s-2)">
+          <div class="secret-block">
+            <div class="secret-head">
+              <span class="console-sub-title">networkSecret</span>
+              <div class="console-toolbar">
                 <button class="btn btn-sm btn-ghost" type="button" @click="secretVisible = !secretVisible">
                   {{ secretVisible ? '隐藏' : '显示' }}
                 </button>
                 <button class="btn btn-sm" type="button" @click="copyText(detail.networkSecret, '网络密钥')">复制</button>
               </div>
             </div>
-            <div class="mono secret-text">{{ displayedSecret }}</div>
-            <p class="hint">
+            <div class="secret-text">{{ displayedSecret }}</div>
+            <p class="hint hint-measure">
               网络名由该密钥派生，是共享中继下的准入凭证：密钥泄露等于房间可被任意扫描到，必要时让房主轮换密钥。
             </p>
           </div>
 
           <!-- 成员 -->
-          <div class="section-title">成员（{{ detail.members.length }}）</div>
-          <div v-if="detail.members.length === 0" class="empty">暂无成员记录。</div>
-          <div v-else class="table-wrap" style="max-height: 280px; overflow-y: auto">
-            <table class="table">
-              <thead>
-                <tr>
-                  <th>成员</th>
-                  <th>角色</th>
-                  <th>状态</th>
-                  <th>虚拟 IP</th>
-                  <th>设备</th>
-                  <th class="table-num">延迟</th>
-                  <th class="table-num">收发</th>
-                  <th>加入时间</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="m in detail.members" :key="m.userId">
-                  <td>
-                    <div>{{ m.displayName }}</div>
-                    <div class="faint mono" style="font-size: var(--fs-xs)">{{ m.username }}</div>
-                  </td>
-                  <td>
-                    <Badge :tone="m.role === 'host' ? 'brand' : 'neutral'">{{ m.role === 'host' ? '房主' : '成员' }}</Badge>
-                  </td>
-                  <td><Badge :tone="memberTone(m.status)">{{ memberLabel(m.status) }}</Badge></td>
-                  <td class="mono" style="font-size: var(--fs-xs)">{{ m.virtualIp ?? '—' }}</td>
-                  <td class="muted" style="font-size: var(--fs-xs)">{{ m.deviceName ?? '—' }}</td>
-                  <td class="table-num">
-                    {{ m.latencyMs === null ? '—' : `${m.latencyMs} ms` }}
-                    <div v-if="m.p2p" class="faint" style="font-size: var(--fs-xs)">P2P</div>
-                  </td>
-                  <td class="table-num" style="font-size: var(--fs-xs)">
-                    {{ formatBitrate(m.rxBps) }} / {{ formatBitrate(m.txBps) }}
-                  </td>
-                  <td class="muted" style="font-size: var(--fs-xs)">
-                    {{ formatRelativeTime(m.joinedAt) }}
-                    <div class="faint">心跳 {{ formatRelativeTime(m.lastSeenAt) }}</div>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+          <div class="sub-block">
+            <div class="sub-head">
+              <span class="console-sub-title">成员（{{ detail.members.length }}）</span>
+            </div>
+            <div v-if="detail.members.length === 0" class="empty">暂无成员记录。</div>
+            <div v-else class="table-wrap member-table">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>成员</th>
+                    <th>角色</th>
+                    <th>状态</th>
+                    <th>虚拟 IP</th>
+                    <th>设备</th>
+                    <th class="table-num">延迟</th>
+                    <th class="table-num">收发</th>
+                    <th>加入时间</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="m in detail.members" :key="m.userId">
+                    <td>
+                      <div>{{ m.displayName }}</div>
+                      <div class="cell-sub">{{ m.username }}</div>
+                    </td>
+                    <td>
+                      <Badge :tone="m.role === 'host' ? 'brand' : 'neutral'">{{ m.role === 'host' ? '房主' : '成员' }}</Badge>
+                    </td>
+                    <td><Badge :tone="memberTone(m.status)">{{ memberLabel(m.status) }}</Badge></td>
+                    <td v-if="m.virtualIp" class="mono cell-sub">{{ m.virtualIp }}</td>
+                    <td v-else class="cell-void">未分配</td>
+                    <td v-if="m.deviceName" class="cell-sub">{{ m.deviceName }}</td>
+                    <td v-else class="cell-void">未知设备</td>
+                    <td class="table-num">
+                      {{ m.latencyMs === null ? '未测得' : `${m.latencyMs} ms` }}
+                      <div v-if="m.p2p" class="cell-sub">P2P</div>
+                    </td>
+                    <td class="table-num cell-sub">
+                      {{ formatBitrate(m.rxBps) }} / {{ formatBitrate(m.txBps) }}
+                    </td>
+                    <td class="cell-sub">
+                      {{ formatRelativeTime(m.joinedAt) }}
+                      <div class="seen-note">心跳 {{ formatRelativeTime(m.lastSeenAt) }}</div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
 
           <!-- ACL -->
-          <div class="row-between">
-            <div class="section-title">房主 ACL（TOML）</div>
-            <button class="btn btn-sm" type="button" @click="copyText(detail.aclToml, 'ACL 文本')">复制</button>
+          <div class="sub-block">
+            <div class="sub-head">
+              <span class="console-sub-title">房主 ACL（TOML）</span>
+              <button class="btn btn-sm" type="button" @click="copyText(detail.aclToml, 'ACL 文本')">复制</button>
+            </div>
+            <pre class="code-block acl-block">{{ detail.aclToml || '（房间无 ACL 内容）' }}</pre>
           </div>
-          <pre class="code-block">{{ detail.aclToml || '（房间无 ACL 内容）' }}</pre>
 
           <!-- 访问日志 -->
-          <div class="section-title">访问日志（最近 {{ detail.accessLog.length }} 条）</div>
-          <div v-if="detail.accessLog.length === 0" class="empty">暂无访问记录。</div>
-          <div v-else class="table-wrap" style="max-height: 240px; overflow-y: auto">
-            <table class="table">
-              <thead>
-                <tr>
-                  <th>时间</th>
-                  <th>动作</th>
-                  <th>用户</th>
-                  <th>详情</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="(l, i) in detail.accessLog" :key="i">
-                  <td class="muted" style="font-size: var(--fs-xs)">{{ formatDateTime(l.ts) }}</td>
-                  <td class="mono">{{ l.action }}</td>
-                  <td class="mono" style="font-size: var(--fs-xs)">{{ l.user_id ?? '—' }}</td>
-                  <td class="muted" style="font-size: var(--fs-xs)">{{ l.detail ?? '—' }}</td>
-                </tr>
-              </tbody>
-            </table>
+          <div class="sub-block">
+            <div class="sub-head">
+              <span class="console-sub-title">访问日志（最近 {{ detail.accessLog.length }} 条）</span>
+            </div>
+            <div v-if="detail.accessLog.length === 0" class="empty">暂无访问记录。</div>
+            <div v-else class="table-wrap log-table">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>时间</th>
+                    <th>动作</th>
+                    <th>用户</th>
+                    <th>详情</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(l, i) in detail.accessLog" :key="i">
+                    <td class="cell-sub">{{ formatDateTime(l.ts) }}</td>
+                    <td class="mono wrap-anywhere">{{ l.action }}</td>
+                    <td v-if="l.user_id" class="mono cell-sub">{{ l.user_id }}</td>
+                    <td v-else class="cell-void">匿名</td>
+                    <td v-if="l.detail" class="cell-sub">{{ l.detail }}</td>
+                    <td v-else class="cell-void">无</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </template>
       </div>
@@ -468,88 +496,138 @@ async function recomputeAcl(): Promise<void> {
 </template>
 
 <style scoped>
-.filters {
+.filter-grid {
   display: grid;
   grid-template-columns: 200px minmax(0, 1fr) auto;
   gap: var(--s-4);
   align-items: end;
 }
-.table-wrap {
-  overflow-x: auto;
+.filter-actions {
+  display: flex;
+  align-items: center;
+  padding-bottom: 1px;
 }
 .clickable {
   cursor: pointer;
 }
-.overlay {
-  position: fixed;
-  inset: 0;
-  z-index: var(--z-modal);
-  background: color-mix(in srgb, var(--bg-0) 68%, transparent);
-  backdrop-filter: blur(3px);
+.room-name {
+  font-weight: 500;
+}
+.access-note {
+  margin-top: 3px;
+  font-family: var(--font-sans);
+}
+.expire-note {
+  margin-top: 3px;
+}
+.col-actions {
+  text-align: right;
+}
+.row-actions {
   display: flex;
   justify-content: flex-end;
 }
-.drawer {
-  width: min(880px, 100%);
-  height: 100%;
-  border-radius: 0;
-  border-right: 0;
-  background: var(--bg-1);
-  overflow-y: auto;
-  box-shadow: var(--shadow-lg);
-}
-.kv {
-  display: grid;
-  grid-template-columns: 112px minmax(0, 1fr);
-  gap: var(--s-2) var(--s-3);
-  font-size: var(--fs-sm);
-  align-items: baseline;
-}
-.kv-k {
-  color: var(--text-faint);
+.cell-void {
   font-size: var(--fs-xs);
+  color: var(--paper-faint);
 }
-.kv-v {
-  min-width: 0;
+.pager {
   display: flex;
   align-items: center;
-  gap: var(--s-2);
+  justify-content: space-between;
+  gap: var(--s-4);
   flex-wrap: wrap;
+  margin-top: var(--s-4);
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--rule-faint);
 }
-.secret-box {
-  padding: var(--s-3);
-  border-radius: var(--r-sm);
-  background: var(--surface);
-  border: 1px solid var(--border);
+.pager-count {
+  font-size: var(--fs-xs);
+  color: var(--paper-faint);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+/* 抽屉：贴右侧、通高；遮罩不透明压暗，不做毛玻璃 */
+.drawer-mask {
+  place-items: stretch end;
+  padding: 0;
+}
+.drawer-panel {
+  max-width: min(920px, 100%);
+  max-height: 100vh;
+  height: 100vh;
+  border-radius: 0;
+  border-top: 0;
+  border-right: 0;
+  border-bottom: 0;
+  gap: var(--s-5);
+}
+.drawer-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s-4);
+  flex-wrap: wrap;
+  padding-bottom: var(--s-4);
+  border-bottom: 1px solid var(--rule-strong);
+}
+.drawer-title {
+  font-size: var(--fs-lg);
+}
+.secret-block {
   display: flex;
   flex-direction: column;
-  gap: var(--s-2);
+  gap: var(--s-3);
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--rule);
+}
+.secret-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-4);
+  flex-wrap: wrap;
 }
 .secret-text {
-  word-break: break-all;
+  font-family: var(--font-mono);
   font-size: var(--fs-sm);
-  color: var(--text-dim);
+  color: var(--paper-2);
+  letter-spacing: 0.04em;
+  overflow-wrap: anywhere;
 }
-.section-title {
-  font-size: var(--fs-sm);
-  font-weight: 620;
-  color: var(--text-dim);
-  margin-top: var(--s-2);
+.hint-measure {
+  max-width: 72ch;
 }
-.code-block {
-  margin: 0;
-  padding: var(--s-3);
-  border-radius: var(--r-sm);
-  background: color-mix(in srgb, var(--bg-0) 60%, transparent);
-  border: 1px solid var(--border);
-  color: var(--text-dim);
-  font-size: var(--fs-xs);
+.sub-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--rule);
+}
+.sub-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-4);
+  flex-wrap: wrap;
+}
+.member-table {
+  max-height: 300px;
+  overflow-y: auto;
+}
+.log-table {
   max-height: 260px;
-  overflow: auto;
-  white-space: pre;
+  overflow-y: auto;
 }
-@media (max-width: 720px) {
-  .filters {
+.acl-block {
+  max-height: 280px;
+}
+.seen-note {
+  margin-top: 3px;
+}
+@media (max-width: 900px) {
+  .filter-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 }
