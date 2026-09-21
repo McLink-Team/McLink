@@ -3,6 +3,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { clientState, relaunchElevated, setDevice, logout } from '../lib/store.ts';
 import { MASTER_URL, USING_DEV_MASTER, getMasterUrl } from '../lib/api.ts';
+import { reopenOnboarding } from '../lib/onboarding.ts';
 import type { AppInfo } from '../lib/bridge.ts';
 
 const info = ref<AppInfo | null>(null);
@@ -80,6 +81,9 @@ function openDataDir(): void {
         <div class="row">
           <button class="btn btn-primary" @click="save">保存</button>
           <button class="btn btn-ghost" @click="logout()">退出登录</button>
+          <button class="btn btn-ghost" title="重新看一遍 4 步上手指引" @click="reopenOnboarding()">
+            新手引导
+          </button>
         </div>
       </div>
 

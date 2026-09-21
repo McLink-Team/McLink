@@ -8,10 +8,11 @@
  *
  * UI 只读这里的状态、调这里的方法，不直接碰 easytier 与 HTTP。
  */
-import { computed, reactive, ref } from 'vue';
+import { computed, reactive, ref, watch } from 'vue';
 import {
   Routes,
   Topics,
+  type ChatMessage,
   type PlatformSettings,
   type Room,
   type RoomMember,
@@ -22,70 +23,17 @@ import {
 import { REGIONS } from '@mclink/shared';
 import { api, friendlyError, getDeviceName, getMasterUrl, getToken, setDeviceName, setToken } from './api.ts';
 import type { CoreLogEntry, CoreStatus } from './core-types.ts';
+import { recordRecent } from './shortcuts.ts';
+import { isMiniRenderer, writeMiniState } from './mini.ts';
+import { parsePeers, type PeerView } from './easytier-parse.ts';
+
+export type { PeerView } from './easytier-parse.ts';
+export { parsePeers } from './easytier-parse.ts';
 
 /* ------------------------------------------------------------ 工具函数 */
 
-/** easytier-cli 的 JSON 输出把数值格式化成 "17.33 kB" / "-" 这样的字符串 */
-function parseHumanNumber(value: unknown): number {
-  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
-  if (typeof value !== 'string') return 0;
-  const text = value.trim();
-  if (text.length === 0 || text === '-' || text === '*') return 0;
-  const m = /^([\d.]+)\s*([a-zA-Z]*)$/.exec(text);
-  if (!m) return 0;
-  const base = Number.parseFloat(m[1] ?? '');
-  if (!Number.isFinite(base)) return 0;
-  const unit = (m[2] ?? '').toLowerCase();
-  const factors: Record<string, number> = {
-    '': 1,
-    b: 1,
-    kb: 1000,
-    mb: 1e6,
-    gb: 1e9,
-    kib: 1024,
-    mib: 1024 ** 2,
-    gib: 1024 ** 3,
-  };
-  return base * (factors[unit] ?? 1);
-}
-
-function parseLatency(value: unknown): number | null {
-  if (typeof value !== 'string') return null;
-  const text = value.trim();
-  if (text.length === 0 || text === '-' || text === '*') return null;
-  const n = Number.parseFloat(text);
-  return Number.isFinite(n) ? n : null;
-}
-
-export interface PeerView {
-  hostname: string;
-  ipv4: string;
-  cost: string;
-  latencyMs: number | null;
-  rxBytes: number;
-  txBytes: number;
-  tunnelProto: string;
-}
-
-function parsePeers(data: unknown): PeerView[] {
-  if (!Array.isArray(data)) return [];
-  const out: PeerView[] = [];
-  for (const row of data as Array<Record<string, unknown>>) {
-    const ipv4 = String(row.ipv4 ?? '');
-    const cost = String(row.cost ?? '');
-    if (cost === 'Local' && ipv4.length === 0) continue;
-    out.push({
-      hostname: String(row.hostname ?? ''),
-      ipv4,
-      cost,
-      latencyMs: parseLatency(row.lat_ms),
-      rxBytes: parseHumanNumber(row.rx_bytes),
-      txBytes: parseHumanNumber(row.tx_bytes),
-      tunnelProto: String(row.tunnel_proto ?? ''),
-    });
-  }
-  return out;
-}
+/* peer list / node info 的解析都在 lib/easytier-parse.ts（纯函数，可离线校验），
+ * 这里导入使用，并把 parsePeers 再导出给界面复用。 */
 
 /* --------------------------------------------------------------- 状态 */
 
@@ -111,6 +59,12 @@ const state = reactive({
   settings: null as PlatformSettings | null,
   session: null as ActiveSession | null,
   peers: [] as PeerView[],
+  /**
+   * 每次成功进入房间 +1。
+   * 用于让房间内的面板察觉「又拿到了一张新票据」（轮换密钥、被踢后重进等），
+   * 从而重新拉取只属于本次会话的数据（如聊天历史补齐）。
+   */
+  sessionEpoch: 0,
   coreStatus: null as CoreStatus | null,
   coreLogs: [] as CoreLogEntry[],
   busy: false,
@@ -309,6 +263,15 @@ export async function enterRoom(roomId: string, ticket: RoomTicket): Promise<voi
     aclRevision: ticket.aclRevision,
     virtualIp: ticket.virtualIp,
   };
+  state.sessionEpoch += 1;
+  // 记一笔「最近进入」，方便下次从列表里一键重进（只存在本机）
+  recordRecent({
+    roomId,
+    code: detail.room.code,
+    name: detail.room.name,
+    lastAddress: ticket.hostVirtualIp || null,
+    lastSeenAt: new Date().toISOString(),
+  });
   subscribeRoom(roomId);
   await startNetwork();
   startHeartbeat();
@@ -357,11 +320,21 @@ export async function closeRoom(): Promise<void> {
 async function startNetwork(): Promise<void> {
   const session = state.session;
   if (!session) return;
-  const status = await window.mclink.core.start({
-    configToml: session.ticket.configToml,
-    launchArgs: session.ticket.launchArgs,
-    instanceName: session.ticket.instanceName,
-  });
+  /**
+   * ⚠️ 这里必须把票据字段「拆成原始值」再交给 IPC。
+   *
+   * `state` 是 reactive 的，`session.ticket.launchArgs` 拿到的是 Vue 的响应式 Proxy；
+   * Electron 的 IPC 用结构化克隆传参，而 Proxy 无法被克隆 ——
+   * 直接把 Proxy 传过去会抛 `DataCloneError: ... could not be cloned.`，
+   * 结果是 easytier-core 永远起不来（房间页只显示「正在建立连接…」，但没有核心进程）。
+   * 这个坑是实测用 CDP 连上客户端才定位到的。
+   */
+  const payload = {
+    configToml: String(session.ticket.configToml),
+    launchArgs: session.ticket.launchArgs.map((arg) => String(arg)),
+    instanceName: String(session.ticket.instanceName),
+  };
+  const status = await window.mclink.core.start(payload);
   state.coreStatus = status;
   if (status.state === 'error') {
     state.lastError = describeCoreError(status.lastError);
@@ -563,6 +536,8 @@ function connectRealtime(): void {
   ws.addEventListener('open', () => {
     ws?.send(JSON.stringify({ type: 'subscribe', topics: [Topics.platform] }));
     if (state.session) subscribeRoom(state.session.room.id);
+    // 断线期间的消息只能靠 HTTP 补：通知聊天面板做一次 sinceId 增量补齐
+    emitRoomChat({ type: 'resync' });
   });
   ws.addEventListener('message', (event) => {
     void handleServerEvent(String((event as MessageEvent).data));
@@ -628,9 +603,107 @@ async function handleServerEvent(raw: string): Promise<void> {
       await refreshRoom().catch(() => {});
       break;
     }
+    case 'room.message': {
+      // 只处理当前房间：订阅的是 room:<id> 话题，理论上不会串房间，仍然显式过滤
+      if (!state.session || String(event.roomId) !== state.session.room.id) break;
+      const message = toChatMessage(event.message);
+      if (message) emitRoomChat({ type: 'message', message });
+      break;
+    }
+    case 'room.messageDeleted': {
+      if (!state.session || String(event.roomId) !== state.session.room.id) break;
+      const messageId = Number(event.messageId);
+      if (Number.isFinite(messageId)) emitRoomChat({ type: 'deleted', messageId });
+      break;
+    }
     default:
       break;
   }
+}
+
+/* -------------------------------------------------------- 房间聊天事件 */
+
+/**
+ * 聊天事件只走这一条通道：`room.message` / `room.messageDeleted` 由上面的
+ * handleServerEvent 分发到这里，界面（ChatPanel）订阅后自行渲染。
+ *
+ * 为什么不把消息直接存进 clientState：聊天是「房间页挂载期间」才关心的高频数据，
+ * 放进全局状态会让每次有人说话都触发整个外壳重渲染，也会在离开房间后残留。
+ */
+export type RoomChatEvent =
+  | { type: 'message'; message: ChatMessage }
+  | { type: 'deleted'; messageId: number }
+  /** WebSocket（重）连上：界面应做一次 sinceId 增量补齐 */
+  | { type: 'resync' };
+
+const chatListeners = new Set<(event: RoomChatEvent) => void>();
+
+export function onRoomChat(listener: (event: RoomChatEvent) => void): () => void {
+  chatListeners.add(listener);
+  return () => {
+    chatListeners.delete(listener);
+  };
+}
+
+function emitRoomChat(event: RoomChatEvent): void {
+  for (const listener of [...chatListeners]) {
+    try {
+      listener(event);
+    } catch {
+      /* 单个订阅者出错不应该影响其它订阅者与 WS 主循环 */
+    }
+  }
+}
+
+/** 把 WS 下发的未知结构收敛成 ChatMessage；缺关键字段时返回 null（宁可丢一条也不崩界面） */
+function toChatMessage(value: unknown): ChatMessage | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const row = value as Record<string, unknown>;
+  if (typeof row.id !== 'number' || typeof row.body !== 'string') return null;
+  const role = row.role === 'host' || row.role === 'system' ? row.role : 'member';
+  return {
+    id: row.id,
+    roomId: String(row.roomId ?? state.session?.room.id ?? ''),
+    userId: typeof row.userId === 'string' ? row.userId : null,
+    displayName: typeof row.displayName === 'string' ? row.displayName : '',
+    role,
+    kind: row.kind === 'system' ? 'system' : 'text',
+    body: row.body,
+    createdAt: typeof row.createdAt === 'string' ? row.createdAt : new Date().toISOString(),
+  };
+}
+
+/* ---------------------------------------------------- 迷你窗状态镜像 */
+
+/**
+ * 迷你窗是独立渲染进程，拿不到这里的响应式状态，因此把展示所需的几个字段
+ * 同步写进 localStorage（键 `mclink.mini.state`），迷你窗读它并监听 storage 事件。
+ *
+ * ⚠️ 只在主窗（非迷你窗）里注册：迷你窗加载的是同一份 JS，也会执行到这里，
+ * 若不加判断，它启动时就会用「自己这边没有房间」的空状态把主窗写的镜像覆盖掉
+ * —— 这是实测踩到的坑（用 CDP 连上迷你窗才看到）。
+ */
+if (!isMiniRenderer()) {
+  watch(
+    () => [
+      state.session?.room.id ?? null,
+      state.session?.room.name ?? null,
+      state.session?.room.code ?? null,
+      state.session?.ticket.hostVirtualIp ?? null,
+      state.coreStatus?.state ?? 'stopped',
+    ],
+    () => {
+      writeMiniState({
+        roomId: state.session?.room.id ?? null,
+        roomName: state.session?.room.name ?? null,
+        code: state.session?.room.code ?? null,
+        hostVirtualIp: state.session?.ticket.hostVirtualIp ?? null,
+        state: state.coreStatus?.state ?? 'stopped',
+        updatedAt: new Date().toISOString(),
+      });
+    },
+    { immediate: true },
+  );
 }
 
 /* ---------------------------------------------------------- 其它动作 */

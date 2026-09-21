@@ -193,6 +193,21 @@ create table if not exists room_access_log (
 create index if not exists idx_room_access_room on room_access_log(room_id, ts);
 `;
 
-export const MIGRATIONS: readonly string[] = [V1_INITIAL, V2_RELAY_ROOM_MAP, V3_ROOM_ACCESS_LOG];
+const V4_ROOM_CHAT = `
+create table if not exists room_messages (
+  id          integer primary key autoincrement,
+  room_id     text not null references rooms(id) on delete cascade,
+  user_id     text,
+  display_name text not null,
+  role        text not null default 'member',
+  kind        text not null default 'text',
+  body        text not null,
+  created_at  text not null
+);
+create index if not exists idx_room_messages_room on room_messages(room_id, id);
+create index if not exists idx_room_messages_ts on room_messages(created_at);
+`;
+
+export const MIGRATIONS: readonly string[] = [V1_INITIAL, V2_RELAY_ROOM_MAP, V3_ROOM_ACCESS_LOG, V4_ROOM_CHAT];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

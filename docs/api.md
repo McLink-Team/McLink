@@ -98,6 +98,13 @@
 | POST | `/api/v1/rooms/:id/rotate-secret` | 房主 | **轮换网络密钥（同时换掉网络名）** |
 | POST | `/api/v1/rooms/:id/leave` | U | 主动退出（房主退出 = 关闭房间） |
 | GET | `/api/v1/rooms/:id/access-log` | 房主 | 房间访问日志（最近 100 条） |
+| GET | `/api/v1/rooms/:id/messages` | M | 房间聊天历史；`?sinceId=` 增量拉取，`?limit=` 默认 100（上限 300） |
+| POST | `/api/v1/rooms/:id/messages` | M | 发言；每房间每分钟 20 条，单条最长 500 字符（按码点截断） |
+| DELETE | `/api/v1/rooms/:id/messages/:messageId` | M | 删消息：房主可删任意，其他人只能删自己的 |
+
+> 鉴权列的含义：`U` = 任意登录用户，`M` = 必须是该房间的活跃成员（`assertMember`），
+> `房主` = 必须同时是房主。房间聊天只发给 WebSocket 的 `room:<id>` 话题，
+> 而该话题的订阅要求「是该房间的活跃成员」，因此聊天不会外泄给非成员或匿名连接。
 
 ### 子节点 agent
 
@@ -497,6 +504,81 @@
 `{ ts, user_id, action, detail, ip }`；`action` 取值包括
 `join`、`join_pending`、`approved`、`rejected`、`kicked`、`left`、`close`、
 `password_fail`、`rotate_secret`。
+
+---
+
+## 5.1 房间聊天
+
+服务端把聊天记录存在 `room_messages` 表（迁移 V4），每个房间最多保留
+`KEEP_PER_ROOM = 500` 条（写入后自动裁剪），并在定期清理时删除 7 天前的记录；
+房间关闭时会**清空**该房间的聊天记录（房间没了，闲聊也没有留存价值）。
+
+### GET /api/v1/rooms/:id/messages
+
+需要是房间成员。查询参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `sinceId` | 只返回 id 大于该值的消息（重连后补齐断线期间的消息），升序返回 |
+| `limit` | 默认 100，最大 300；不带 `sinceId` 时返回**最近** limit 条（仍按时间升序） |
+
+```json
+{
+  "messages": [
+    {
+      "id": 12,
+      "roomId": "r_ab12cd34ef",
+      "userId": null,
+      "displayName": "系统",
+      "role": "system",
+      "kind": "system",
+      "body": "房间已创建，加入码 9V2RM7。把加入码和联机地址发给朋友即可一起玩。",
+      "createdAt": "2026-01-01T08:00:00.000Z"
+    },
+    {
+      "id": 13,
+      "roomId": "r_ab12cd34ef",
+      "userId": "u_xxx",
+      "displayName": "小明",
+      "role": "host",
+      "kind": "text",
+      "body": "我在游戏里对局域网开放了 👋",
+      "createdAt": "2026-01-01T08:00:03.000Z"
+    }
+  ],
+  "keepPerRoom": 500,
+  "maxBodyChars": 500
+}
+```
+
+### POST /api/v1/rooms/:id/messages
+
+请求 `{ "body": "收到，我来连" }`。响应为新建的消息对象（结构同上）。
+
+约束与错误：
+
+| 情况 | 结果 |
+| --- | --- |
+| 内容为空或只有空白 | `400 bad_request` |
+| 超过 500 字符 | 不报错，按**码点**截断到 500 并追加 `…`（不会把 emoji 切成乱码） |
+| 同一用户在同一房间 1 分钟内超过 20 条 | `429 rate_limited` |
+| 非房间成员 | `403 forbidden`（`你不是该房间的成员`） |
+| 房间已关闭 | `409 conflict`（`房间已关闭，无法发言`） |
+
+### DELETE /api/v1/rooms/:id/messages/:messageId
+
+房主可删本房间任意消息（记入审计日志 `room.chat_delete`），其他成员只能删自己的；
+否则 `403 forbidden`（`只能删除自己的消息`）。删除后向 `room:<id>` 话题推送 `room.messageDeleted`。
+
+### 相关 WebSocket 事件
+
+| 事件 | 载荷 | 推送对象 |
+| --- | --- | --- |
+| `room.message` | `{ roomId, message }` | `room:<id>` 话题的所有订阅者（即房间成员） |
+| `room.messageDeleted` | `{ roomId, messageId }` | 同上 |
+
+系统消息也走 `room.message`（`kind: "system"`、`userId: null`），
+由这些动作触发：创建房间、成员加入/申请加入、审批通过/拒绝、被踢、主动离开。
 
 ---
 

@@ -12,6 +12,14 @@ contextBridge.exposeInMainWorld('mclink', {
   relaunchElevated: () => ipcRenderer.invoke('app:relaunchElevated'),
   confirm: (payload) => ipcRenderer.invoke('dialog:confirm', payload),
 
+  // 迷你窗（置顶小窗，方便边玩边看联机地址）
+  mini: {
+    open: () => ipcRenderer.invoke('mini:open'),
+    close: () => ipcRenderer.invoke('mini:close'),
+    toggle: () => ipcRenderer.invoke('mini:toggle'),
+    setAlwaysOnTop: (flag) => ipcRenderer.invoke('mini:setAlwaysOnTop', flag),
+  },
+
   core: {
     start: (payload) => ipcRenderer.invoke('core:start', payload),
     stop: () => ipcRenderer.invoke('core:stop'),

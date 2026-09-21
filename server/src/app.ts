@@ -5,6 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
+import type { ChatMessage } from '@mclink/shared';
 import type { ServerConfig } from './config.ts';
 import { finalizeConfig, loadConfig, REPO_ROOT, SERVER_ROOT } from './config.ts';
 import { initLogger, logger } from './logger.ts';
@@ -13,6 +14,7 @@ import { EnrollKeyRepo, MetaStore, SettingsRepo, UserRepo } from './db/users.ts'
 import { RoomRepo } from './db/rooms.ts';
 import { NodeRepo } from './db/nodes.ts';
 import { AuditRepo, TrafficRepo } from './db/traffic.ts';
+import { MessageRepo } from './db/chat.ts';
 import { AuthService } from './services/auth.ts';
 import { NodeService } from './services/nodes.ts';
 import { RoomService } from './services/rooms.ts';
@@ -38,6 +40,10 @@ export interface AppEvents {
   'room.kicked': [payload: { roomId: string; userId: string; reason: string }];
   /** 房间已关闭 */
   'room.closed': [roomId: string];
+  /** 房间聊天：有新消息 */
+  'room.message': [payload: { roomId: string; message: ChatMessage }];
+  /** 房间聊天：某条消息被删除 */
+  'room.messageDeleted': [payload: { roomId: string; messageId: number }];
   /** 节点状态变化 */
   'node.changed': [nodeId: string];
 }
@@ -78,6 +84,7 @@ export interface App {
   nodes: NodeRepo;
   traffic: TrafficRepo;
   audit: AuditRepo;
+  messages: MessageRepo;
   enrollKeys: EnrollKeyRepo;
   settings: SettingsService;
   meta: MetaStore;
@@ -115,13 +122,14 @@ export function createApp(options: CreateAppOptions = {}): App {
   const nodes = new NodeRepo(db);
   const traffic = new TrafficRepo(db);
   const audit = new AuditRepo(db);
+  const messages = new MessageRepo(db);
   const enrollKeys = new EnrollKeyRepo(db);
   const settingsRepo = new SettingsRepo(db);
   const meta = new MetaStore(db);
   const settings = new SettingsService(settingsRepo, config);
 
   const auth = new AuthService(config, users, audit, settings);
-  const roomService = new RoomService(config, rooms, nodes, users, audit, settings, events);
+  const roomService = new RoomService(config, rooms, nodes, users, audit, settings, events, messages);
   const nodeService = new NodeService(config, nodes, enrollKeys, audit, settings);
   const relay = new RelayManager(config);
 
@@ -139,6 +147,7 @@ export function createApp(options: CreateAppOptions = {}): App {
     nodes,
     traffic,
     audit,
+    messages,
     enrollKeys,
     settings,
     meta,

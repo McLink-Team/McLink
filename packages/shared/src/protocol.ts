@@ -33,6 +33,8 @@ export const Routes = {
   roomHeartbeat: (id: string) => `/rooms/${id}/heartbeat`,
   roomRotateSecret: (id: string) => `/rooms/${id}/rotate-secret`,
   roomAcl: (id: string) => `/rooms/${id}/acl`,
+  roomMessages: (id: string) => `/rooms/${id}/messages`,
+  roomMessage: (id: string, messageId: number) => `/rooms/${id}/messages/${messageId}`,
 
   /* ---------- 子节点 agent ---------- */
   agentRegister: '/agent/register',
@@ -96,6 +98,10 @@ export type ServerEvent =
   | { type: 'room.acl'; roomId: string; aclToml: string; revision: number }
   /** 房主专用：有新成员待审批 */
   | { type: 'room.joinRequest'; roomId: string; userId: string; displayName: string }
+  /** 房间聊天：新消息（含系统消息） */
+  | { type: 'room.message'; roomId: string; message: unknown }
+  /** 房间聊天：某条消息被房主删除 */
+  | { type: 'room.messageDeleted'; roomId: string; messageId: number }
   /** 中继节点上下线 */
   | { type: 'node.update'; node: unknown }
   /** 平台流量心跳（管理员与房间页使用） */

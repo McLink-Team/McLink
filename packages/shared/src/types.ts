@@ -316,6 +316,23 @@ export interface ForeignNetworkInfo {
   lastSeenAt: Iso | null;
 }
 
+/* ------------------------------------------------------------ 房间聊天 */
+
+export type ChatMessageKind = 'text' | 'system';
+
+export interface ChatMessage {
+  id: number;
+  roomId: string;
+  /** 系统消息的 userId 为 null（例如「XX 加入了房间」） */
+  userId: string | null;
+  displayName: string;
+  /** 房主/管理员发的消息带标记，便于界面区分 */
+  role: 'host' | 'member' | 'system';
+  kind: ChatMessageKind;
+  body: string;
+  createdAt: Iso;
+}
+
 /* ------------------------------------------------------------ 审计与设置 */
 
 export interface AuditEntry {
