@@ -178,9 +178,13 @@ onMounted(async () => {
     <!-- 三态：请求失败 -->
     <div v-else-if="error" class="stack">
       <div class="alert alert-danger">
-        <span class="grow">诊断失败：{{ error }}</span>
+        <span class="grow">诊断失败：没读到本地 EasyTier 实例的状态。</span>
       </div>
-      <div class="hint">常见原因：easytier-core 还没启动（没进房间 / 核心启动失败），或 easytier-cli 缺失。</div>
+      <!-- 原始报错来自 easytier-cli（可能很长），单独放一行等宽小字，便于排查但不喧宾夺主 -->
+      <div class="hint mono err-detail">{{ error }}</div>
+      <div class="hint">
+        常见原因：核心还没启动完（房间规则刚生效时会重启实例，等两秒再点一次）、当前没有进房间、或 easytier-cli 缺失。
+      </div>
       <button class="btn btn-sm" @click="refresh()">重试</button>
     </div>
 
@@ -296,5 +300,10 @@ onMounted(async () => {
 .advice-info {
   border-color: rgba(92, 200, 255, 0.28);
   background: var(--info-bg);
+}
+.err-detail {
+  word-break: break-all;
+  max-height: 72px;
+  overflow: auto;
 }
 </style>

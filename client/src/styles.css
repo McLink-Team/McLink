@@ -98,9 +98,10 @@ textarea {
 }
 
 /* ------------------------------------------------------------ 外壳 */
+/* 竖排三段：自绘标题栏 / 内容 / 底部状态行。内容区自己滚动。 */
 .app-shell {
-  display: grid;
-  grid-template-rows: auto 1fr;
+  display: flex;
+  flex-direction: column;
   height: 100%;
   background: var(--ink-900);
 }
@@ -599,3 +600,100 @@ textarea {
     transition-duration: 1ms !important;
   }
 }
+
+/* ============================================================================
+ * 客户端密度覆盖 —— 「小而美」的具体做法
+ *
+ * 默认窗口是 520×780 的窄窗（参照 MCTier 这类桌面工具），
+ * 而共享令牌是给宽屏网页端定的：那里的 24px 留白在窄窗里会显得松散，
+ * 14.5px 正文字号也偏大。这里只覆盖间距与字号，不动颜色与结构，
+ * 因此网页端不受影响，客户端整体却密一档。
+ * ========================================================================= */
+:root {
+  --s-3: 10px;
+  --s-4: 12px;
+  --s-5: 16px;
+  --s-6: 20px;
+  --s-7: 26px;
+  --s-8: 32px;
+
+  --fs-base: 13.5px;
+  --fs-lg: 15px;
+  --fs-xl: 17px;
+  --fs-2xl: 21px;
+  --fs-3xl: 26px;
+
+  --measure: 60ch;
+}
+
+/* 窄窗里控件也要矮一点，一行里能装下更多信息 */
+.app-shell .card {
+  padding: var(--s-4);
+  border-radius: var(--r-sm);
+}
+.app-shell .btn {
+  height: 30px;
+  padding: 0 var(--s-3);
+}
+.app-shell .btn-sm {
+  height: 24px;
+  padding: 0 9px;
+}
+.app-shell .btn-lg {
+  height: 38px;
+}
+.app-shell .input,
+.app-shell .select {
+  height: 32px;
+}
+.app-shell .table td {
+  padding: 8px var(--s-2);
+}
+.app-shell .table th {
+  padding: 0 var(--s-2) 6px;
+}
+.app-shell .empty {
+  padding: var(--s-5) var(--s-3);
+}
+.app-shell .view {
+  gap: var(--s-3);
+}
+
+/* ---------------------------------------------------------------------------
+ * 窄窗里的宽表格
+ *
+ * 520px 宽的窗口装不下 6 列的房间表，之前会被直接裁掉（右侧列看不见）。
+ * 做法：表格给一个合理的最小宽度，装它的面板自己横向滚动。
+ *
+ * 注意这里**不能**用 `width: max-content`：那会让表格的固有宽度沿着
+ * flex/grid 链一路向上传播，把整页撑得比窗口还宽（整个界面出现横向滚动、
+ * 右侧卡片与底部导航被切掉）。所以下面同时把所有中间容器的 min-width 归零，
+ * 把"宽"限制在面板内部。
+ * ------------------------------------------------------------------------- */
+.app-shell .table {
+  min-width: 540px;
+  width: 100%;
+}
+.app-shell .card:has(> .table) {
+  overflow-x: auto;
+}
+.app-shell .card:has(> .table)::-webkit-scrollbar {
+  height: 6px;
+}
+/* 宽度传播的闸门：flex/grid 子项默认 min-width:auto 会被内容撑开 */
+.app-shell .app-body,
+.app-shell .app-body > *,
+.app-shell .view,
+.app-shell .view > *,
+.app-shell .card,
+.app-shell .grid-2,
+.app-shell .grid-3 {
+  min-width: 0;
+}
+
+/* 窄窗里横排一律允许换行：否则「复制地址」这类按钮会被挤出可视区 */
+.app-shell .row,
+.app-shell .row-between {
+  flex-wrap: wrap;
+}
+

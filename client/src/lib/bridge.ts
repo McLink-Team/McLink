@@ -22,6 +22,18 @@ export interface MclinkBridge {
   openExternal(url: string): Promise<void>;
   relaunchElevated(): Promise<{ ok: boolean; error?: string }>;
   confirm(payload: { title?: string; message?: string; detail?: string }): Promise<boolean>;
+  /**
+   * 自绘标题栏的窗口控制。
+   * 窗口是无边框的（frame: false），最小化/最大化/关闭都必须由界面触发。
+   */
+  win: {
+    minimize(): Promise<boolean | null>;
+    toggleMaximize(): Promise<boolean | null>;
+    isMaximized(): Promise<boolean | null>;
+    close(): Promise<boolean | null>;
+    hide(): Promise<boolean | null>;
+    onMaximized(handler: (flag: boolean) => void): () => void;
+  };
   mini: {
     /** 打开（或显示）置顶的迷你窗 */
     open(): Promise<MiniWindowResult>;

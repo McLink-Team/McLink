@@ -12,6 +12,23 @@ contextBridge.exposeInMainWorld('mclink', {
   relaunchElevated: () => ipcRenderer.invoke('app:relaunchElevated'),
   confirm: (payload) => ipcRenderer.invoke('dialog:confirm', payload),
 
+  /**
+   * 自绘标题栏的窗口控制。
+   * 窗口是无边框的（frame: false），所以最小化/最大化/关闭都得由界面来触发。
+   */
+  win: {
+    minimize: () => ipcRenderer.invoke('win:minimize'),
+    toggleMaximize: () => ipcRenderer.invoke('win:toggleMaximize'),
+    isMaximized: () => ipcRenderer.invoke('win:isMaximized'),
+    close: () => ipcRenderer.invoke('win:close'),
+    hide: () => ipcRenderer.invoke('win:hide'),
+    onMaximized: (handler) => {
+      const listener = (_event, flag) => handler(Boolean(flag));
+      ipcRenderer.on('win:maximized', listener);
+      return () => ipcRenderer.removeListener('win:maximized', listener);
+    },
+  },
+
   // 迷你窗（置顶小窗，方便边玩边看联机地址）
   mini: {
     open: () => ipcRenderer.invoke('mini:open'),
