@@ -33,18 +33,30 @@
 ## 1. 单机最小部署（主控自带中继，不需要子节点）
 
 ```bash
-# 1) 在目标机上取得源码
 git clone <仓库地址> /opt/src/mclink && cd /opt/src/mclink
 
-# 2) 一键安装（会自动装 Node、装依赖、构建前端、下载 EasyTier、写 env、装服务）
-sudo bash deploy/install-server.sh --port 8787 --relay-port 11010
+# 最基本的装法（注意：主控出厂要求验证邮箱，没配 SMTP 时注册会被拒）
+sudo bash deploy/install-server.sh --public-url https://cnnic.link --no-verify-email
 
-# 3) 记下脚本打印的初始管理员密码（只打印一次），然后打开控制台
-#    http://<服务器IP>:8787
+# 或者一次把邮件也配好（推荐，之后就能开邮箱验证）
+sudo bash deploy/install-server.sh --public-url https://cnnic.link \
+  --smtp-host smtp.exmail.qq.com --smtp-secure ssl \
+  --smtp-user no-reply@cnnic.link --smtp-password '<授权码>' \
+  --smtp-from 'mclink <no-reply@cnnic.link>'
 ```
+
+脚本做四件事：装依赖（Node ≥ 22）并建 `mclink` 用户 → 同步代码到 `/opt/mclink/app`、
+构建前端、下载 EasyTier → 生成 `/etc/mclink/mclink.env`（密钥只在首次生成）→
+装 systemd 单元并启动、按需放行 ufw。最后打印**只显示一次**的初始管理员密码。
+
+邮件相关选项：`--smtp-host`、`--smtp-port`（默认 ssl=465 / starttls=587）、
+`--smtp-secure`、`--smtp-user`、`--smtp-password`、`--smtp-from`、`--no-verify-email`。
+升级时这些值都会被保留（密码不会因为没重新传而丢）。
 
 要点：
 
+* 装完打开 `http://<服务器IP>:8787`，用脚本打印的初始管理员密码登录（**只打印一次**，
+  也可在 `/etc/mclink/mclink.env` 里看到 `MCLINK_ADMIN_PASSWORD`）。
 * 单机就能开房。房间创建时会自动把**主控自身中继**作为兜底入口（`masterRelayEndpoint()`），
   所以「一台主控 + 没有子节点」也能正常联机。
 * 中继只监听一个端口，靠 `relay_network_whitelist = "mclink-room-*"` 为所有房间网络转发，

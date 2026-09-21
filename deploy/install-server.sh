@@ -28,6 +28,13 @@ ADMIN_PASSWORD=""
 ENABLE_RELAY="true"
 PUBLIC_BASE_URL=""
 RELAY_PUBLIC_HOST=""
+SMTP_HOST=""
+SMTP_PORT=""
+SMTP_SECURE=""
+SMTP_USER=""
+SMTP_PASSWORD=""
+SMTP_FROM=""
+VERIFY_EMAIL=""
 ET_VERSION="v2.6.4"
 SOURCE_DIR=""
 SKIP_INSTALL="false"
@@ -68,6 +75,18 @@ mclink 主控一键安装 / 升级脚本（Debian 12 x86_64）
   --no-relay                 不启动主控自带中继（MCLINK_AUTOSTART_RELAY=false），
                              必须已部署子节点，否则无法创建房间
 
+邮件（SMTP）选项：
+  --smtp-host <主机>         SMTP 服务器地址，例如 smtp.exmail.qq.com
+  --smtp-port <端口>         端口；默认按加密方式取（ssl=465、starttls=587）
+  --smtp-secure <方式>       ssl（直连 TLS，465）/ starttls（587）/ none（仅内网）
+  --smtp-user <账号>         登录账号；留空表示不做认证
+  --smtp-password <密码>     登录密码（写入权限 600 的 env 文件）
+  --smtp-from <发件人>       例如 mclink <no-reply@cnnic.link>；留空则用登录账号
+  --no-verify-email          关闭「要求验证邮箱」（MCLINK_REQUIRE_EMAIL_VERIFICATION=false）
+
+  说明：主控出厂就要求验证邮箱才能建房/进房。若这次没配 SMTP，注册会被拒绝 ——
+  要么现在配上，要么先用 --no-verify-email 装好、之后在控制台补齐。
+
 高级选项：
   --source <目录>            从指定的源码目录同步（默认使用本脚本所在的仓库）
   --easytier-version <版本>  EasyTier 发行版本，默认 v2.6.4
@@ -98,6 +117,13 @@ while [[ $# -gt 0 ]]; do
     --public-url)         [[ $# -ge 2 ]] || die "--public-url 缺少参数"; PUBLIC_BASE_URL="$2"; shift 2 ;;
     --relay-public-host)  [[ $# -ge 2 ]] || die "--relay-public-host 缺少参数"; RELAY_PUBLIC_HOST="$2"; shift 2 ;;
     --no-relay)           ENABLE_RELAY="false"; shift ;;
+    --smtp-host)          [[ $# -ge 2 ]] || die "--smtp-host 缺少参数"; SMTP_HOST="$2"; shift 2 ;;
+    --smtp-port)          [[ $# -ge 2 ]] || die "--smtp-port 缺少参数"; SMTP_PORT="$2"; shift 2 ;;
+    --smtp-secure)        [[ $# -ge 2 ]] || die "--smtp-secure 缺少参数"; SMTP_SECURE="$2"; shift 2 ;;
+    --smtp-user)          [[ $# -ge 2 ]] || die "--smtp-user 缺少参数"; SMTP_USER="$2"; shift 2 ;;
+    --smtp-password)      [[ $# -ge 2 ]] || die "--smtp-password 缺少参数"; SMTP_PASSWORD="$2"; shift 2 ;;
+    --smtp-from)          [[ $# -ge 2 ]] || die "--smtp-from 缺少参数"; SMTP_FROM="$2"; shift 2 ;;
+    --no-verify-email)    VERIFY_EMAIL="false"; shift ;;
     --source)             [[ $# -ge 2 ]] || die "--source 缺少参数"; SOURCE_DIR="$2"; shift 2 ;;
     --easytier-version)   [[ $# -ge 2 ]] || die "--easytier-version 缺少参数"; ET_VERSION="$2"; shift 2 ;;
     --skip-install)       SKIP_INSTALL="true"; shift ;;
@@ -415,6 +441,30 @@ write_env_file() {
   old_jwt="$(read_env_value "$ENV_FILE" MCLINK_JWT_SECRET)"
   old_relay="$(read_env_value "$ENV_FILE" MCLINK_RELAY_SECRET)"
   old_admin="$(read_env_value "$ENV_FILE" MCLINK_ADMIN_PASSWORD)"
+  # 邮件配置在升级时也要保留：参数没给就沿用 env 里的旧值。
+  # 尤其是密码 —— 升级时不会重新传一遍，丢了就等于把邮件服务悄悄关掉。
+  old_smtp_host="$(read_env_value "$ENV_FILE" MCLINK_SMTP_HOST)"
+  old_smtp_port="$(read_env_value "$ENV_FILE" MCLINK_SMTP_PORT)"
+  old_smtp_secure="$(read_env_value "$ENV_FILE" MCLINK_SMTP_SECURE)"
+  old_smtp_user="$(read_env_value "$ENV_FILE" MCLINK_SMTP_USER)"
+  old_smtp_password="$(read_env_value "$ENV_FILE" MCLINK_SMTP_PASSWORD)"
+  old_smtp_from="$(read_env_value "$ENV_FILE" MCLINK_SMTP_FROM)"
+  old_verify_email="$(read_env_value "$ENV_FILE" MCLINK_REQUIRE_EMAIL_VERIFICATION)"
+  final_smtp_host="${SMTP_HOST:-$old_smtp_host}"
+  final_smtp_secure="${SMTP_SECURE:-$old_smtp_secure}"
+  final_smtp_user="${SMTP_USER:-$old_smtp_user}"
+  final_smtp_password="${SMTP_PASSWORD:-$old_smtp_password}"
+  final_smtp_from="${SMTP_FROM:-$old_smtp_from}"
+  final_verify_email="${VERIFY_EMAIL:-$old_verify_email}"
+  # 端口没显式给就按加密方式取默认值（ssl=465 / starttls=587 / none=25）
+  final_smtp_port="${SMTP_PORT:-$old_smtp_port}"
+  if [[ -z "$final_smtp_port" ]]; then
+    case "$final_smtp_secure" in
+      starttls) final_smtp_port="587" ;;
+      none)     final_smtp_port="25" ;;
+      *)        final_smtp_port="465" ;;
+    esac
+  fi
 
   local jwt_secret relay_secret admin_password admin_is_new="false"
   local old_umask
@@ -489,6 +539,20 @@ write_env_file() {
     echo ""
     echo "# ---- 运行 ----"
     echo "MCLINK_LOG_LEVEL=info"
+    echo ""
+    echo "# ---- 邮件（SMTP，主控自己发信）----"
+    echo "MCLINK_REQUIRE_EMAIL_VERIFICATION=${final_verify_email:-true}"
+    if [[ -n "$final_smtp_host" ]]; then
+      echo "MCLINK_SMTP_HOST=${final_smtp_host}"
+      echo "MCLINK_SMTP_PORT=${final_smtp_port}"
+      echo "MCLINK_SMTP_SECURE=${final_smtp_secure:-ssl}"
+      [[ -n "$final_smtp_user" ]] && echo "MCLINK_SMTP_USER=${final_smtp_user}"
+      [[ -n "$final_smtp_password" ]] && echo "MCLINK_SMTP_PASSWORD=${final_smtp_password}"
+      [[ -n "$final_smtp_from" ]] && echo "MCLINK_SMTP_FROM=${final_smtp_from}"
+    else
+      echo "# 尚未配置 SMTP：控制台「平台设置 → 邮件服务」里补，或重跑本脚本带 --smtp-host"
+      echo "# 注意：REQUIRE_EMAIL_VERIFICATION=true 且没有可用 SMTP 时，新用户注册会被拒绝"
+    fi
   } > "$ENV_FILE"
   umask "$old_umask"
 
@@ -612,15 +676,28 @@ EOF
   2) 看状态        : systemctl status ${SERVICE_NAME}
   3) 首登后改密码  : 登录 ${base_url} → 「账号设置」→ 修改密码
                      （改后所有旧会话立即失效）
-  4) 装子节点      : 管理台「节点」页签发注册密钥，然后在区域服务器上执行
-                     sudo bash deploy/install-node.sh \\
-                       --master ${base_url} \\
-                       --key <注册密钥> \\
-                       --region cn-east \\
-                       --endpoint relay-sh.cnnic.link:${RELAY_PORT} \\
-                       --name relay-sh
+  4) 装子节点      : 管理台「节点」页签发注册密钥（填好区域与运行/链接端口），
+                     然后在区域服务器上粘贴返回的那条命令即可：
+                       curl -fsSL ${base_url}/agent/install.sh | sudo bash -s -- \\
+                         --master ${base_url} --key <注册密钥> --region cn-east \\
+                         --name relay-sh --endpoint relay-sh.cnnic.link:${RELAY_PORT} \\
+                         --listen-port ${RELAY_PORT}
   5) 反向代理/证书 : 参考 ${APP_DIR}/deploy/nginx.conf.example（WS 必须单独配置）
   6) 是否放行 ${HTTP_PORT}: 若已用 HTTPS 反代，不要对公网放行 ${HTTP_PORT}
+$(if [[ "${final_verify_email:-true}" == "true" && -z "$final_smtp_host" ]]; then
+  cat <<'WARN'
+  7) ⚠ 邮箱验证已开启但没有 SMTP：新用户注册会被拒绝。
+     补配：sudo nano /etc/mclink/mclink.env 填 MCLINK_SMTP_* 后
+           sudo systemctl restart mclink-server
+     或者在控制台「平台设置 → 邮件服务」里填，并点「发送测试邮件」验证。
+     临时放行：把 MCLINK_REQUIRE_EMAIL_VERIFICATION 改成 false 后重启。
+WARN
+elif [[ -n "$final_smtp_host" ]]; then
+  cat <<SMTP
+  7) 邮件服务      : 已配置（${final_smtp_host}:${final_smtp_port}，加密 ${final_smtp_secure:-ssl}
+                     请到控制台「平台设置 → 邮件服务」点一次「发送测试邮件」确认能投递。
+SMTP
+fi)
 
 文档索引：${APP_DIR}/docs/（deployment.md 生产部署、security.md 安全边界、troubleshooting.md 排障）
 EOF

@@ -135,7 +135,7 @@ pnpm lab:dataplane    # 数据面：真实 TCP 跑通，并验证限速真的把
 
 | 实验 | 结果 |
 | --- | --- |
-| `pnpm lab` | **48/48** 断言通过，含「7 份生成的配置全部通过 `easytier-core --check-config`」 |
+| `pnpm lab` | **92/92** 断言通过，含「7 份生成的配置全部通过 `easytier-core --check-config`」 |
 | `pnpm lab:dataplane` | **20/20** 通过：不限速 2 MiB / 11 ms（约 1.5 Gbps）→ 限速 1000 kbps 后 2 MiB / 18.7 s（**896 kbps**） |
 
 详见 [docs/development.md](docs/development.md) 与 [docs/architecture.md](docs/architecture.md) §7.3。
@@ -144,21 +144,25 @@ pnpm lab:dataplane    # 数据面：真实 TCP 跑通，并验证限速真的把
 
 ```bash
 git clone <仓库地址> /opt/src/mclink && cd /opt/src/mclink
-sudo bash deploy/install-server.sh --public-url https://cnnic.link
+
+# 主控（默认自带中继；不配 SMTP 的话记得加 --no-verify-email，否则注册会被挡住）
+sudo bash deploy/install-server.sh --public-url https://cnnic.link \
+  --smtp-host smtp.exmail.qq.com --smtp-secure ssl \
+  --smtp-user no-reply@cnnic.link --smtp-password '<授权码>' \
+  --smtp-from 'mclink <no-reply@cnnic.link>'
 ```
 
 脚本会装 Node、装依赖、构建前端、下载 EasyTier、写 `/etc/mclink/mclink.env`、
 安装并启动 systemd 服务、按需放行 ufw，最后打印**只显示一次**的初始管理员密码。
+升级就是 `git pull` 后再跑同一条命令（密钥与邮件配置都会保留）。
 
-加一个区域子节点（先在管理台签发注册密钥）：
+加一个区域子节点：管理台「节点 → 签发注册密钥」填好区域与端口，它会给你**一条命令**，
+在区域服务器上粘贴执行即可（脚本与 agent 由主控托管，不用先拿仓库）：
 
 ```bash
-sudo bash deploy/install-node.sh \
-  --master https://cnnic.link \
-  --key <注册密钥> \
-  --region cn-east \
-  --endpoint relay-sh.cnnic.link:11010 \
-  --name relay-sh
+curl -fsSL https://cnnic.link/agent/install.sh | sudo bash -s -- \
+  --master https://cnnic.link --key <注册密钥> --region cn-east --name relay-sh \
+  --endpoint relay-sh.cnnic.link:21010 --listen-port 11010
 ```
 
 * 端口清单：**8787**（HTTP，建议只给反代）、**11010 TCP+UDP**（中继，必须公网）。
