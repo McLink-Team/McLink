@@ -1,9 +1,10 @@
 {
   "name": "@mclink/client",
+  "productName": "McLink",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "mclink Windows 客户端：登录、选区域、建房进房，并托管本地 easytier-core",
+  "description": "McLink Windows 客户端：登录、选区域、建房进房，并托管本地 easytier-core",
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "node scripts/dev.mjs",

@@ -23,12 +23,15 @@ files:
   - '!**/node_modules/**/{test,tests,__tests__,example,examples,docs}/**'
 
 # EasyTier 核心以「额外资源」形式随包分发（保持其原始二进制，不做修改）
+# 清单与 client/scripts/build.mjs 的 WANTED_VENDOR_FILES 必须一致：
+# 用通配符会连 Linux 二进制一起打进 Windows 安装包（约 10MB），
+# 漏掉 WinDivert64.sys / Packet.dll 则「局域网广播直通」在打包版里静默失效。
 extraResources:
   - from: vendor/easytier
     to: vendor/easytier
     filter:
-      - 'easytier-core*'
-      - 'easytier-cli*'
+      - 'easytier-core.exe'
+      - 'easytier-cli.exe'
       - 'wintun.dll'
       - 'WinDivert64.sys'
       - 'Packet.dll'
