@@ -115,8 +115,7 @@ function finish(persist: boolean): void {
 .modal-mask {
   position: fixed;
   inset: 0;
-  background: rgba(2, 4, 10, 0.72);
-  backdrop-filter: blur(4px);
+  background: var(--scrim);
   display: grid;
   place-items: center;
   padding: var(--s-5);
@@ -134,7 +133,7 @@ function finish(persist: boolean): void {
   padding: var(--s-3);
   border-radius: var(--r-sm);
   border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--surface-hair-strong);
   font-size: var(--fs-sm);
 }
 .readonly-line {
@@ -144,7 +143,7 @@ function finish(persist: boolean): void {
   padding: 0 var(--s-3);
   border-radius: var(--r-sm);
   border: 1px dashed var(--border-strong);
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--surface-hair);
   color: var(--text-dim);
   font-size: var(--fs-sm);
   overflow: hidden;

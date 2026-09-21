@@ -34,14 +34,6 @@ export interface MclinkBridge {
     hide(): Promise<boolean | null>;
     onMaximized(handler: (flag: boolean) => void): () => void;
   };
-  mini: {
-    /** 打开（或显示）置顶的迷你窗 */
-    open(): Promise<MiniWindowResult>;
-    /** 关闭迷你窗，并把主窗显示出来 */
-    close(): Promise<MiniWindowResult>;
-    toggle(): Promise<MiniWindowResult>;
-    setAlwaysOnTop(flag: boolean): Promise<MiniWindowResult>;
-  };
   core: {
     start(payload: { configToml: string; launchArgs?: string[]; instanceName?: string }): Promise<CoreStatus>;
     stop(): Promise<CoreStatus>;
@@ -54,15 +46,6 @@ export interface MclinkBridge {
     onStatus(handler: (status: CoreStatus) => void): () => void;
     onLog(handler: (entry: CoreLogEntry) => void): () => void;
   };
-}
-
-/** 主进程迷你窗 IPC 的返回结构 */
-export interface MiniWindowResult {
-  ok: boolean;
-  /** toggle 之后迷你窗是否处于打开状态 */
-  open?: boolean;
-  alwaysOnTop?: boolean;
-  error?: string;
 }
 
 declare global {

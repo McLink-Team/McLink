@@ -7,6 +7,7 @@
  * 并且强调：只显示局域网房间列表的游戏根本不用手填地址。
  */
 import { computed, ref } from 'vue';
+import { copyText } from '../lib/clipboard.ts';
 import { shareAddress } from '../lib/store.ts';
 
 interface GamePreset {
@@ -124,7 +125,8 @@ async function copy(text: string, tag: string): Promise<void> {
   copyError.value = '';
   if (text.length === 0) return;
   try {
-    await navigator.clipboard.writeText(text);
+    const ok = await copyText(text);
+    if (!ok) throw new Error("剪贴板不可用");
     copied.value = tag;
     window.setTimeout(() => {
       if (copied.value === tag) copied.value = '';
@@ -209,7 +211,7 @@ async function copy(text: string, tag: string): Promise<void> {
   padding: var(--s-3);
   border-radius: var(--r-sm);
   border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--surface-hair);
 }
 .wrap {
   flex-wrap: wrap;

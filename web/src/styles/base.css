@@ -319,8 +319,8 @@ dt + dd {
   align-items: center;
   justify-content: center;
   gap: var(--s-2);
-  padding: 0 var(--s-4);
-  height: 36px;
+  padding: var(--s-2) var(--s-4);
+  min-height: 36px;
   border-radius: var(--r-sm);
   border: 1px solid var(--rule-strong);
   background: transparent;
@@ -373,13 +373,13 @@ dt + dd {
   border-color: var(--fault);
 }
 .btn-sm {
-  height: 28px;
-  padding: 0 var(--s-3);
+  min-height: 28px;
+  padding: var(--s-1) var(--s-3);
   font-size: var(--fs-xs);
 }
 .btn-lg {
-  height: 46px;
-  padding: 0 var(--s-5);
+  min-height: 46px;
+  padding: var(--s-3) var(--s-5);
   font-size: var(--fs-base);
   border-radius: var(--r-md);
 }
@@ -856,4 +856,418 @@ dt + dd {
   .card {
     padding: var(--s-4);
   }
+}
+
+/* ============================================================================
+ * 控制台通用层 —— 「信号室」的密集数据外衣
+ *
+ * 8 个控制台页面共用这一层。之前每个页面各自 scoped 定义了一份 .kv/.panel-title，
+ * 列宽与节奏各不相同，同一类信息在不同页面长得不一样；这里收敛成一套。
+ * 全部为**追加**定义，不改动上方任何既有规则。
+ *
+ * 三条纪律：
+ *   · 结构由发丝线承担：section 只有一条上边线 + 留白，不套卡片（禁止卡片套卡片）；
+ *   · 长串必须换行：hash / ID / 路径 / 配置片段用 .wrap-anywhere，不用省略号截断；
+ *   · 间距必须有节奏：同类信息 3–7px 贴紧，跨组 12–20px，跨区块 24–40px 舒展。
+ * ========================================================================= */
+
+/* --------------------------------------------------- 修正既有呼吸环的溢出
+ * `.pulse::after` 是 inset:-3px 的绝对定位环，但 `.badge-dot` 不是定位元素，
+ * 环会逃逸到最近的定位祖先上。实测在控制台里它覆盖了整页文本，被检测器判为
+ * text-occlusion（仪表盘 63 条、主控中继 33 条都出自这里）。
+ * 处理：把环去掉，呼吸改由不透明度承担——与 .led-live 同一套语言，
+ * 也更贴合"不要用装饰性脉动假装活性"的要求。 */
+.badge-dot {
+  position: relative;
+}
+.pulse::after {
+  content: none;
+}
+/* 仅"确属活数据"的状态点保留呼吸（在线/运行中） */
+.badge-dot.pulse {
+  animation: led-breathe 2.6s var(--ease) infinite;
+}
+
+/* ------------------------------------------------------------------ 页头
+ * 标题 + 一句话说明 + 右侧动作，用一条实发丝线收口，与内容区分开。 */
+.console-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s-5);
+  flex-wrap: wrap;
+  padding-bottom: var(--s-4);
+  border-bottom: 1px solid var(--rule-strong);
+}
+.console-head-text {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+.console-head-title {
+  font-family: var(--font-display);
+  font-size: var(--fs-xl);
+  font-weight: 600;
+  line-height: var(--lh-tight);
+  letter-spacing: var(--track-tight);
+}
+.console-head-sub {
+  font-size: var(--fs-sm);
+  color: var(--paper-dim);
+  max-width: 76ch;
+}
+.console-head-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+
+/* 页面纵向节奏：区块之间 28px，区块内部由各自的 stack 决定 */
+.console-page {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+/* ------------------------------------------------------------------ 区块
+ * section = 一条上发丝线 + 舒展留白 + 层内标题。没有底色，没有边框，没有投影。 */
+.console-section {
+  border-top: 1px solid var(--rule);
+  padding-top: var(--s-5);
+}
+.console-section:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+.console-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s-4);
+  flex-wrap: wrap;
+  margin-bottom: var(--s-4);
+}
+.console-section-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.console-section-title {
+  font-family: var(--font-display);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  line-height: var(--lh-snug);
+  letter-spacing: var(--track-tight);
+}
+.console-section-note {
+  font-size: var(--fs-sm);
+  color: var(--paper-dim);
+  max-width: 72ch;
+}
+/* 区块内的分组小标题：靠字号与颜色分层，不加下划线也不加底色 */
+.console-sub-title {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--paper-2);
+  letter-spacing: var(--track-tight);
+}
+.console-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+
+/* ------------------------------------------------------------ 键值规格表
+ * 控制台里出现频率最高的结构。左列标签固定宽度区间，右列一律换行不截断。 */
+.kv {
+  display: grid;
+  grid-template-columns: minmax(84px, 148px) minmax(0, 1fr);
+  gap: 0;
+  font-size: var(--fs-sm);
+}
+.kv-k {
+  padding: 7px 0;
+  font-size: var(--fs-xs);
+  color: var(--paper-faint);
+  border-bottom: 1px solid var(--rule-faint);
+  overflow-wrap: anywhere;
+}
+.kv-v {
+  margin: 0;
+  padding: 7px 0;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+  min-width: 0;
+  color: var(--paper-2);
+  border-bottom: 1px solid var(--rule-faint);
+  overflow-wrap: anywhere;
+}
+.kv-v.mono,
+.kv-v code {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 640px) {
+  .kv {
+    grid-template-columns: 1fr;
+  }
+  .kv-k {
+    padding-bottom: 0;
+    border-bottom: 0;
+  }
+}
+
+/* ------------------------------------------------------------ 长串换行
+ * 取代 `.truncate` 的省略号：hash / ID / 路径 / URL 一律折行显示。 */
+.wrap-anywhere {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  min-width: 0;
+}
+.wrap-anywhere:is(td, th) {
+  white-space: normal;
+}
+
+/* ------------------------------------------------------------ 代码 / 日志
+ * 统一为"抬升面 + 发丝线"，等宽小一号，可滚动。 */
+.code-block {
+  margin: 0;
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-sm);
+  background: var(--ink-800);
+  border: 1px solid var(--rule-faint);
+  color: var(--paper-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: auto;
+}
+.log-block {
+  margin: 0;
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-sm);
+  background: var(--ink-950);
+  border: 1px solid var(--rule);
+  color: var(--paper-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 1.55;
+  height: 300px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.code-block-lg {
+  max-height: 340px;
+}
+
+/* ------------------------------------------------------------ 提示 / 错误
+ * 顶部一条发丝线 + 极淡底色；不做左侧色条。 */
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--rule);
+  background: var(--ink-850);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+.notice-warn {
+  border-color: rgba(217, 164, 65, 0.34);
+  background: var(--warn-wash);
+  color: #f0d8a6;
+}
+.notice-danger {
+  border-color: rgba(217, 112, 95, 0.34);
+  background: var(--fault-wash);
+  color: #f2c3b9;
+}
+.notice-ok {
+  border-color: rgba(143, 191, 106, 0.34);
+  background: var(--link-wash);
+  color: #d6e9c4;
+}
+
+/* ------------------------------------------------------------ 分段控件
+ * 页面里原先有两套各写各的（.range-btn / .chip-btn，还用 999px 胶囊）。
+ * 这里统一到与 .tabs 同一节奏的方角分段件。 */
+.seg {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+  background: var(--ink-850);
+  flex-wrap: wrap;
+}
+.seg-item {
+  padding: 5px var(--s-3);
+  min-height: 26px;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--paper-dim);
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.seg-item:hover {
+  color: var(--paper);
+  background: rgba(244, 239, 230, 0.05);
+}
+.seg-item.active {
+  background: var(--ink-700);
+  color: var(--signal);
+}
+
+/* ------------------------------------------------------------ 表格容器
+ * 横向可滚动；表格本身沿用 .table 的发丝横线。 */
+.table-wrap {
+  overflow-x: auto;
+  max-width: 100%;
+}
+.table-wrap .table td {
+  overflow-wrap: anywhere;
+}
+/* 表格里的次级说明行：小一号、更弱一级 */
+.cell-sub {
+  font-size: var(--fs-xs);
+  color: var(--paper-faint);
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------ 状态列表
+ * 「在线/离线/待审核」这类计数，用发丝线分成格子，而不是一排小卡片。 */
+.tally {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(136px, 1fr));
+  border-top: 1px solid var(--rule);
+}
+.tally-item {
+  padding: var(--s-4) var(--s-4) var(--s-4) 0;
+  border-bottom: 1px solid var(--rule);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+.tally-label {
+  font-size: var(--fs-xs);
+  color: var(--paper-faint);
+  letter-spacing: 0.02em;
+}
+.tally-value {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-2xl);
+  font-weight: 500;
+  line-height: 1.1;
+  letter-spacing: var(--track-tight);
+}
+.tally-foot {
+  font-size: var(--fs-xs);
+  color: var(--paper-faint);
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------ 用量条
+ * 取代 999px 胶囊 + 渐变的进度条：细轨道 + 琥珀填充。 */
+.bar {
+  height: 3px;
+  margin-top: 5px;
+  border-radius: var(--r-xs);
+  background: var(--ink-700);
+  overflow: hidden;
+}
+.bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--signal);
+}
+
+/* ------------------------------------------------------------ 时间线
+ * 审计流水：左侧一盏灯 + 右侧一条发丝线连接，不用圆点投影。 */
+.timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.timeline > li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  padding: var(--s-3) 0;
+  border-bottom: 1px solid var(--rule-faint);
+}
+.timeline > li:last-child {
+  border-bottom: 0;
+}
+.timeline-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.timeline-action {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--paper);
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------ 弹层
+ * 真正浮起来的东西才给投影；遮罩用不透明底，不做毛玻璃。 */
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  background: color-mix(in srgb, var(--ink-950) 76%, transparent);
+  display: grid;
+  place-items: center;
+  padding: var(--s-5);
+  overflow-y: auto;
+}
+.modal-panel {
+  width: 100%;
+  max-width: 620px;
+  max-height: calc(100vh - 64px);
+  overflow-y: auto;
+  background: var(--ink-850);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-lg);
+  padding: var(--s-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+.modal-panel-right {
+  margin-left: auto;
+  height: 100%;
+  max-height: 100vh;
+  max-width: min(920px, 100%);
+  border-radius: 0;
+  border-top: 0;
+  border-right: 0;
+  border-bottom: 0;
+}
+.modal-panel .console-section {
+  border-top-color: var(--rule-faint);
 }

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 /** 设置：本机名称、监听端口、权限状态与运行路径（主控地址固定，不可改） */
 import { computed, onMounted, ref } from 'vue';
+import { copyText } from '../lib/clipboard.ts';
 import { clientState, relaunchElevated, setDevice, logout } from '../lib/store.ts';
 import { MASTER_URL, USING_DEV_MASTER, getMasterUrl } from '../lib/api.ts';
 import { reopenOnboarding } from '../lib/onboarding.ts';
@@ -27,7 +28,7 @@ function save(): void {
 }
 
 async function copy(text: string): Promise<void> {
-  await navigator.clipboard.writeText(text);
+  await copyText(text);
 }
 
 function openLogDir(): void {
@@ -158,7 +159,7 @@ function openDataDir(): void {
   padding: 0 var(--s-3);
   border-radius: var(--r-sm);
   border: 1px dashed var(--border-strong);
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--surface-hair);
   color: var(--text-dim);
   font-size: var(--fs-sm);
   overflow: hidden;

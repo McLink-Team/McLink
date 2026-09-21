@@ -114,20 +114,23 @@ const requirements: Array<{ label: string; value: string }> = [
           </a>
         </div>
         <p v-if="primaryArtifact" class="hint hero-hint">
-          <span>文件大小 {{ formatBytes(primaryArtifact.size) }} · {{ primaryArtifact.arch }}</span>
-          <template v-if="primaryArtifact.sha256">
-            <span class="mono truncate" style="max-width: 320px" :title="primaryArtifact.sha256">
-              SHA-256 {{ primaryArtifact.sha256 }}
-            </span>
-            <button class="btn btn-sm btn-ghost" type="button" @click="copyText(primaryArtifact.sha256, 'SHA-256')">
-              复制校验值
-            </button>
-          </template>
-          <span v-else>· 本平台未登记该文件校验值</span>
+          文件大小 {{ formatBytes(primaryArtifact.size) }} · {{ primaryArtifact.arch }}
         </p>
         <p v-else-if="!loading" class="hint">
           下载目录中还没有任何产物，主按钮指向平台配置的地址：{{ data?.primary }}
         </p>
+        <div v-if="primaryArtifact" class="hero-hash">
+          <span class="hero-hash-key">SHA-256</span>
+          <code class="hero-hash-value">{{ primaryArtifact.sha256 || '未登记校验值' }}</code>
+          <button
+            v-if="primaryArtifact.sha256"
+            class="btn btn-sm btn-ghost"
+            type="button"
+            @click="copyText(primaryArtifact.sha256, 'SHA-256')"
+          >
+            复制校验值
+          </button>
+        </div>
       </div>
     </section>
 
@@ -191,17 +194,15 @@ const requirements: Array<{ label: string; value: string }> = [
                         <span class="badge" :class="a.platform === 'windows' ? 'badge-brand' : 'badge-neutral'">
                           {{ a.platform }}
                         </span>
-                        <span class="mono truncate" :title="a.filename">{{ a.filename }}</span>
+                        <span class="mono file-name" :title="a.filename">{{ a.filename }}</span>
                       </div>
                       <div class="faint" style="font-size: var(--fs-xs)">{{ a.label }}</div>
                     </td>
                     <td class="muted">{{ a.arch }}</td>
                     <td class="table-num">{{ formatBytes(a.size) }}</td>
                     <td>
-                      <div v-if="a.sha256" class="row" style="gap: var(--s-2)">
-                        <span class="mono truncate" style="font-size: var(--fs-xs); max-width: 260px" :title="a.sha256">
-                          {{ a.sha256 }}
-                        </span>
+                      <div v-if="a.sha256" class="hash-cell">
+                        <code class="hash-text" :title="a.sha256">{{ a.sha256 }}</code>
                         <button class="btn btn-sm btn-ghost" type="button" @click="copyText(a.sha256, 'SHA-256')">
                           复制
                         </button>
@@ -369,6 +370,53 @@ const requirements: Array<{ label: string; value: string }> = [
   gap: var(--s-3);
   flex-wrap: wrap;
   margin-top: var(--s-2);
+}
+/* 校验值是一长串 hex：换行显示完整值，比截断成省略号更有用 */
+.hero-hash {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--s-2) var(--s-3);
+  margin-top: var(--s-4);
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--rule-faint);
+  border-radius: var(--r-sm);
+  background: var(--ink-800);
+  max-width: 100%;
+}
+.hero-hash-key {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--paper-faint);
+}
+.hero-hash-value {
+  flex: 1 1 24ch;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--paper-dim);
+  overflow-wrap: anywhere;
+}
+.hash-cell {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.hash-text {
+  flex: 1 1 22ch;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--paper-dim);
+  overflow-wrap: anywhere;
+}
+.file-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .grid.two {
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));

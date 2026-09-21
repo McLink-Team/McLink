@@ -8,7 +8,7 @@
  *
  * UI 只读这里的状态、调这里的方法，不直接碰 easytier 与 HTTP。
  */
-import { computed, reactive, ref, watch } from 'vue';
+import { computed, reactive, ref } from 'vue';
 import {
   Routes,
   Topics,
@@ -24,7 +24,6 @@ import { REGIONS } from '@mclink/shared';
 import { api, friendlyError, getDeviceName, getMasterUrl, getToken, setDeviceName, setToken } from './api.ts';
 import type { CoreLogEntry, CoreStatus } from './core-types.ts';
 import { recordRecent } from './shortcuts.ts';
-import { isMiniRenderer, writeMiniState } from './mini.ts';
 import { parsePeers, type PeerView } from './easytier-parse.ts';
 
 export type { PeerView } from './easytier-parse.ts';
@@ -671,39 +670,6 @@ function toChatMessage(value: unknown): ChatMessage | null {
     body: row.body,
     createdAt: typeof row.createdAt === 'string' ? row.createdAt : new Date().toISOString(),
   };
-}
-
-/* ---------------------------------------------------- 迷你窗状态镜像 */
-
-/**
- * 迷你窗是独立渲染进程，拿不到这里的响应式状态，因此把展示所需的几个字段
- * 同步写进 localStorage（键 `mclink.mini.state`），迷你窗读它并监听 storage 事件。
- *
- * ⚠️ 只在主窗（非迷你窗）里注册：迷你窗加载的是同一份 JS，也会执行到这里，
- * 若不加判断，它启动时就会用「自己这边没有房间」的空状态把主窗写的镜像覆盖掉
- * —— 这是实测踩到的坑（用 CDP 连上迷你窗才看到）。
- */
-if (!isMiniRenderer()) {
-  watch(
-    () => [
-      state.session?.room.id ?? null,
-      state.session?.room.name ?? null,
-      state.session?.room.code ?? null,
-      state.session?.ticket.hostVirtualIp ?? null,
-      state.coreStatus?.state ?? 'stopped',
-    ],
-    () => {
-      writeMiniState({
-        roomId: state.session?.room.id ?? null,
-        roomName: state.session?.room.name ?? null,
-        code: state.session?.room.code ?? null,
-        hostVirtualIp: state.session?.ticket.hostVirtualIp ?? null,
-        state: state.coreStatus?.state ?? 'stopped',
-        updatedAt: new Date().toISOString(),
-      });
-    },
-    { immediate: true },
-  );
 }
 
 /* ---------------------------------------------------------- 其它动作 */

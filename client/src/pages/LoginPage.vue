@@ -145,7 +145,7 @@ async function submit(): Promise<void> {
   align-items: center;
   border-radius: var(--r-sm);
   border: 1px dashed var(--border-strong);
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--surface-hair);
   color: var(--text-dim);
   font-size: var(--fs-sm);
   overflow: hidden;

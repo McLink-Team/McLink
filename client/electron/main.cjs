@@ -45,14 +45,8 @@ const MAX_LOG_LINES = 1500;
 /* -------------------------------------------------------------- 运行状态 */
 
 let mainWindow = null;
-/** 置顶迷你窗：显示联机地址，方便玩家边玩边看 */
-let miniWindow = null;
 let tray = null;
 let quitting = false;
-
-/** 迷你窗尺寸：够显示地址 + 房间名，又不挡游戏画面 */
-const MINI_WIDTH = 320;
-const MINI_HEIGHT = 120;
 
 /** @type {{ child: import('node:child_process').ChildProcess|null, configFile: string|null, args: string[], rpcPortal: string|null, startedAt: string|null, lastError: string|null, state: 'stopped'|'starting'|'running'|'error' }} */
 const core = {
@@ -437,90 +431,30 @@ function createWindow() {
  * 优先级：显式开发服务器 > 已构建的 dist/index.html > 开发默认端口。
  * 之前用 `!app.isPackaged` 当判据是错的：直接 `electron .` 跑未打包代码时
  * 也会被当成开发模式，结果去连根本没有启动的 Vite，白屏。
- *
- * `options.mini` 为真时给同一个产物加上 `?mini=1`，渲染进程据此只画迷你视图。
  */
-function loadRenderer(win, options = {}) {
-  const mini = options.mini === true;
+function loadRenderer(win) {
   if (DEV_URL) {
-    win.loadURL(withMiniQuery(DEV_URL, mini));
+    win.loadURL(DEV_URL);
     return;
   }
   const built = path.join(__dirname, '..', 'dist', 'index.html');
   if (fs.existsSync(built)) {
-    if (mini) win.loadFile(built, { search: 'mini=1' });
-    else win.loadFile(built);
+    win.loadFile(built);
     return;
   }
   if (isDev) {
     logLine('未找到已构建的渲染产物，回退到开发服务器 5174。请先运行 pnpm --filter @mclink/client build', 'info');
-    win.loadURL(withMiniQuery(DEV_FALLBACK_URL, mini));
+    win.loadURL(DEV_FALLBACK_URL);
     return;
   }
+  // 兜底页：颜色写死是有意的——这时渲染产物就没了，读不到 CSS 变量
   win.loadURL(
     `data:text/html;charset=utf-8,${encodeURIComponent(
-      '<body style="background:#05070f;color:#e9edf9;font-family:system-ui;display:grid;place-items:center;height:100vh;margin:0">' +
-        '<div style="text-align:center"><h2>渲染资源缺失</h2><p style="color:#a7b1cd">请重新安装客户端。</p></div></body>',
+      '<body style="background:#121110;color:#f5f0e7;font-family:system-ui;display:grid;place-items:center;height:100vh;margin:0">' +
+        '<div style="text-align:center"><h2 style="font-weight:600">渲染资源缺失</h2>' +
+        '<p style="color:#bdb3a4">请重新安装客户端。</p></div></body>',
     )}`,
   );
-}
-
-/** 给 URL 附加 mini=1（已有查询串时用 & 连接） */
-function withMiniQuery(url, mini) {
-  if (!mini) return url;
-  return `${url}${url.includes('?') ? '&' : '?'}mini=1`;
-}
-
-/* ------------------------------------------------------------- 迷你窗 */
-
-/**
- * 创建（或复用）迷你窗。
- *
- * 它加载的是同一个渲染产物，只是 URL 带 `mini=1`；
- * 因此迷你窗与主窗是两个渲染进程，状态通过 localStorage 的
- * `mclink.mini.state` 传递（主窗写、迷你窗读，见 src/lib/mini.ts）。
- */
-function createMiniWindow() {
-  if (miniWindow && !miniWindow.isDestroyed()) return miniWindow;
-  miniWindow = new BrowserWindow({
-    width: MINI_WIDTH,
-    height: MINI_HEIGHT,
-    minWidth: 260,
-    minHeight: 104,
-    maxHeight: 240,
-    frame: false,
-    resizable: false,
-    maximizable: false,
-    minimizable: false,
-    fullscreenable: false,
-    alwaysOnTop: true,
-    skipTaskbar: false,
-    show: false,
-    backgroundColor: '#05070f',
-    title: 'mclink 迷你窗',
-    icon: appIconPath(),
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.cjs'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-      backgroundThrottling: false,
-    },
-  });
-
-  loadRenderer(miniWindow, { mini: true });
-  miniWindow.once('ready-to-show', () => miniWindow?.show());
-  miniWindow.on('closed', () => {
-    miniWindow = null;
-  });
-  logLine('已打开迷你窗（置顶显示联机地址）', 'info');
-  return miniWindow;
-}
-
-function closeMiniWindow() {
-  const win = miniWindow;
-  miniWindow = null;
-  if (win && !win.isDestroyed()) win.close();
 }
 
 function showMainWindow() {
@@ -542,8 +476,7 @@ function createTray() {
   tray = new Tray(image.isEmpty() ? nativeImage.createEmpty() : image);
   tray.setToolTip('mclink 《我的世界》联机');
   tray.on('double-click', () => {
-    mainWindow?.show();
-    mainWindow?.focus();
+    showMainWindow();
   });
   updateTray();
 }
@@ -559,22 +492,7 @@ function updateTray() {
       {
         label: '显示主窗口',
         click: () => {
-          mainWindow?.show();
-          mainWindow?.focus();
-        },
-      },
-      {
-        // 迷你窗：把联机地址钉在屏幕角落，边玩边看
-        label: miniWindow && !miniWindow.isDestroyed() && miniWindow.isVisible() ? '关闭迷你窗' : '显示迷你窗',
-        click: () => {
-          const visible = miniWindow !== null && !miniWindow.isDestroyed() && miniWindow.isVisible();
-          if (visible) {
-            closeMiniWindow();
-            showMainWindow();
-          } else {
-            createMiniWindow().show();
-          }
-          updateTray();
+          showMainWindow();
         },
       },
       {
@@ -728,53 +646,6 @@ function registerIpc() {
     });
     return res.response === 1;
   });
-
-  /* ---------------------------------------------------------- 迷你窗 */
-
-  ipcMain.handle('mini:open', () => {
-    try {
-      const win = createMiniWindow();
-      win.show();
-      win.focus();
-      return { ok: true, open: true, alwaysOnTop: win.isAlwaysOnTop() };
-    } catch (err) {
-      return { ok: false, error: err.message };
-    }
-  });
-
-  // 关闭迷你窗时顺便把主窗显示出来：玩家在迷你窗上的「打开主窗口」就靠这个
-  ipcMain.handle('mini:close', () => {
-    closeMiniWindow();
-    showMainWindow();
-    return { ok: true, open: false };
-  });
-
-  ipcMain.handle('mini:toggle', () => {
-    const visible = miniWindow !== null && !miniWindow.isDestroyed() && miniWindow.isVisible();
-    if (visible) {
-      closeMiniWindow();
-      showMainWindow();
-      return { ok: true, open: false };
-    }
-    try {
-      const win = createMiniWindow();
-      win.show();
-      win.focus();
-      return { ok: true, open: true, alwaysOnTop: win.isAlwaysOnTop() };
-    } catch (err) {
-      return { ok: false, error: err.message };
-    }
-  });
-
-  ipcMain.handle('mini:setAlwaysOnTop', (_e, flag) => {
-    try {
-      const win = createMiniWindow();
-      win.setAlwaysOnTop(flag !== false);
-      return { ok: true, alwaysOnTop: win.isAlwaysOnTop() };
-    } catch (err) {
-      return { ok: false, error: err.message };
-    }
-  });
 }
 
 /* ------------------------------------------------------------------ 启动 */
@@ -784,8 +655,7 @@ if (!singleInstance) {
   app.quit();
 } else {
   app.on('second-instance', () => {
-    mainWindow?.show();
-    mainWindow?.focus();
+    showMainWindow();
   });
 
   app.whenReady().then(() => {

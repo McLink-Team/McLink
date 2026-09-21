@@ -174,11 +174,11 @@ onUnmounted(() => offMaximized?.());
   stroke-linecap: round;
 }
 .tb-btn:hover {
-  background: rgba(245, 240, 231, 0.07);
+  background: var(--surface-hair-strong);
   color: var(--paper);
 }
 .tb-close:hover {
   background: var(--fault);
-  color: #1a0f0c;
+  color: var(--on-signal);
 }
 </style>

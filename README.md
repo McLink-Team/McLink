@@ -46,7 +46,8 @@ mclink = **主控（Master）** + **区域子节点（Relay）** + **Windows 客
   直接给出「房主该开什么、玩家该填什么」并一键复制。
 * **连接诊断**：告诉你当前是 P2P 直连还是经中继、各节点延迟与隧道协议、NAT 类型，
   并给出可执行的改善建议（而不是只丢一堆数字）。
-* **迷你悬浮窗**：无边框置顶小窗常驻显示联机地址，边玩边看不用切窗口。
+* **联机地址一眼可见、一点即复制**：房间页顶部的地址铭牌放大显示，点整块或点「复制地址」
+  都能立刻拿到，直接粘贴给朋友（不用切窗口、也不用去翻日志）。
 * **公共广场 / 收藏 / 最近**：浏览公开房间，收藏常去的房间，一键重新进入。
 * **首次使用向导**：检测管理员权限（建虚拟网卡必需）并引导完成第一次联机。
 
@@ -220,6 +221,7 @@ scripts/               fetch-easytier / lab / capture 辅助脚本
 | [docs/security.md](docs/security.md) | **安全模型与已知边界**：网络名即准入凭证的来龙去脉、已实测限制、加固措施、弱点清单、合规 |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | 排障手册：症状 → 原因 → 处置 |
 | [docs/mctier-parity.md](docs/mctier-parity.md) | 与 MCTier 的功能对照、差距分析、分期路线，以及**许可边界提醒**（MCTier 是 Source-Available 非商业许可，只借鉴功能不抄代码） |
+| [docs/design.md](docs/design.md) | **视觉设计（信号室）+ 令牌契约 + 检测器验收方式**：颜色只能来自令牌、被明令禁止的写法、两条产品决定（不做置顶小窗、进房即落房间页） |
 | [deploy/README.md](deploy/README.md) | 部署速查：单机最小部署、多区域子节点、升级流程、故障速查表、`bind_device` 的坑 |
 | [deploy/nginx.conf.example](deploy/nginx.conf.example) | TLS 反代示例（含 WebSocket 必需配置与 certbot 提示） |
 
