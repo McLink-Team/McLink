@@ -41,16 +41,24 @@ const stat = fs.statSync(OUT);
 console.log(`\n打包完成：${OUT}  ${(stat.size / 1048576).toFixed(1)} MB`);
 
 // 自检：Linux 二进制与几个关键文件必须在包里
-const listing = execFileSync('tar', ['-tzf', OUT], { encoding: 'utf8' }).split('\n').filter(Boolean);
-console.log(`包内条目：${listing.length}`);
+// 注意两点（都踩过）：`tar -tzf` 在 Windows 上输出 CRLF；用 `-T 清单` 打包时
+// 条目**不带** `./` 前缀，别照抄 `tar -cf .` 形式下的路径。
+const listing = execFileSync('tar', ['-tzf', OUT], { encoding: 'utf8' })
+  .split(/\r?\n/)
+  .filter(Boolean)
+  .map((line) => line.replace(/^\.\//, ''));
+console.log(`\n包内条目：${listing.length}`);
 for (const need of [
-  './deploy/vendor/linux-x86_64/easytier-core',
-  './deploy/vendor/linux-x86_64/easytier-cli',
-  './deploy/install-server.sh',
-  './pnpm-lock.yaml',
-  './server/src/index.ts',
+  'deploy/vendor/linux-x86_64/easytier-core',
+  'deploy/vendor/linux-x86_64/easytier-cli',
+  'deploy/install-server.sh',
+  'deploy/agent.mjs',
+  'pnpm-lock.yaml',
+  'server/src/index.ts',
 ]) {
   const hit = listing.includes(need);
   console.log(`  ${hit ? '✓' : '✗'} ${need}`);
   if (!hit) process.exitCode = 1;
 }
+console.log(process.exitCode === 1 ? '\n自检失败：包内缺少必需文件' : '\n自检通过：服务器安装所需文件齐全');
+

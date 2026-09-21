@@ -59,10 +59,13 @@ pnpm dev:web          # Vite 开发服务器：http://127.0.0.1:5173
 | `pnpm fetch:easytier` | 下载 EasyTier 到 `vendor/easytier/` |
 | `pnpm lab` | 控制面端到端实验（**真的**拉起 easytier-core 进程，见 §4） |
 | `pnpm lab:dataplane` | 数据面与限速实验（真实 TCP 测速 + 限速前后对比，见 §4.1） |
+| `pnpm verify:lockfile` | 校验 `pnpm-lock.yaml` 与所有 `package.json` 一致（约 0.3 秒，见 §9） |
+| `pnpm pack:server` | 打一个可拷到服务器直接安装的源码包（`out/mclink-src.tar.gz`，见 `deploy/README.md`） |
 | `node scripts/capture.mjs <输出文件> <命令> [参数...]` | 把子进程 stdout+stderr 落文件（本机沙箱禁管道 stdio 时用） |
 
-> **关于 `pnpm test`**：`server/test/unit.test.ts` 已包含一套单元测试（22 个用例），覆盖
-> TOML 生成、ACL 构造、虚拟地址规划、`easytier-cli` 输出解析与房间凭证逻辑。
+> **关于 `pnpm test`**：`server/test/unit.test.ts` 已包含一套单元测试（40 个用例），覆盖
+> TOML 生成、ACL 构造、虚拟地址规划、`easytier-cli` 输出解析、房间凭证、邮箱验证码与
+> SMTP 组信（RFC 2047 / base64）、子节点端口分离的回退规则。
 > 新增测试按 `server/test/*.test.ts` 放置即可直接生效（Node 原生 TS 剥离同样适用于测试文件）。
 
 ## 3.1 客户端的主控地址是「编译期嵌入」的
@@ -342,8 +345,30 @@ node scripts/capture.mjs .cache/out.log vendor/easytier/easytier-cli -p 127.0.0.
 ## 9. 提交前的检查清单
 
 - [ ] `pnpm typecheck` 通过
+- [ ] **动过任何 `package.json` 就跑了 `pnpm install`**，并确认 `pnpm verify:lockfile` 退出码为 0
 - [ ] 涉及协议/接口的改动，`docs/api.md` 已同步
 - [ ] 涉及环境变量的改动，`docs/deployment.md` 的变量表已同步
 - [ ] 涉及安全边界的改动（隔离、限速、鉴权），`docs/security.md` 已同步
 - [ ] 改了 `ticket()` / `renderEasytierToml()` / ACL → 跑过 `pnpm lab`
 - [ ] 没有把真实密钥、令牌、真实域名写进代码或文档（示例统一用 `请替换`/`changeme`）
+
+### 为什么"动过 package.json"要单独列一条
+
+这条是踩出来的：`client/package.json` 里从来没有 `vue-router`（客户端不用路由，只有 web 用），
+但 `pnpm-lock.yaml` 的 `client` 段里留着它 —— 生成 lockfile 时留下的脏数据。
+本机一直没跑过 `--frozen-lockfile`，所以从开发到提交、推送、`pnpm lab` 全都没暴露；
+直到在 Debian 上执行部署脚本，`pnpm install --frozen-lockfile` 才直接失败：
+
+```
+ERR_PNPM_OUTDATED_LOCKFILE  Cannot install with "frozen-lockfile" because
+pnpm-lock.yaml is not up to date with <ROOT>/client/package.json
+```
+
+自检（很快，约 0.3 秒，只校验 lockfile 不装依赖）：
+
+```bash
+pnpm verify:lockfile     # 退出码 0 = lockfile 与所有 package.json 一致
+```
+
+它等价于 `pnpm install --frozen-lockfile --lockfile-only`。故意把 `package.json` 改坏
+验证过：会以退出码 1 报 `ERR_PNPM_OUTDATED_LOCKFILE`，所以是真守卫而不是摆设。
