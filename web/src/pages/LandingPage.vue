@@ -45,6 +45,8 @@ interface RegionRow {
   onlineNodes: number;
   peers: number;
   capacity: number;
+  /** 在线节点明细（公开接口只给名字/区域/承载/容量，不含端点与令牌） */
+  nodes?: Array<{ name: string; region: string; peers: number; capacity: number }>;
 }
 
 interface DownloadArtifact {
@@ -88,6 +90,18 @@ const liveRegions = computed(() => regions.value.filter((r) => r.id !== 'auto'))
  */
 const shownRegions = computed(() => liveRegions.value.filter((r) => r.onlineNodes > 0));
 const onlineRegions = computed(() => shownRegions.value.length);
+
+/**
+ * 表格按**节点**一行展开，而不是按区域一行。
+ *
+ * 按区域汇总时每行只有一个数字，玩家看不出「华东」背后是哪台机器；
+ * 一个区域有多个节点时，"在线节点=2" 也说不清谁是谁。节点级明细更能建立信任，
+ * 也便于主控方按名字对照自己的机器。总量改由表格下方一行汇总。
+ */
+const onlineNodeRows = computed(() =>
+  liveRegions.value.flatMap((r) => (r.nodes ?? []).map((n) => ({ ...n, regionLabel: r.label }))),
+);
+const onlinePeers = computed(() => onlineNodeRows.value.reduce((acc, n) => acc + n.peers, 0));
 
 async function load(): Promise<void> {
   try {
@@ -394,24 +408,31 @@ const steps = [
           <table class="table">
             <thead>
               <tr>
+                <th>中继节点</th>
                 <th>区域</th>
-                <th class="table-num">在线节点</th>
                 <th class="table-num">承载玩家</th>
+                <th class="table-num">容量</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="r in shownRegions" :key="r.id">
-                <td class="region-name">{{ r.label }}</td>
-                <td class="table-num">{{ r.onlineNodes }}</td>
-                <td class="table-num">{{ r.peers }}</td>
+              <tr v-for="n in onlineNodeRows" :key="`${n.region}-${n.name}`">
+                <td class="node-name">{{ n.name }}</td>
+                <td class="faint">{{ n.regionLabel }}</td>
+                <td class="table-num">{{ n.peers }}</td>
+                <td class="table-num faint">{{ n.capacity }}</td>
               </tr>
-              <tr v-if="shownRegions.length === 0">
-                <td colspan="3" class="faint">
+              <tr v-if="onlineNodeRows.length === 0">
+                <td colspan="4" class="faint">
                   暂时没有已接入的区域中继，房间会经由主控中继转发。区域中继上线后这里会自动出现。
                 </td>
               </tr>
             </tbody>
           </table>
+          <!-- 汇总单独一行：表格是「一个节点一行」，总量放这里才不会和明细混在一起 -->
+          <p v-if="onlineNodeRows.length > 0" class="region-summary faint">
+            共 {{ onlineNodeRows.length }} 个在线中继节点，覆盖
+            {{ onlineRegions }} 个区域，当前承载 {{ onlinePeers }} 名玩家。
+          </p>
         </div>
       </div>
     </section>
@@ -871,6 +892,21 @@ const steps = [
 .region-name {
   color: var(--paper);
   font-weight: 500;
+}
+/* 节点名走等宽字体：机器名里的数字与下划线对齐后更好扫读 */
+.node-name {
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+/* 表格是「一节点一行」，总量单独一行放在表格下方 */
+.region-summary {
+  margin: var(--s-2) 0 0;
+  font-size: var(--fs-sm);
+}
+/* 数值列给一个窄而固定的宽度：宽屏下不铺开，数字就贴着自己的表头 */
+.region-table .table-num {
+  width: 7rem;
 }
 
 /* ---------------------------------------------------------------- FAQ */

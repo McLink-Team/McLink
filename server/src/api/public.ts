@@ -59,15 +59,27 @@ export function registerPublicRoutes(router: Router, app: App): void {
     };
   });
 
+  /**
+   * 区域可用性（公开）。
+   *
+   * 除了按区域汇总的数量，还给出**在线节点的名字**：落地页要能直接告诉玩家
+   * 「华东 · 上海一号」这级信息，而不是只给一个数字。这里只暴露名字、区域、
+   * 承载人数与容量 —— 端点、令牌、公网 IP 这些一律不出现在公开接口里。
+   */
   router.get(Routes.regions, () => {
     const availability = app.nodeService.availableByRegion();
     const byRegion = new Map(availability.map((a) => [a.region, a]));
+    const nodes = app.nodes
+      .list()
+      .filter((n) => n.disabled !== 1 && (n.status === 'online' || n.status === 'degraded'))
+      .map((n) => ({ name: n.name, region: n.region, peers: n.peers, capacity: n.capacity_peers }))
+      .sort((a, b) => a.region.localeCompare(b.region) || a.name.localeCompare(b.name));
     return REGIONS.map((r) => {
       if (r.id === 'auto') {
         const online = availability.reduce((acc, a) => acc + a.online, 0);
         const peers = availability.reduce((acc, a) => acc + a.peers, 0);
         const capacity = availability.reduce((acc, a) => acc + a.capacity, 0);
-        return { id: r.id, label: r.label, hint: r.hint, onlineNodes: online, peers, capacity };
+        return { id: r.id, label: r.label, hint: r.hint, onlineNodes: online, peers, capacity, nodes };
       }
       const a = byRegion.get(r.id);
       return {
@@ -77,6 +89,7 @@ export function registerPublicRoutes(router: Router, app: App): void {
         onlineNodes: a?.online ?? 0,
         peers: a?.peers ?? 0,
         capacity: a?.capacity ?? 0,
+        nodes: nodes.filter((n) => n.region === r.id),
       };
     });
   });

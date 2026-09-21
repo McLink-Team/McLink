@@ -1,11 +1,12 @@
 <script setup lang="ts">
 /**
- * 设置 —— 只放玩家自己能决定的事：本机名称、本机端口、日志、关于。
+ * 设置 —— 只放玩家自己能决定的事：本机名称、本机端口、外观、日志、关于。
  *
  * 刻意不放任何服务器/主控信息：客户端连哪台机器不是玩家能改的，
  * 摆在这里只会让人以为自己可以填错。
  */
 import { onMounted, ref } from 'vue';
+import { currentTheme, setThemeChoice, themeChoice, type ThemeChoice } from '@mclink/shared';
 import { clientState, relaunchElevated, setDevice, logout } from '../lib/store.ts';
 import { reopenOnboarding } from '../lib/onboarding.ts';
 import type { AppInfo } from '../lib/bridge.ts';
@@ -14,6 +15,22 @@ const info = ref<AppInfo | null>(null);
 const device = ref(clientState.deviceName);
 const listenPort = ref(clientState.listenPort);
 const saved = ref(false);
+
+/* ------------------------------------------------------------------ 外观 */
+const THEME_OPTIONS: ReadonlyArray<{ value: ThemeChoice; label: string }> = [
+  { value: 'auto', label: '跟随系统' },
+  { value: 'light', label: '亮色' },
+  { value: 'dark', label: '暗色' },
+];
+const theme = ref<ThemeChoice>(themeChoice());
+const effective = ref(currentTheme());
+
+function pickTheme(choice: ThemeChoice): void {
+  theme.value = choice;
+  // 共享层负责写盘 + 立刻改 <html data-theme> + 重新订阅系统变化
+  setThemeChoice(choice);
+  effective.value = currentTheme();
+}
 
 onMounted(async () => {
   info.value = await window.mclink.info();
@@ -73,6 +90,32 @@ function openDataDir(): void {
         <button class="btn btn-ghost" type="button" title="重新看一遍上手指引" @click="reopenOnboarding()">
           新手引导
         </button>
+      </div>
+    </div>
+
+    <div class="card stack">
+      <div class="section-head">
+        <span class="title">外观</span>
+      </div>
+      <div class="field">
+        <label class="label">配色模式</label>
+        <!-- 复用登录页 登录/注册 的那套分段控件，窄窗里三档也放得下 -->
+        <div class="tabs" role="group" aria-label="配色模式">
+          <button
+            v-for="opt in THEME_OPTIONS"
+            :key="opt.value"
+            class="tab"
+            :class="{ active: theme === opt.value }"
+            type="button"
+            :aria-pressed="theme === opt.value"
+            @click="pickTheme(opt.value)"
+          >
+            {{ opt.label }}
+          </button>
+        </div>
+        <div class="hint">
+          默认跟随系统；钉住某一档后系统再切换也不会变。当前生效：{{ effective === 'light' ? '亮色' : '暗色' }}。
+        </div>
       </div>
     </div>
 
