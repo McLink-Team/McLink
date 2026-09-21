@@ -142,8 +142,17 @@ export function createServer(app: App): RunningServer {
        * 也与 install-node.sh 里"从 ${MASTER}/agent/agent.mjs 取 agent"的约定一致。
        * 两个文件都不含密钥 —— 注册密钥是命令行参数，一次性且用完即废。
        */
-      if (url.pathname === Routes.agentInstallScript || url.pathname === Routes.agentScript) {
-        const name = url.pathname === Routes.agentInstallScript ? 'install-node.sh' : 'agent.mjs';
+      if (
+        url.pathname === Routes.agentInstallScript ||
+        url.pathname === Routes.agentScript ||
+        url.pathname === Routes.agentNodeUnit
+      ) {
+        const name =
+          url.pathname === Routes.agentInstallScript
+            ? 'install-node.sh'
+            : url.pathname === Routes.agentScript
+              ? 'agent.mjs'
+              : 'mclink-node.service';
         const target = path.join(REPO_ROOT, 'deploy', name);
         if (!fs.existsSync(target)) throw HttpError.notFound(`主控上没有找到 deploy/${name}`);
         streamFile(ctx, target, 0);

@@ -449,6 +449,10 @@ curl -fsSL https://cnnic.link/agent/install.sh | sudo bash -s -- \
 | 2 | **从主控下载** | `GET /agent/easytier-core`、`GET /agent/easytier-cli`。主控若带着这两个文件（用 `pnpm pack:server` 打的源码包就带），国内节点**完全不需要碰 GitHub** |
 | 3 | GitHub Releases | 可加 `--github-proxy <前缀>` 走加速，例如 `--github-proxy https://ghproxy.net/` |
 
+> EasyTier 官方只发 **zip**，而 Debian 的 GNU `tar` **解不了 zip**。脚本现在会安装 `unzip`
+> 并用它解包，缺失时依次退让到 `bsdtar` / `python3 -m zipfile`。（2026-09 之前的版本用的是
+> `tar -xf xxx.zip`，表现为"下载成功、二进制没落地"，进而"主控中继未运行"。）
+
 主控**自己**装的时候（`install-server.sh`）同样支持 `--github-proxy`，因为主控的中继也依赖这两个二进制——
 直连 GitHub 超时的典型后果就是控制台里「主控中继 = 未运行」。
 

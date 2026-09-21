@@ -203,7 +203,25 @@ apt_install() {
 install_base_packages() {
   log "更新软件包索引并安装基础依赖…"
   apt-get update -qq || die "apt-get update 失败：请检查网络与 /etc/apt/sources.list"
-  apt_install ca-certificates curl openssl tar coreutils || die "基础依赖安装失败"
+  # unzip：EasyTier 官方只发 zip，而 Debian 的 GNU tar **解不了 zip**。
+  # 以前这里漏了它、又用 `tar -xf` 解，于是"下载成功但二进制没落地"，
+  # 症状是主控中继起不来（控制台显示「未运行 / 未探测到 easytier-cli」）。
+  apt_install ca-certificates curl openssl tar unzip coreutils || die "基础依赖安装失败"
+}
+
+# 解 zip 包。按可用工具依次退让；全都没有才失败。
+extract_zip() {  # extract_zip <zip 文件> <目标目录>
+  local zip="$1" dest="$2"
+  if command -v unzip >/dev/null 2>&1; then
+    unzip -o -q "$zip" -d "$dest" && return 0
+  fi
+  if command -v bsdtar >/dev/null 2>&1; then
+    bsdtar -xf "$zip" -C "$dest" && return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -m zipfile -e "$zip" "$dest" && return 0
+  fi
+  return 1
 }
 
 node_major() {
@@ -423,7 +441,7 @@ install_easytier() {
     tmp="$(mktemp -d)"
     log "下载 EasyTier ${ET_VERSION}：${url}"
     if curl -fL --retry 3 --connect-timeout 20 --retry-delay 3 -o "${tmp}/et.zip" "$url"; then
-      if tar -xf "${tmp}/et.zip" -C "$tmp" >/dev/null 2>&1; then
+      if extract_zip "${tmp}/et.zip" "$tmp"; then
         local found
         found="$(find "$tmp" -type f -name 'easytier-core' | head -n1)"
         if [[ -n "$found" ]]; then
@@ -434,7 +452,7 @@ install_easytier() {
           cp -f "$found" "${et_dir}/easytier-cli"
         fi
       else
-        warn "EasyTier 压缩包解压失败（文件可能损坏）"
+        warn "EasyTier 压缩包解压失败（已尝试 unzip / bsdtar / python3）"
       fi
     else
       warn "EasyTier 下载失败：HTTP 请求未成功（受限网络可设置 HTTPS_PROXY 后重试）"
