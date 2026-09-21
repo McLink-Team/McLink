@@ -22,7 +22,8 @@
     "typecheck": "pnpm -r typecheck",
     "fetch:easytier": "node scripts/fetch-easytier.mjs",
     "icons": "node scripts/make-icons.mjs",
-    "lab": "node scripts/lab.mjs"
+    "lab": "node scripts/lab.mjs",
+    "lab:dataplane": "node scripts/lab-dataplane.mjs"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

@@ -14,9 +14,30 @@ export function formatBitrate(bps: number, digits = 1): string {
   return `${(bps / 1000 ** i).toFixed(i === 0 ? 0 : digits)} ${units[i]}`;
 }
 
-/** kbps（数据库里存的限速单位）→ bps（EasyTier 配置单位） */
+/**
+ * 把界面上的「kbps（千比特/秒）」换算成 EasyTier 的 `*_bps_limit` 字段值。
+ *
+ * ⚠️ 单位陷阱：EasyTier 的字段名虽然写作 `_bps_`，但它的单位是**字节/秒**，
+ * 不是比特/秒。依据是 EasyTier 自己的测试
+ * （`easytier/src/tests/three_node.rs` 的 `instance_recv_bps_limit_test`）：
+ * 配置写 `bps_limit * 1024`，随后把实测吞吐换算成 KiB/s 与 `bps_limit` 比较，
+ * 即「配置值 1024 → 每秒 1024 字节」。
+ *
+ * 早先按比特/秒换算（`kbps * 1000`），会让玩家实际拿到 **8 倍**于界面所配的带宽；
+ * 这个 8 倍偏差是通过真实数据面测速才发现的（见 scripts/lab-dataplane.mjs）。
+ */
+export function kbpsToBytesPerSecond(kbps: number): number {
+  if (!Number.isFinite(kbps) || kbps <= 0) return 0;
+  // kbps(千比特/秒) → 比特/秒 → 字节/秒
+  return Math.floor((kbps * 1000) / 8);
+}
+
+/**
+ * 旧名保留：历史上的实现按比特/秒换算，是错的。
+ * 新代码一律用 kbpsToBytesPerSecond，这里只做转发并保留注释以免再被误用。
+ */
 export function kbpsToBps(kbps: number): number {
-  return Math.max(0, Math.floor(kbps)) * 1000;
+  return kbpsToBytesPerSecond(kbps);
 }
 
 export function formatDuration(seconds: number): string {

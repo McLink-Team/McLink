@@ -357,22 +357,61 @@ easytier-cli -p <rpc> -o json peer list-foreign          → 按网络名分组�
 * 查询入口：`/api/v1/stats`（公开概览）、`/api/v1/admin/traffic`（含房间/节点曲线）、
   `/api/v1/admin/overview`。
 
-### 7.2 限速到底写在哪（单位是踩坑重点）
+### 7.2 限速到底写在哪（单位与写法都是踩坑重点）
 
 | 参数 | 真实单位 | 生效位置 | 平台如何下发 |
 | --- | --- | --- | --- |
 | `rate_limit`（ACL 规则） | **包/秒（pps）**，**不是带宽** | 房主实例的 ACL，`Inbound` 链 | `RoomPolicy.rateLimitPps` → `buildRoomAcl()` |
 | `burst_limit` | 包 | 同上 | `max(pps*2, pps+1)` |
-| `foreign_relay_bps_limit` | bit/s（u64） | **中继**转发外来网络的出口（平台级硬限制） | `MCLINK_RELAY_BPS_LIMIT` / 平台设置 `relayBandwidthKbps*1000` |
-| `instance_recv_bps_limit` | bit/s（u64） | 本实例**接收**方向（客户端自制） | 票据 TOML：`policy.perMemberKbps*1000` |
+| `foreign_relay_bps_limit` | **字节/秒** | **中继**转发外来网络的出口（平台级硬限制） | `MCLINK_RELAY_BPS_LIMIT`（已是字节/秒）/ 平台设置 `relayBandwidthKbps` 经换算 |
+| `instance_recv_bps_limit` | **字节/秒** | 本实例**接收**方向（客户端自制） | 票据 TOML：`kbpsToBytesPerSecond(perMemberKbps 或 房主的 maxBandwidthKbps)` |
 
-两个 `*_bps_limit` 在 TOML 里必须以**字符串**形式写出（EasyTier 的 u64 序列化行为，
-源码 `easytier-core/src/config/toml.rs` 的 `u64s` 列表与序列化测试），
-`server/src/easytier/config.ts` 用 `U64_FLAGS` 专门处理了这一点。
+#### 两个必须记住的写法/单位结论（都是实测得出，不是推断）
 
-`RoomPolicy.maxBandwidthKbps`（房间总带宽）虽然存在于数据模型里，但**当前没有落地到任何实例**：
-它被设计用于房主实例的 `instance_recv_bps_limit`，而实现目前只对 `perMemberKbps` 生效。
-需要真正的服务端级硬限制时，请使用平台级的 `foreign_relay_bps_limit`。
+**① TOML 里必须写裸数字，不能加引号。**
+
+```
+instance_recv_bps_limit = 125000     # ✅ 通过
+instance_recv_bps_limit = "125000"   # ❌ easytier-core 直接 panic：
+                                     #    invalid type: string "125000", expected u64
+```
+
+`easytier-core --check-config` 的实测结果。曾经以为要加引号——依据是
+`toml.rs` 里 `flags_diff_from_default` 宏把 u64 序列化成 JSON 字符串，
+但那是 **JSON config-patch** 路径的表示法，与 TOML 无关。
+这个错误会让**任何设了带宽上限的房间**在客户端启动时崩溃，
+现在由两条防线守住：`server/test/unit.test.ts` 的回归断言，
+以及两个实验脚本在启动实例前调用 `easytier-core --check-config` 判卷。
+
+**② 单位是字节/秒，不是比特/秒。**
+
+字段名里的 `bps` 容易误读。依据是 EasyTier 自己的测试
+（`easytier/src/tests/three_node.rs` 的 `instance_recv_bps_limit_test`）：
+配置写 `bps_limit * 1024`，随后把实测吞吐换算成 KiB/s 与 `bps_limit` 比较，
+即「配置 1024 → 每秒 1024 字节」。
+
+平台对外仍用玩家熟悉的 **kbps**，换算集中在 `kbpsToBytesPerSecond()`
+（`packages/shared/src/format.ts`）。按比特/秒实现会让玩家实际拿到
+**8 倍**于界面所配的带宽——这个偏差是靠真实数据面测速才发现的，
+见下方 §7.3。
+
+`RoomPolicy.maxBandwidthKbps`（房间总带宽）**已落地**：房主实例接收所有成员的流量，
+所以它对应房主实例的 `instance_recv_bps_limit`；成员实例则用 `perMemberKbps`。
+两者都设时取较小值。
+
+### 7.3 限速的实测结果（`pnpm lab:dataplane`）
+
+用 EasyTier 自带的端口转发在虚拟网络内部跑真实 TCP（不依赖系统路由表，
+因此同机多实例也能得到可信结果）：
+
+| 场景 | 传输量 | 耗时 | 实测吞吐 |
+| --- | --- | --- | --- |
+| 不限速（基准） | 2 MiB | 11 ms | **1,525,201 kbps**（约 1.5 Gbps） |
+| 单成员上限 1000 kbps | 2 MiB | 18,732 ms | **896 kbps** |
+
+换算后的配置值 `125000`（字节/秒）= 1000 kbps ÷ 8，实测 896 kbps 略低于设定值，
+与 EasyTier 测试注释一致：限速器统计的是**含内层 IP 与传输头**的数据载荷，
+因此应用层有效载荷会略低于配置上限。
 
 ---
 
@@ -405,15 +444,27 @@ easytier-cli -p <rpc> -o json peer list-foreign          → 按网络名分组�
    不支持时通过「重载配置 / 重启实例」生效。
 8. **`instance_recv_bps_limit` 是客户端自制裁剪**：恶意客户端可以绕过；
    服务端侧唯一硬限制是中继的 `foreign_relay_bps_limit`。
-9. **两个 `*_bps_limit` 是 u64，TOML 里以字符串写出**（`toml.rs` 序列化测试
-   `assert!(dumped.contains("foreign_relay_bps_limit = \"18446744073709551614\""))`）。
-10. **`peer list` 的 JSON 数值字段是人类可读字符串**（`"17.33 kB"` / `"-"`），
+9. **两个 `*_bps_limit` 是 u64，在 TOML 里必须写裸数字**，加引号会让 easytier-core
+   在配置解析阶段 panic（`invalid type: string "…", expected u64`）。
+   注意 `toml.rs` 的序列化测试里出现的是 `= "18446744073709551614"`，
+   那是 **dump / JSON patch** 路径的表示法，与**解析**时接受的格式不同——
+   以 `--check-config` 的实测结果为准。
+10. **两个 `*_bps_limit` 的单位是字节/秒，不是比特/秒**（依据 `three_node.rs` 的
+    `instance_recv_bps_limit_test`：配置 `bps_limit * 1024`，按 KiB/s 校准）。
+    平台对外用 kbps，经 `kbpsToBytesPerSecond()` 换算（÷8）。
+11. **`peer list` 的 JSON 数值字段是人类可读字符串**（`"17.33 kB"` / `"-"`），
     `peer list-foreign` 返回 `{ "<网络名>": { peers: [ { peer_id, conns: [ { stats: {...} } ] } ] } }`，
     字段为 snake_case，且可能是空对象 `{}`。
-11. **`easytier-cli stats prometheus` 存在**（用于对接 Prometheus），
+12. **`easytier-cli stats prometheus` 存在**（用于对接 Prometheus），
     而 `stats show` 是通用计数器；主控的 `RelayManager.fetchGlobalStats()` 用的是后者。
-12. **`--secure-mode` / `--credential` 是更强的成员认证手段**（credential 对等体可被
+13. **`--secure-mode` / `--credential` 是更强的成员认证手段**（credential 对等体可被
     `is_existing_credential_pubkey_trusted` 信任），当前平台未使用，是后续可选加固方向。
+14. **`easytier-cli port-forward add <tcp|udp> <bind> <dst>` 可用**：转发在 EasyTier
+    内部完成，不依赖操作系统路由表。这一点让「同机多实例」也能做可信的数据面测试
+    （见 `scripts/lab-dataplane.mjs`）；注意该子命令成功时只打一行人类可读提示、
+    不带 JSON，用退出码判成败。
+15. **TUN 模式下必须给每个实例不同的 `dev_name`**：否则同机多个实例会去创建
+    同名的虚拟网卡而互相冲突，表现为其中一个实例起不来。
 
 ---
 

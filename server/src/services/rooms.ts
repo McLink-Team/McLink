@@ -15,6 +15,7 @@ import {
   subnetForSlot,
   generateRoomCode,
   generateNetworkSecret,
+  kbpsToBytesPerSecond,
   type Room,
   type RoomAccess,
   type RoomMember,
@@ -610,8 +611,10 @@ export class RoomService {
         /**
          * 实例级接收限速。
          *
-         * EasyTier 只有「本实例接收」这一个可按实例设置的字节速率上限
-         * （`instance_recv_bps_limit`，u64 以字符串写进 TOML）。落到不同角色上语义不同：
+         * EasyTier 只有「本实例接收」这一个可按实例设置的速率上限
+         * （`instance_recv_bps_limit`）。注意它的单位是**字节/秒**，不是比特/秒
+         * （见 packages/shared/src/format.ts 的 kbpsToBytesPerSecond 注释与 EasyTier 测试）。
+         * 落到不同角色上语义不同：
          *   - 房主：所有成员→房主的流量都汇到这一个实例，所以它就是「房间上行入口总量」，
          *         用 policy.maxBandwidthKbps 约束（房间总带宽）。
          *   - 成员：约束的是该成员自己的下载速率，用 policy.perMemberKbps。
@@ -622,7 +625,7 @@ export class RoomService {
             (v) => v > 0,
           );
           if (limits.length === 0) return {};
-          return { instanceRecvBpsLimit: Math.min(...limits) * 1000 };
+          return { instanceRecvBpsLimit: kbpsToBytesPerSecond(Math.min(...limits)) };
         })(),
         lazyP2p: false,
         multiThread: true,

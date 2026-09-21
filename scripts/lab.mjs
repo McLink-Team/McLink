@@ -19,7 +19,7 @@
  *   node scripts/lab.mjs
  *   MCLINK_MASTER=http://127.0.0.1:8787 MCLINK_ADMIN_PASSWORD=xxx node scripts/lab.mjs
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -90,6 +90,19 @@ async function api(pathname, { method = 'GET', body, token } = {}) {
 
 const children = [];
 /**
+ * 用 easytier-core 自己的 `--check-config` 校验生成的配置。
+ *
+ * 这一步是踩过坑之后加的：u64 限速字段被写成带引号的字符串时，
+ * easytier-core 会在配置解析阶段直接 panic，而 TypeScript 侧的测试看不出来。
+ * 让真实二进制来判卷，是唯一可靠的守门方式。
+ */
+function validateConfig(file) {
+  const res = spawnSync(CORE, ['-c', file, '--check-config'], { encoding: 'utf8', windowsHide: true, timeout: 20_000 });
+  const output = `${res.stdout ?? ''}${res.stderr ?? ''}`.trim();
+  return { ok: res.status === 0, output };
+}
+
+/**
  * 启动一个 easytier-core 实例。
  * @param configText 配置文件内容
  * @param launchArgs 服务端下发的启动参数（含 `%CONFIG%` 占位符）
@@ -98,6 +111,12 @@ function spawnCore(name, configText, port, launchArgs) {
   const file = path.join(LAB_DIR, `${name}.toml`);
   fs.mkdirSync(LAB_DIR, { recursive: true });
   fs.writeFileSync(file, configText, 'utf8');
+  const validation = validateConfig(file);
+  configChecks.push({ name, ok: validation.ok, output: validation.output });
+  if (!validation.ok) {
+    console.log(colors.fail(`  [配置非法] ${name}.toml 被 easytier-core 拒绝`));
+    console.log(colors.dim(`    ${validation.output.split('\n').slice(0, 3).join(' | ')}`));
+  }
   const out = fs.openSync(path.join(LAB_DIR, `${name}.log`), 'w');
   const args = (launchArgs ?? ['-c', '%CONFIG%']).map((a) => (a === '%CONFIG%' ? file : a));
   const child = spawn(CORE, args, { stdio: ['ignore', out, out], windowsHide: true });
@@ -107,6 +126,9 @@ function spawnCore(name, configText, port, launchArgs) {
   children.push(child);
   return child;
 }
+
+/** 所有被校验过的配置结果，供最后的汇总断言使用 */
+const configChecks = [];
 
 /**
  * 调用 easytier-cli 并返回结构化结果。
@@ -688,6 +710,15 @@ async function main() {
     '匿名 WebSocket 的任何帧都不含房间名/网络名/加入码',
     leakProbe.leaks.length === 0,
     `${leakProbe.frames} 帧，泄露项: ${leakProbe.leaks.join(', ') || '无'}`,
+  );
+
+  step('让真实二进制给所有生成的配置判卷');
+  const badConfigs = configChecks.filter((c) => !c.ok);
+  check(
+    '全部生成的 EasyTier 配置都通过 easytier-core --check-config',
+    configChecks.length > 0 && badConfigs.length === 0,
+    `${configChecks.length} 份配置，${badConfigs.length} 份被拒` +
+      (badConfigs.length > 0 ? `（首份失败: ${badConfigs[0].name}）` : ''),
   );
 
   step('清理实验产生的节点记录');

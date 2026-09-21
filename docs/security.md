@@ -139,8 +139,10 @@ peer 网表——攻击者能看到房间成员的虚拟 IP，连接路径显示
 ### 4.2 限速的两条边界
 
 * **ACL 的 `rate_limit` 单位是包/秒（pps），不是带宽。** 想做带宽限速只能用
-  `foreign_relay_bps_limit`（中继转发出口）与 `instance_recv_bps_limit`（本实例接收）——
-  两者是 u64，且在 TOML 里以**字符串**形式写出。
+  `foreign_relay_bps_limit`（中继转发出口）与 `instance_recv_bps_limit`（本实例接收）。
+* **这两个 `*_bps_limit` 的单位是「字节/秒」，不是比特/秒**，且在 TOML 里必须写
+  **裸数字**（加引号会让 easytier-core 解析配置时 panic）。平台对外用 kbps，
+  下发前经 `kbpsToBytesPerSecond()` 换算；实测数据见 `docs/architecture.md` §7.3。
 * **`instance_recv_bps_limit` 是客户端自制裁剪**：恶意客户端可以直接不遵守自己实例的接收限速。
   **服务端侧的硬限制只有中继的 `foreign_relay_bps_limit`（平台级）**，即
   `MCLINK_RELAY_BPS_LIMIT` / 管理台的「平台级总出口限速」。

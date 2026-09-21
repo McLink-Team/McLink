@@ -82,12 +82,15 @@ export interface RoomPolicy {
    * 房间总带宽上限（kbps）；0 = 不限。
    * 落地方式：房主实例的 `instance_recv_bps_limit`。因为所有客户端→房主的流量
    * 都汇到房主这一个实例上，它能有效约束房间的「上行入口」总量。
+   * 换算见 `kbpsToBytesPerSecond()`——EasyTier 的 `_bps_limit` 单位是**字节/秒**，
+   * 不是比特/秒，直接乘 1000 会让实际带宽变成配置值的 8 倍。
    */
   maxBandwidthKbps: number;
   /**
    * 单成员带宽上限（kbps）；0 = 不限。
    * 落地方式：成员本地实例的 `instance_recv_bps_limit`（限制该成员下载）。
-   * 注意这是客户端自制的限速，恶意客户端可以绕过；服务端侧只有平台级总限速。
+   * 注意这是客户端自制的限速，恶意客户端可以绕过；服务端侧的硬限制只有
+   * 平台级的中继出口限速。
    */
   perMemberKbps: number;
   /**
