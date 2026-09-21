@@ -130,6 +130,34 @@ server {
 limit_req_zone $binary_remote_addr zone=mclink_login:10m rate=30r/m;
 
 # =============================================================================
+# 变体：只想要**一个** location（宝塔面板那种模板改起来最省事）
+#
+# 单个 location 也能跑，关键是把三个值一次调对：
+#   1) proxy_buffering off      —— WS 升级响应不能被缓冲；大文件也直接流式转发
+#   2) proxy_read_timeout 3600s —— /downloads/ 与 /agent/ 要下几十 MB，
+#                                  落在 60s/120s 的超时里必然 504
+#   3) Upgrade / Connection $http_connection —— 保留这两行，/ws 才能升级
+#
+# 为什么超时给到 3600s 也不会"卡一小时"：主控自己会在 MCLINK_REQUEST_DEADLINE_MS
+# （默认 110s）主动回一个 JSON 504，客户端拿到的是结构化错误而不是干等。
+#
+# location ^~ / {
+#     proxy_pass http://127.0.0.1:8787;
+#     proxy_http_version 1.1;
+#     proxy_set_header Host              $host;
+#     proxy_set_header X-Real-IP         $remote_addr;
+#     proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+#     proxy_set_header X-Forwarded-Proto $scheme;
+#     proxy_set_header Upgrade           $http_upgrade;
+#     proxy_set_header Connection        $http_connection;
+#     proxy_buffering off;
+#     proxy_read_timeout 3600s;
+#     proxy_send_timeout 3600s;
+#     client_max_body_size 2048m;
+# }
+# =============================================================================
+
+# =============================================================================
 # 如果需要通过反代暴露 EasyTier 中继端口（默认 11010，TCP+UDP 都要），
 # 用 stream 模块而不是 http 模块（同一端口同时代理 TCP 与 UDP 需要两个 listen）：
 #
