@@ -20,6 +20,45 @@ const isDev = !app.isPackaged;
 const DEV_URL = process.env.MCLINK_CLIENT_DEV_URL || '';
 const DEV_FALLBACK_URL = 'http://127.0.0.1:5174';
 
+/**
+ * 把老数据目录里**属于我们自己的**文件搬过来。
+ *
+ * 背景：早期 `client/package.json` 只有 `name: "@mclink/client"`，Electron 就拿包名当
+ * 应用名，数据落在 `%APPDATA%\@mclink\client`（一个带 scope 的怪目录）。
+ * 现在补了 `productName: "McLink"`，位置变成 `%APPDATA%\McLink`。
+ *
+ * 为什么只搬 `easytier/` 与 `logs/`，而不是整个目录改名：
+ *   实测 Electron 在进入 main.js **之前**就已经把新的 userData 目录建好并打开了
+ *   （里面已有 lockfile、Preferences、Cache 等 Chromium 正在使用的文件），
+ *   所以「目标目录还不存在才改名」这条判断永远不会成立；
+ *   而去动一个已经打开的 profile 目录，轻则缓存失效重则 profile 损坏。
+ *   登录令牌存在 Local Storage 里，只能让玩家重新登录一次——这个代价可以接受。
+ *
+ * 必须在 DATA_DIR/LOG_DIR 这些常量**之前**执行：它们都是从 userData 算出来的。
+ */
+function migrateLegacyDataDir() {
+  const moved = [];
+  try {
+    const legacy = path.join(app.getPath('appData'), '@mclink', 'client');
+    const current = app.getPath('userData');
+    if (path.resolve(legacy) === path.resolve(current)) return moved;
+    if (!fs.existsSync(legacy)) return moved;
+    for (const name of ['easytier', 'logs']) {
+      const from = path.join(legacy, name);
+      const to = path.join(current, name);
+      // 目标已存在就说明新目录已经在用了，不再覆盖
+      if (!fs.existsSync(from) || fs.existsSync(to)) continue;
+      fs.renameSync(from, to);
+      moved.push(name);
+    }
+  } catch {
+    // 迁移失败不是致命错误：大不了重新登录一次，绝不能因此起不来
+  }
+  return moved;
+}
+
+const migratedDataDirs = migrateLegacyDataDir();
+
 /* ------------------------------------------------------------------ 路径 */
 
 function resolveVendorDir() {
@@ -829,6 +868,9 @@ if (!singleInstance) {
   app.whenReady().then(() => {
     fs.mkdirSync(DATA_DIR, { recursive: true });
     fs.mkdirSync(LOG_DIR, { recursive: true });
+    if (migratedDataDirs.length > 0) {
+      logLine(`已从旧数据目录迁移：${migratedDataDirs.join('、')}`, 'info');
+    }
     registerIpc();
     createWindow();
     createTray();
