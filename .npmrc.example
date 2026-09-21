@@ -1,0 +1,18 @@
+# mclink 依赖安装配置示例
+#
+# 用法：复制为 .npmrc.local（或直接写进 ~/.npmrc）后按需修改。
+# 项目根目录的 .npmrc 已被 .gitignore 忽略，因为里面通常包含本机代理与镜像配置。
+
+# 国内镜像（可选）
+registry=https://registry.npmmirror.com
+
+# 若处于受限网络，可指定本地代理
+# proxy=http://127.0.0.1:7890
+# https-proxy=http://127.0.0.1:7890
+
+# Electron / electron-builder 的二进制走国内镜像，否则下载 release 容易超时
+electron_mirror=https://npmmirror.com/mirrors/electron/
+electron_builder_binaries_mirror=https://npmmirror.com/mirrors/electron-builder-binaries/
+
+# pnpm 10 默认不执行依赖的 postinstall 脚本；
+# 本项目需要在 package.json 的 pnpm.onlyBuiltDependencies 里放行 electron / esbuild。

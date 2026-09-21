@@ -1,0 +1,51 @@
+# electron-builder 打包配置
+appId: com.mclink.client
+productName: mclink
+copyright: mclink · 基于 EasyTier 的《我的世界》联机平台
+
+directories:
+  output: release
+  buildResources: build
+
+# 只打包运行必需的文件；源码与开发脚本不进安装包
+files:
+  - dist/**/*
+  - electron/**/*
+  - package.json
+  - '!**/*.map'
+  - '!**/node_modules/**/{test,tests,__tests__,example,examples,docs}/**'
+
+# EasyTier 核心以「额外资源」形式随包分发（保持其原始二进制，不做修改）
+extraResources:
+  - from: vendor/easytier
+    to: vendor/easytier
+    filter:
+      - 'easytier-core*'
+      - 'easytier-cli*'
+      - 'wintun.dll'
+      - 'WinDivert64.sys'
+      - 'Packet.dll'
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  # 未配置代码签名证书时保持 false，避免打包失败；有证书后改为 true 并填入证书
+  signAndEditExecutable: false
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: mclink 联机
+  installerLanguages:
+    - zh_CN
+  language: '2052'
+  # 安装后不自动启动，避免用户毫无预期地弹出窗口
+  runAfterFinish: false
+
+# 中文安装界面
+artifactName: mclink-client-${version}-${arch}.${ext}

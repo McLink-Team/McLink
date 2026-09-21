@@ -1,0 +1,102 @@
+/**
+ * 设计令牌 —— 落地页与管理控制台共用。
+ *
+ * 基调：深夜蓝紫极光 + 少量青绿点缀；避免"后台管理系统"的廉价感，
+ * 同时保持足够对比度（正文对比度 ≥ 7:1，次级文本 ≥ 4.5:1）。
+ */
+:root {
+  color-scheme: dark;
+
+  /* 背景层次：从最深的页面底色到最亮的浮层 */
+  --bg-0: #05070f;
+  --bg-1: #0a0f1e;
+  --bg-2: #101830;
+  --bg-3: #172144;
+  --surface: rgba(255, 255, 255, 0.035);
+  --surface-strong: rgba(255, 255, 255, 0.07);
+  --border: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.16);
+
+  /* 文本 */
+  --text: #e9edf9;
+  --text-dim: #a7b1cd;
+  --text-faint: #6d7893;
+
+  /* 品牌色：极光青绿 → 靛蓝 */
+  --brand: #35e0c8;
+  --brand-strong: #12b8a0;
+  --accent: #7c8cff;
+  --accent-strong: #5b6cff;
+  --violet: #b07cff;
+
+  /* 语义色 */
+  --ok: #3ddc97;
+  --warn: #ffc84a;
+  --danger: #ff6b6b;
+  --info: #5cc8ff;
+
+  /* 状态色（半透明底 + 实色文字，用于徽章） */
+  --ok-bg: rgba(61, 220, 151, 0.14);
+  --warn-bg: rgba(255, 200, 74, 0.14);
+  --danger-bg: rgba(255, 107, 107, 0.14);
+  --info-bg: rgba(92, 200, 255, 0.14);
+
+  /* 渐变 */
+  --grad-brand: linear-gradient(135deg, #35e0c8 0%, #7c8cff 55%, #b07cff 100%);
+  --grad-hero: radial-gradient(1200px 620px at 18% -8%, #1d2c62 0%, #0b1020 52%, #05070f 100%);
+  --grad-card: linear-gradient(160deg, rgba(255, 255, 255, 0.06) 0%, rgba(255, 255, 255, 0.015) 100%);
+
+  /* 圆角与阴影 */
+  --r-xs: 6px;
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 20px;
+  --r-xl: 28px;
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.24);
+  --shadow: 0 14px 34px rgba(0, 0, 0, 0.38);
+  --shadow-lg: 0 30px 70px rgba(0, 0, 0, 0.5);
+  --glow-brand: 0 0 0 1px rgba(53, 224, 200, 0.35), 0 10px 40px rgba(53, 224, 200, 0.16);
+
+  /* 间距节奏（8 的倍数） */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+  --s-7: 48px;
+  --s-8: 64px;
+  --s-9: 96px;
+
+  /* 字体 */
+  --font-sans: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+  --font-mono: ui-monospace, 'SFMono-Regular', 'JetBrains Mono', Consolas, 'Liberation Mono', monospace;
+
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-base: 15px;
+  --fs-lg: 17px;
+  --fs-xl: 21px;
+  --fs-2xl: 28px;
+  --fs-3xl: 38px;
+  --fs-4xl: 52px;
+
+  --lh-tight: 1.2;
+  --lh-base: 1.65;
+
+  /* 动效 */
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --dur-fast: 130ms;
+  --dur: 240ms;
+  --dur-slow: 460ms;
+
+  /* 布局 */
+  --container: 1200px;
+  --header-h: 64px;
+  --sidebar-w: 232px;
+  --z-header: 100;
+  --z-drawer: 200;
+  --z-modal: 300;
+  --z-toast: 400;
+}

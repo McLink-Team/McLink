@@ -1,0 +1,23 @@
+{
+  "name": "@mclink/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "mclink 主控服务端：房间/房主体系、子节点调度、单端口多房间隔离、流量控制与统计",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "node --watch src/index.ts",
+    "start": "node src/index.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --test --test-concurrency=1 test/*.test.ts"
+  },
+  "dependencies": {
+    "@mclink/shared": "workspace:*",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.3"
+  }
+}
