@@ -400,9 +400,9 @@
   "mtu": 1380,
   "relays": [
     { "nodeId": "n_abc123", "region": "cn-east", "label": "relay-sh",
-      "url": "tcp://relay-sh.example.com:11010", "udpUrl": "udp://relay-sh.example.com:11010", "latencyMs": null },
+      "url": "tcp://relay-sh.cnnic.link:11010", "udpUrl": "udp://relay-sh.cnnic.link:11010", "latencyMs": null },
     { "nodeId": "master", "region": "master", "label": "主控中继（兜底）",
-      "url": "tcp://master.example.com:11010", "udpUrl": "udp://master.example.com:11010", "latencyMs": null }
+      "url": "tcp://cnnic.link:11010", "udpUrl": "udp://cnnic.link:11010", "latencyMs": null }
   ],
   "configToml": "# 由 mclink 主控自动生成，请勿手工编辑 —— 下次同步会被覆盖\ninstance_name = \"mclink-k7qm2p\"\n...",
   "launchArgs": ["-c", "%CONFIG%", "-r", "127.0.0.1:16010", "--rpc-portal-whitelist", "127.0.0.1/32"],
@@ -593,7 +593,7 @@
   "enrollKey": "请替换为管理台签发的一次性密钥",
   "name": "relay-sh",
   "region": "cn-east",
-  "endpoint": "relay-sh.example.com:11010",
+  "endpoint": "relay-sh.cnnic.link:11010",
   "capacityPeers": 500,
   "version": "0.1.0",
   "tags": ["bgp", "cn2"]
@@ -610,7 +610,7 @@
   "ok": true,
   "data": {
     "node": { "id": "n_abc123", "name": "relay-sh", "region": "cn-east",
-              "endpoint": "relay-sh.example.com:11010", "status": "pending",
+              "endpoint": "relay-sh.cnnic.link:11010", "status": "pending",
               "capacityPeers": 500, "peers": 0, "rooms": 0, "weight": 100, "tags": ["bgp"] },
     "nodeToken": "n_abc123.<sha256>",
     "relayConfigToml": "instance_name = \"mclink-node-n_abc123\"\n...",

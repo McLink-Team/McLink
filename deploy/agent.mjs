@@ -23,8 +23,8 @@
  *   而不是读管道。
  *
  * 用法：
- *   node deploy/agent.mjs --master https://master.example.com --key <注册密钥> \
- *     --region cn-east --endpoint relay-sh.example.com:11010 --name relay-sh
+ *   node deploy/agent.mjs --master https://cnnic.link --key <注册密钥> \
+ *     --region cn-east --endpoint relay-sh.cnnic.link:11010 --name relay-sh
  *   node deploy/agent.mjs --help
  *
  * 环境变量（命令行参数优先）：
@@ -67,7 +67,7 @@ const HELP = `mclink 子节点（区域中继）agent ${AGENT_VERSION}
     --endpoint <公网地址> [--name <节点名>] [更多选项]
 
 必填:
-  --master <URL>             主控地址，例如 https://master.example.com
+  --master <URL>             主控地址，例如 https://cnnic.link
                              或 MCLINK_NODE_MASTER
   --key <注册密钥>            管理台签发的**一次性**注册密钥（首次注册后即可删除）
                              或 MCLINK_NODE_ENROLL_KEY
@@ -77,7 +77,7 @@ const HELP = `mclink 子节点（区域中继）agent ${AGENT_VERSION}
                              hk / oversea（auto 仅用于房间调度，不能用于节点）
                              或 MCLINK_NODE_REGION
   --endpoint <host:port>     客户端连接本节点用的公网地址，端口即 EasyTier 监听端口，
-                             例如 relay-sh.example.com:11010
+                             例如 relay-sh.cnnic.link:11010
                              或 MCLINK_NODE_ENDPOINT
 
 可选:

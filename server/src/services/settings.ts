@@ -1,5 +1,5 @@
 /** 平台设置：默认值 + 持久化覆盖 */
-import type { PlatformSettings } from '@mclink/shared';
+import type { PlatformSettings, PublicPlatformSettings } from '@mclink/shared';
 import { SettingsRepo } from '../db/users.ts';
 import type { ServerConfig } from '../config.ts';
 
@@ -20,7 +20,25 @@ export const DEFAULT_SETTINGS: PlatformSettings = {
   registrationOpen: true,
   relayPort: 11010,
   announcement: null,
+
+  requireEmailVerification: true,
+  smtpHost: '',
+  smtpPort: 465,
+  smtpSecure: 'ssl',
+  smtpUser: '',
+  smtpPassword: null,
+  smtpFrom: '',
+  emailCodeTtlMinutes: 15,
 };
+
+/**
+ * 抹掉敏感字段后再对外返回。
+ * 管理接口一律用它，别直接把 `current` 抛出去——那会把 SMTP 密码带进浏览器。
+ */
+export function toPublicSettings(settings: PlatformSettings): PublicPlatformSettings {
+  const { smtpPassword, ...rest } = settings;
+  return { ...rest, smtpPasswordSet: typeof smtpPassword === 'string' && smtpPassword.length > 0 };
+}
 
 export class SettingsService {
   #cache: PlatformSettings | null = null;
@@ -35,10 +53,23 @@ export class SettingsService {
   get current(): PlatformSettings {
     if (this.#cache) return this.#cache;
     const stored = this.repo.get<Partial<PlatformSettings>>(SETTINGS_KEY, {});
+    const smtp = this.config.smtp;
+    const fromEnv: Partial<PlatformSettings> = {
+      ...(smtp.host ? { smtpHost: smtp.host } : {}),
+      ...(smtp.user ? { smtpUser: smtp.user } : {}),
+      ...(smtp.password ? { smtpPassword: smtp.password } : {}),
+      ...(smtp.from ? { smtpFrom: smtp.from } : {}),
+      ...(smtp.requireVerification !== null ? { requireEmailVerification: smtp.requireVerification } : {}),
+      ...(smtp.codeTtlMinutes !== null ? { emailCodeTtlMinutes: smtp.codeTtlMinutes } : {}),
+      // 端口与加密方式只认"环境变量是否显式给过"：否则会盖掉管理台里的选择
+      ...(process.env.MCLINK_SMTP_PORT ? { smtpPort: smtp.port } : {}),
+      ...(process.env.MCLINK_SMTP_SECURE ? { smtpSecure: smtp.secure } : {}),
+    };
     const merged: PlatformSettings = {
       ...DEFAULT_SETTINGS,
       relayPort: this.config.easytier.relayPort,
       registrationOpen: this.config.registrationOpen,
+      ...fromEnv,
       ...stored,
     };
     this.#cache = merged;

@@ -1,18 +1,37 @@
 /** 管理员接口：仪表盘、节点管理、房间管理、用户管理、流量、审计、中继控制 */
-import { Routes, regionLabel, type PlatformSettings } from '@mclink/shared';
+import { Routes, emailProblem, regionLabel, type PlatformSettings, type SmtpEncryption } from '@mclink/shared';
 import type { App } from '../app.ts';
 import type { Router } from '../http/kit.ts';
-import { optInt, optStr, paging, requireAdmin } from './helpers.ts';
+import { optInt, optStr, paging, req, requireAdmin } from './helpers.ts';
 import { HttpError } from '../util/errors.ts';
 import { logger } from '../logger.ts';
 import { toNode } from '../db/nodes.ts';
 import { toRoom } from '../db/rooms.ts';
 import { enrollKey as makeEnrollKey } from '../util/id.ts';
 import { buildOverview } from './public.ts';
-import { DEFAULT_SETTINGS } from '../services/settings.ts';
+import { DEFAULT_SETTINGS, toPublicSettings } from '../services/settings.ts';
 import { SCHEMA_VERSION } from '../db/schema.ts';
 
 const log = logger('api:admin');
+
+/**
+ * 读取一个"允许为空"的字符串字段。
+ * 与 `optStr` 的区别：空字符串会被保留（用于清空 SMTP 主机、发件人这类可选项），
+ * 未出现该字段时才返回 undefined。
+ */
+function stringField(body: Record<string, unknown>, key: string, max: number): string | undefined {
+  if (!(key in body)) return undefined;
+  const value = body[key];
+  if (value === null || value === undefined) return '';
+  return typeof value === 'string' ? value.trim().slice(0, max) : '';
+}
+
+/** 审计日志里不留明文密码 */
+function redactPatch(patch: Partial<PlatformSettings>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...patch };
+  if ('smtpPassword' in out) out.smtpPassword = out.smtpPassword === null ? null : '<已隐藏>';
+  return out;
+}
 
 /**
  * EasyTier 的网络白名单是「空格分隔的 wildmatch 模式串」。
@@ -371,12 +390,19 @@ export function registerAdminRoutes(router: Router, app: App): void {
   router.get(Routes.adminSettings, (ctx) => {
     requireAdmin(ctx);
     return {
-      settings: app.settings.current,
-      defaults: DEFAULT_SETTINGS,
+      // 密码在这里被抹掉：只回 smtpPasswordSet
+      settings: toPublicSettings(app.settings.current),
+      defaults: toPublicSettings(DEFAULT_SETTINGS),
+      mail: app.mailer.describe(),
       env: {
         relayPort: app.config.easytier.relayPort,
         relayNetworkWhitelist: app.config.easytier.relayNetworkWhitelist,
         registrationOpen: app.config.registrationOpen,
+        smtpHost: app.config.smtp.host,
+        smtpPort: app.config.smtp.port,
+        smtpSecure: app.config.smtp.secure,
+        smtpFrom: app.config.smtp.from,
+        requireEmailVerification: app.config.smtp.requireVerification,
       },
     };
   }, { auth: true, admin: true });
@@ -406,6 +432,43 @@ export function registerAdminRoutes(router: Router, app: App): void {
       }
     }
 
+    /* ---------------------------------------------------------- 邮件设置 */
+    if ('requireEmailVerification' in body) {
+      patch.requireEmailVerification = body.requireEmailVerification !== false;
+    }
+    // 空字符串是合法值（表示"清空这个字段"），所以不能用 optStr
+    if ('smtpHost' in body) patch.smtpHost = stringField(body, 'smtpHost', 200);
+    if ('smtpUser' in body) patch.smtpUser = stringField(body, 'smtpUser', 120);
+    if ('smtpFrom' in body) patch.smtpFrom = stringField(body, 'smtpFrom', 200);
+    const smtpPort = optInt(body, 'smtpPort', 1, 65535);
+    if (smtpPort !== undefined) patch.smtpPort = smtpPort;
+    const smtpSecure = stringField(body, 'smtpSecure', 16);
+    if (smtpSecure !== undefined) {
+      if (!['ssl', 'starttls', 'none'].includes(smtpSecure)) {
+        throw HttpError.badRequest('加密方式只能是 ssl / starttls / none', { smtpSecure: '取值不合法' });
+      }
+      patch.smtpSecure = smtpSecure as SmtpEncryption;
+    }
+    const ttl = optInt(body, 'emailCodeTtlMinutes', 1, 1440);
+    if (ttl !== undefined) patch.emailCodeTtlMinutes = ttl;
+    /*
+     * 密码是三态语义，必须区分开：
+     *   不传字段  = 不要动现在的密码（控制台只显示"已设置"，不回显明文）
+     *   null      = 清空
+     *   非空字符串 = 改成这个
+     * 如果按普通 optStr 处理，"不改密码"会被当成"清空密码"。
+     */
+    if ('smtpPassword' in body) {
+      const raw = body.smtpPassword;
+      if (raw === null) patch.smtpPassword = null;
+      else if (typeof raw === 'string' && raw.trim().length > 0) patch.smtpPassword = raw.trim().slice(0, 200);
+    }
+
+    if (patch.smtpFrom !== undefined && patch.smtpFrom.length > 0) {
+      const problem = emailProblem(patch.smtpFrom.replace(/^.*<([^>]+)>.*$/, '$1'));
+      if (problem) throw HttpError.badRequest(`发件人不是合法邮箱：${problem}`, { smtpFrom: problem });
+    }
+
     const settings = app.settings.update(patch);
     app.audit.write({
       actorType: 'admin',
@@ -413,10 +476,43 @@ export function registerAdminRoutes(router: Router, app: App): void {
       actorName: auth.username,
       action: 'settings.update',
       targetType: 'settings',
-      detail: patch,
+      // 别把 SMTP 密码写进审计日志
+      detail: redactPatch(patch),
       ip: ctx.ip,
     });
-    return settings;
+    return { settings: toPublicSettings(settings), mail: app.mailer.describe() };
+  }, { auth: true, admin: true });
+
+  /* ---------------------------------------------------------- 邮件排障 */
+
+  router.get(Routes.adminMailStatus, (ctx) => {
+    requireAdmin(ctx);
+    return { ...app.mailer.describe(), recent: app.mailer.recent() };
+  }, { auth: true, admin: true });
+
+  /**
+   * 发测试邮件。
+   * 注意：**发失败也返回 200** —— 这是一次"诊断"，不是一次业务提交，
+   * 失败时最有用的是 SMTP 会话原文，用 5xx 把它包进 error.message 里反而丢了。
+   */
+  router.post(Routes.adminMailTest, async (ctx) => {
+    const auth = requireAdmin(ctx);
+    const body = await ctx.body();
+    const to = req(body, 'to', '收件邮箱');
+    const problem = emailProblem(to);
+    if (problem) throw HttpError.badRequest(problem, { to: problem });
+
+    const attempt = await app.mailer.sendTest(to);
+    app.audit.write({
+      actorType: 'admin',
+      actorId: auth.userId,
+      actorName: auth.username,
+      action: attempt.ok ? 'settings.mail_test_ok' : 'settings.mail_test_failed',
+      targetType: 'settings',
+      detail: { to, error: attempt.error },
+      ip: ctx.ip,
+    });
+    return attempt;
   }, { auth: true, admin: true });
 
   /* ---------------------------------------------------------- 中继 */

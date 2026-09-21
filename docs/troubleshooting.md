@@ -136,7 +136,7 @@ grep MCLINK_ET_CLI /etc/mclink/mclink.env
 | --- | --- | --- |
 | 服务是否在跑 | `systemctl status mclink-node` | 端口/路径参数错误导致 ExecStart 失败 |
 | agent 日志 | `journalctl -u mclink-node -f` | 看 `注册失败` / `心跳鉴权失败` / `心跳失败` |
-| 主控可达性 | `curl -sS -o /dev/null -w '%{http_code}\n' https://master.example.com/api/v1/meta` | DNS、出网被墙、证书过期 |
+| 主控可达性 | `curl -sS -o /dev/null -w '%{http_code}\n' https://cnnic.link/api/v1/meta` | DNS、出网被墙、证书过期 |
 | 令牌是否落盘 | `ls -l /etc/mclink/node-token.json` | 目录权限不对（必须 owner mclink:600） |
 | 节点是否被禁用 | 管理台节点页 | `disabled: true` 时 agent 会主动停核心 |
 | region 是否合法 | 日志里主控返回 `未知区域` | 必须用内置区域 id |
@@ -238,8 +238,8 @@ curl -s -H "Authorization: Bearer <token>" \
 **处置**：在 `/etc/mclink/mclink.env` 里显式配置并重启：
 
 ```
-MCLINK_RELAY_PUBLIC_HOST=relay.example.com
-MCLINK_PUBLIC_BASE_URL=https://mclink.example.com
+MCLINK_RELAY_PUBLIC_HOST=relay.cnnic.link
+MCLINK_PUBLIC_BASE_URL=https://cnnic.link
 ```
 
 （`install-server.sh --public-url` / `--relay-public-host` 会自动写入。）

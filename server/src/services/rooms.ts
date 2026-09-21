@@ -37,6 +37,7 @@ import { NodeRepo, type NodeRow } from '../db/nodes.ts';
 import { UserRepo } from '../db/users.ts';
 import { AuditRepo } from '../db/traffic.ts';
 import { MessageRepo } from '../db/chat.ts';
+import { assertEmailVerified } from './email-gate.ts';
 import type { SettingsService } from './settings.ts';
 
 const log = logger('rooms');
@@ -185,6 +186,8 @@ export class RoomService {
     if (user.banned === 1) throw HttpError.forbidden('账号已被封禁');
 
     const s = this.settings.current;
+    // 邮箱门禁放在所有业务检查之前：没验证邮箱的账号连"配额用满了"都不该知道
+    assertEmailVerified(user, s.requireEmailVerification);
     const maxRooms = user.max_rooms ?? s.defaultMaxRooms;
     if (maxRooms > 0 && this.rooms.countActiveByHost(input.userId) >= maxRooms) {
       throw HttpError.conflict(`最多同时创建 ${maxRooms} 个房间，请先关闭旧房间`);
@@ -295,6 +298,7 @@ export class RoomService {
     const user = this.users.findById(input.userId);
     if (!user) throw HttpError.notFound('用户不存在');
     if (user.banned === 1) throw HttpError.forbidden('账号已被封禁');
+    assertEmailVerified(user, this.settings.current.requireEmailVerification);
     if (row.status !== 'open') throw new HttpError(400, ErrorCodes.ROOM_CLOSED, '房间已关闭');
     if (row.expires_at && row.expires_at < new Date().toISOString()) {
       this.rooms.close(row.id, 'expired');

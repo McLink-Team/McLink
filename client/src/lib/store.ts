@@ -56,6 +56,24 @@ const state = reactive({
   joined: [] as Room[],
   regions: [] as Array<RegionDef & { onlineNodes: number; peers: number; capacity: number }>,
   settings: null as PlatformSettings | null,
+  /**
+   * 平台公开提示（来自 /meta）。
+   * 客户端靠它决定"登录后是否强制走验证邮箱界面"——所以它是远端事实，
+   * 不能靠本地猜：关掉校验的平台不该被客户端拦住。
+   */
+  platform: {
+    requireEmailVerification: false,
+    emailServiceAvailable: false,
+    registrationOpen: true,
+  },
+  /** 邮箱验证状态（来自 /auth/email） */
+  email: {
+    email: null as string | null,
+    verified: false,
+    codeExpiresAt: null as string | null,
+    resendAfterSeconds: 0,
+    required: false,
+  },
   session: null as ActiveSession | null,
   peers: [] as PeerView[],
   /**
@@ -117,6 +135,7 @@ export async function bootstrap(): Promise<void> {
       await refreshUser();
       await loadRooms();
       await loadPlatformInfo();
+      await refreshEmailStatus();
       connectRealtime();
     } catch {
       setToken(null);
@@ -134,17 +153,62 @@ export async function loadPlatformInfo(): Promise<void> {
   try {
     const [regions, meta] = await Promise.all([
       api.get<Array<RegionDef & { onlineNodes: number; peers: number; capacity: number }>>(Routes.regions),
-      api.get<{ clientVersion: string; relayPort: number; registrationOpen: boolean }>(Routes.meta),
+      api.get<{
+        clientVersion: string;
+        relayPort: number;
+        registrationOpen: boolean;
+        requireEmailVerification: boolean;
+        emailServiceAvailable: boolean;
+      }>(Routes.meta),
     ]);
     state.regions = regions;
-    state.settings = await api.get<PlatformSettings>('/admin/settings', {})
-      .then((r) => (r as unknown as { settings: PlatformSettings }).settings)
+    state.platform = {
+      requireEmailVerification: meta.requireEmailVerification === true,
+      emailServiceAvailable: meta.emailServiceAvailable === true,
+      registrationOpen: meta.registrationOpen !== false,
+    };
+    state.settings = await api
+      .get<{ settings: PlatformSettings }>('/admin/settings', {})
+      .then((r) => r.settings)
       .catch(() => null);
-    void meta;
   } catch {
     state.regions = REGIONS.map((r) => ({ ...r, onlineNodes: 0, peers: 0, capacity: 0 }));
   }
 }
+
+/* ---------------------------------------------------------- 邮箱验证 */
+
+/** 拉取自己的邮箱验证状态（登录后、以及每次界面需要时调用） */
+export async function refreshEmailStatus(): Promise<void> {
+  if (!state.user) return;
+  try {
+    state.email = await api.get<typeof state.email>('/auth/email');
+  } catch {
+    /* 拿不到就维持原状态：这只是提示信息，不该让界面报错 */
+  }
+}
+
+/** 绑定邮箱并要求主控寄验证码 */
+export async function startEmailVerification(email: string): Promise<void> {
+  const res = await api.post<{ email: string; expiresAt: string | null }>(Routes.emailStart, { email });
+  state.email = { ...state.email, email: res.email, verified: false, codeExpiresAt: res.expiresAt, resendAfterSeconds: 60 };
+  if (state.user) state.user = { ...state.user, email: res.email, emailVerified: false };
+}
+
+/** 提交验证码 */
+export async function submitEmailCode(code: string): Promise<void> {
+  const res = await api.post<{ user: UserSelf }>(Routes.emailVerify, { code });
+  state.user = res.user;
+  await refreshEmailStatus();
+}
+
+/** 这个账号现在必须去验证邮箱吗（界面据此强制跳转） */
+export const mustVerifyEmail = computed(
+  () =>
+    state.user !== null &&
+    state.platform.requireEmailVerification &&
+    (state.email.verified === false || state.user.emailVerified === false),
+);
 
 export async function login(username: string, password: string): Promise<void> {
   const result = await api.post<{ token: string; user: UserSelf }>(Routes.login, { username, password });
@@ -152,19 +216,30 @@ export async function login(username: string, password: string): Promise<void> {
   state.user = result.user;
   await loadRooms();
   await loadPlatformInfo();
+  await refreshEmailStatus();
   connectRealtime();
 }
 
-export async function register(username: string, password: string, displayName?: string): Promise<void> {
-  const result = await api.post<{ token: string; user: UserSelf }>(Routes.register, {
-    username,
-    password,
-    displayName,
-  });
+/** 注册。填了邮箱时主控会顺带寄验证码（返回体里带 emailSent / emailError） */
+export async function register(
+  username: string,
+  password: string,
+  displayName?: string,
+  email?: string,
+): Promise<{ emailSent: boolean; emailError: string | null }> {
+  const result = await api.post<{
+    token: string;
+    user: UserSelf;
+    emailSent?: boolean;
+    emailError?: string | null;
+  }>(Routes.register, { username, password, displayName, email });
   setToken(result.token);
   state.user = result.user;
   await loadRooms();
+  await loadPlatformInfo();
+  await refreshEmailStatus();
   connectRealtime();
+  return { emailSent: result.emailSent === true, emailError: result.emailError ?? null };
 }
 
 export async function logout(): Promise<void> {

@@ -208,6 +208,45 @@ create index if not exists idx_room_messages_room on room_messages(room_id, id);
 create index if not exists idx_room_messages_ts on room_messages(created_at);
 `;
 
-export const MIGRATIONS: readonly string[] = [V1_INITIAL, V2_RELAY_ROOM_MAP, V3_ROOM_ACCESS_LOG, V4_ROOM_CHAT];
+const V5_EMAIL_VERIFICATION = `
+alter table users add column email_verified integer not null default 0;
+
+/* 一个邮箱只能绑一个账号（历史账号 email 为 null，部分索引正好跳过它们） */
+create unique index if not exists idx_users_email on users(email) where email is not null;
+
+/* 验证码：只存 sha256，不存明文；consumed_at 非空表示已用过 */
+create table if not exists email_codes (
+  id          text primary key,
+  user_id     text not null references users(id) on delete cascade,
+  email       text not null,
+  code_hash   text not null,
+  purpose     text not null default 'verify',
+  attempts    integer not null default 0,
+  created_at  text not null,
+  expires_at  text not null,
+  consumed_at text
+);
+create index if not exists idx_email_codes_user on email_codes(user_id, created_at);
+create index if not exists idx_email_codes_email on email_codes(email, created_at);
+
+/*
+ * 历史上没有邮箱的账号（管理员建号、早期玩家）：
+ * 它们没有可验证的地址，因此不标记为已验证 —— email_verified 只表示"真的验证过"，
+ * 这样"是否验证"这件事在库里只有一个含义，不会出现"标记为已验证但其实没验过"的脏数据。
+ *
+ * 它们在开关打开时会被门禁挡住（见 services/email-gate.ts 的说明），
+ * 解法是让这些账号自己绑一次邮箱，或由管理员关掉开关。
+ * 这一条 UPDATE 只是把不变量写实：没邮箱的账号不该处于"已验证"状态。
+ */
+update users set email_verified = 0 where email is null;
+`;
+
+export const MIGRATIONS: readonly string[] = [
+  V1_INITIAL,
+  V2_RELAY_ROOM_MAP,
+  V3_ROOM_ACCESS_LOG,
+  V4_ROOM_CHAT,
+  V5_EMAIL_VERIFICATION,
+];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

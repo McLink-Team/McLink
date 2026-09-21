@@ -63,7 +63,7 @@ mclink 主控一键安装 / 升级脚本（Debian 12 x86_64）
   --port <端口>              主控 HTTP 端口，默认 8787
   --relay-port <端口>        主控中继的公共端口（TCP+UDP 同一端口），默认 11010
   --admin-password <密码>    初始管理员密码；不传则随机生成并只打印一次
-  --public-url <URL>         对外访问地址，例如 https://mclink.example.com
+  --public-url <URL>         对外访问地址，例如 https://cnnic.link
   --relay-public-host <主机> 客户端连接中继用的公网主机名/IP；默认从 --public-url 推导
   --no-relay                 不启动主控自带中继（MCLINK_AUTOSTART_RELAY=false），
                              必须已部署子节点，否则无法创建房间
@@ -617,7 +617,7 @@ EOF
                        --master ${base_url} \\
                        --key <注册密钥> \\
                        --region cn-east \\
-                       --endpoint relay-sh.example.com:${RELAY_PORT} \\
+                       --endpoint relay-sh.cnnic.link:${RELAY_PORT} \\
                        --name relay-sh
   5) 反向代理/证书 : 参考 ${APP_DIR}/deploy/nginx.conf.example（WS 必须单独配置）
   6) 是否放行 ${HTTP_PORT}: 若已用 HTTPS 反代，不要对公网放行 ${HTTP_PORT}

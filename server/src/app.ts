@@ -10,7 +10,7 @@ import type { ServerConfig } from './config.ts';
 import { finalizeConfig, loadConfig, REPO_ROOT, SERVER_ROOT } from './config.ts';
 import { initLogger, logger } from './logger.ts';
 import { Db } from './db/index.ts';
-import { EnrollKeyRepo, MetaStore, SettingsRepo, UserRepo } from './db/users.ts';
+import { EnrollKeyRepo, EmailCodeRepo, MetaStore, SettingsRepo, UserRepo } from './db/users.ts';
 import { RoomRepo } from './db/rooms.ts';
 import { NodeRepo } from './db/nodes.ts';
 import { AuditRepo, TrafficRepo } from './db/traffic.ts';
@@ -19,6 +19,7 @@ import { AuthService } from './services/auth.ts';
 import { NodeService } from './services/nodes.ts';
 import { RoomService } from './services/rooms.ts';
 import { SettingsService } from './services/settings.ts';
+import { MailerService } from './services/mailer.ts';
 import { RelayManager } from './easytier/manager.ts';
 import { hashPassword } from './util/id.ts';
 
@@ -87,6 +88,8 @@ export interface App {
   messages: MessageRepo;
   enrollKeys: EnrollKeyRepo;
   settings: SettingsService;
+  mailer: MailerService;
+  emailCodes: EmailCodeRepo;
   meta: MetaStore;
   auth: AuthService;
   roomService: RoomService;
@@ -124,11 +127,13 @@ export function createApp(options: CreateAppOptions = {}): App {
   const audit = new AuditRepo(db);
   const messages = new MessageRepo(db);
   const enrollKeys = new EnrollKeyRepo(db);
+  const emailCodes = new EmailCodeRepo(db);
   const settingsRepo = new SettingsRepo(db);
   const meta = new MetaStore(db);
   const settings = new SettingsService(settingsRepo, config);
+  const mailer = new MailerService(settings);
 
-  const auth = new AuthService(config, users, audit, settings);
+  const auth = new AuthService(config, users, audit, settings, emailCodes, mailer);
   const roomService = new RoomService(config, rooms, nodes, users, audit, settings, events, messages);
   const nodeService = new NodeService(config, nodes, enrollKeys, audit, settings);
   const relay = new RelayManager(config);
@@ -150,6 +155,8 @@ export function createApp(options: CreateAppOptions = {}): App {
     messages,
     enrollKeys,
     settings,
+    mailer,
+    emailCodes,
     meta,
     auth,
     roomService,

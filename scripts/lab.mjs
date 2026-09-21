@@ -21,6 +21,7 @@
  */
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -89,6 +90,136 @@ async function api(pathname, { method = 'GET', body, token } = {}) {
 }
 
 const children = [];
+
+/**
+ * 与 `api` 相同，但**失败也返回结果**（而不是抛异常）。
+ * 断言"这一步应该被拒绝"时必须用它——否则只能靠 catch 一个字符串，判断不出错误码。
+ */
+async function apiFail(pathname, { method = 'POST', body, token } = {}) {
+  const headers = { 'content-type': 'application/json' };
+  if (token) headers.authorization = `Bearer ${token}`;
+  const res = await fetch(`${MASTER}/api/v1${pathname}`, {
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const json = await res.json().catch(() => ({}));
+  return { status: res.status, code: json?.error?.code ?? null, message: json?.error?.message ?? '', data: json?.data ?? null };
+}
+
+/**
+ * 本机 SMTP 收信桩。
+ *
+ * 为什么不连真实邮件服务商：验证流程的正确性（码发到哪个地址、错码被拒、限流生效、
+ * 验证后放行）与"哪家 SMTP"无关，而真实服务商还需要密钥、会把测试码发到真人邮箱。
+ * 这里用 ~60 行说一遍 SMTP 服务端该说的话，就能把整条链路跑通，
+ * 顺带把主控的 SMTP 客户端（EHLO/AUTH/DATA 的解析与转义）也一起验了。
+ */
+function startSmtpSink() {
+  const messages = [];
+  /** 是否出现过 AUTH 命令（用来验证"配置了账号时客户端确实认证了"） */
+  const state = { authCommands: [] };
+  const server = net.createServer((socket) => {
+    let buffer = '';
+    let inData = false;
+    let data = '';
+    /** AUTH LOGIN 是两问两答，必须记状态；否则会把用户名/密码当成别的命令 */
+    let authStage = 0;
+    let envelope = { from: '', to: [] };
+    socket.setEncoding('utf8');
+    socket.write('220 sink.local ESMTP mclink-lab\r\n');
+    socket.on('data', (chunk) => {
+      buffer += chunk;
+      for (;;) {
+        const index = buffer.indexOf('\r\n');
+        if (index < 0) break;
+        const line = buffer.slice(0, index);
+        buffer = buffer.slice(index + 2);
+
+        /* DATA 阶段：只攒正文，直到单独一行的 "." */
+        if (inData) {
+          if (line === '.') {
+            inData = false;
+            messages.push({ ...envelope, raw: data, at: new Date().toISOString() });
+            data = '';
+            socket.write('250 2.0.0 Ok: queued\r\n');
+          } else {
+            data += `${line}\r\n`;
+          }
+          continue;
+        }
+
+        /* AUTH LOGIN 的后续两行是 bare base64，必须先于其它判断消费掉 */
+        if (authStage === 1) {
+          authStage = 2;
+          socket.write('334 UGFzc3dvcmQ6\r\n');
+          continue;
+        }
+        if (authStage === 2) {
+          authStage = 0;
+          socket.write('235 2.7.0 Authentication successful\r\n');
+          continue;
+        }
+
+        const upper = line.toUpperCase();
+        if (upper.startsWith('EHLO') || upper.startsWith('HELO')) {
+          socket.write('250-sink.local\r\n250-AUTH PLAIN LOGIN\r\n250-SIZE 10485760\r\n250 8BITMIME\r\n');
+        } else if (upper.startsWith('AUTH PLAIN')) {
+          state.authCommands.push('PLAIN');
+          socket.write('235 2.7.0 Authentication successful\r\n');
+        } else if (upper === 'AUTH LOGIN') {
+          state.authCommands.push('LOGIN');
+          authStage = 1;
+          socket.write('334 VXNlcm5hbWU6\r\n');
+        } else if (upper.startsWith('MAIL FROM')) {
+          envelope = { from: line.slice(line.indexOf('<') + 1, line.lastIndexOf('>')), to: [] };
+          socket.write('250 2.1.0 Ok\r\n');
+        } else if (upper.startsWith('RCPT TO')) {
+          envelope.to.push(line.slice(line.indexOf('<') + 1, line.lastIndexOf('>')));
+          socket.write('250 2.1.5 Ok\r\n');
+        } else if (upper === 'DATA') {
+          inData = true;
+          socket.write('354 End data with <CR><LF>.<CR><LF>\r\n');
+        } else if (upper === 'QUIT') {
+          socket.write('221 2.0.0 Bye\r\n');
+          socket.end();
+        } else if (upper === 'RSET' || upper === 'NOOP') {
+          socket.write('250 2.0.0 Ok\r\n');
+        } else {
+          socket.write('502 5.5.2 Command not implemented\r\n');
+        }
+      }
+    });
+    socket.on('error', () => socket.destroy());
+  });
+
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const port = server.address().port;
+      resolve({
+        port,
+        messages,
+        state,
+        /** 从收到的信里解出正文（正文是 base64，见 smtp.ts 的 buildMessage） */
+        plainText(message) {
+          const [, body = ''] = message.raw.split('\r\n\r\n');
+          return Buffer.from(body.replace(/\r\n/g, ''), 'base64').toString('utf8');
+        },
+        async waitForMessage(count = 1, timeoutMs = 8000) {
+          const deadline = Date.now() + timeoutMs;
+          while (Date.now() < deadline) {
+            if (messages.length >= count) return messages[count - 1];
+            await sleep(120);
+          }
+          return null;
+        },
+        close() {
+          server.close();
+        },
+      });
+    });
+  });
+}
 /**
  * 用 easytier-core 自己的 `--check-config` 校验生成的配置。
  *
@@ -361,6 +492,178 @@ function adaptConfig(ticket, { listenPort, label, ipv4 }) {
 
 /* --------------------------------------------------------------- 主流程 */
 
+/**
+ * 邮箱验证的端到端实验。
+ *
+ * 用本机收信桩代替真实 SMTP 服务商，跑通「注册 → 收码 → 校验 → 放行」整条链路，
+ * 并且**故意走错几步**：不填邮箱、填错码、验证前建房、60 秒内重复要码。
+ * 结束后会把开关恢复成关闭，免得影响后面的实验（它们需要能直接注册的账号）。
+ */
+async function runEmailVerificationLab(adminToken) {
+  step('邮箱验证：注册 → 收码 → 验证 → 放行（本机 SMTP 收信桩）');
+
+  const sink = await startSmtpSink();
+  /*
+   * 先快照邮件相关设置，结束时原样还原。
+   * 不能写死成 false：实验不该替平台决定「要不要验证邮箱」这个业务开关，
+   * 否则跑一次实验就把线上策略改掉了。
+   */
+  const snapshot = (await api('/admin/settings', { token: adminToken })).settings;
+  emailPolicySnapshot = snapshot;
+  emailPolicyToken = adminToken;
+  /**
+   * 还原平台原来的邮件策略。
+   *
+   * 分两次调用是有原因的：
+   *   · 实验中途（中间这次）必须把开关**关掉**——后面的实验要能直接注册账号，
+   *     而开启验证后不带邮箱的注册会被服务端拒绝；
+   *   · 全部实验结束后（收尾那次）要还原成**跑实验之前的值**，
+   *     这样"跑一次实验"不会顺手改掉平台的业务策略。
+   */
+  const restore = () =>
+    api('/admin/settings', {
+      method: 'PATCH',
+      token: adminToken,
+      body: {
+        requireEmailVerification: snapshot.requireEmailVerification,
+        smtpHost: snapshot.smtpHost,
+        smtpPort: snapshot.smtpPort,
+        smtpSecure: snapshot.smtpSecure,
+        smtpUser: snapshot.smtpUser,
+        smtpFrom: snapshot.smtpFrom,
+        emailCodeTtlMinutes: snapshot.emailCodeTtlMinutes,
+      },
+    });
+  const pauseVerification = () =>
+    api('/admin/settings', {
+      method: 'PATCH',
+      token: adminToken,
+      body: { requireEmailVerification: false, smtpHost: snapshot.smtpHost, smtpPort: snapshot.smtpPort, smtpSecure: snapshot.smtpSecure, smtpFrom: snapshot.smtpFrom },
+    });
+  console.log(colors.dim(`  实验前设置：验证邮箱=${snapshot.requireEmailVerification} smtp=${snapshot.smtpHost || '（未配置）'}`));
+
+  try {
+    await api('/admin/settings', {
+      method: 'PATCH',
+      token: adminToken,
+      body: {
+        requireEmailVerification: true,
+        smtpHost: '127.0.0.1',
+        smtpPort: sink.port,
+        smtpSecure: 'none',
+        smtpUser: '',
+        smtpFrom: 'mclink <no-reply@cnnic.link>',
+        emailCodeTtlMinutes: 15,
+      },
+    });
+    check('邮件服务被识别为「已配置」', true, `smtp=127.0.0.1:${sink.port}（不加密，收信桩）`);
+
+    // 1) 开关打开后，不带邮箱注册必须被挡
+    const failUser = `mail${RUN_ID}a`;
+    const noEmail = await apiFail('/auth/register', {
+      method: 'POST',
+      body: { username: failUser, password: 'Lab-Test-123' },
+    });
+    check('开启后未填邮箱无法注册', noEmail.status === 400 && noEmail.code === 'email_required', `${noEmail.status} ${noEmail.code}`);
+
+    // 2) 带邮箱注册 → 账号建立 + 验证码寄出
+    const username = `mail${RUN_ID}b`;
+    const email = `${username}@example.com`;
+    const reg = await api('/auth/register', {
+      method: 'POST',
+      body: { username, password: 'Lab-Test-123', displayName: `邮箱验证${RUN_ID}`, email },
+    });
+    check('带邮箱注册成功', Boolean(reg.token), `user=${reg.user.username}`);
+    check('注册响应标明"未验证邮箱"', reg.user.emailVerified === false, `emailVerified=${reg.user.emailVerified}`);
+    check('注册响应回传发信结果', reg.emailSent === true, `emailSent=${reg.emailSent} error=${reg.emailError ?? '无'}`);
+
+    // 3) 收信桩必须真的收到那封信，且正文里有 6 位码
+    const received = await sink.waitForMessage(1);
+    check('收信桩收到验证码邮件', Boolean(received), received ? `to=${received.to.join(',')}` : '超时未收到');
+    check('收件人就是注册填的邮箱', received?.to.includes(email) === true, received?.to.join(',') ?? '');
+    const text = received ? sink.plainText(received) : '';
+    const code = /(\d{6})/.exec(text)?.[1] ?? '';
+    check('邮件正文里能解出 6 位验证码', /^\d{6}$/.test(code), code ? `code=${code.slice(0, 2)}****` : `正文=${text.slice(0, 60)}`);
+    check('邮件主题是中文且未乱码（RFC 2047）', /=\?UTF-8\?B\?/.test(received?.raw ?? ''), (received?.raw ?? '').split('\r\n')[2] ?? '');
+
+    // 4) 验证之前不能建房
+    const blocked = await apiFail('/rooms', {
+      method: 'POST',
+      token: reg.token,
+      body: { name: `未验证房间 ${RUN_ID}`, zone: 'auto', visibility: 'public', listenPort: BASE_PORT + 300 },
+    });
+    check('未验证邮箱时建房被拒', blocked.status === 403 && blocked.code === 'email_not_verified', `${blocked.status} ${blocked.code}`);
+
+    // 5) 错码必须被拒，且不消耗掉正确码
+    const wrong = code === '000000' ? '111111' : '000000';
+    const badCode = await apiFail('/auth/email/verify', { method: 'POST', token: reg.token, body: { code: wrong } });
+    check('错误的验证码被拒', badCode.status === 400 && badCode.code === 'email_code_invalid', `${badCode.status} ${badCode.message}`);
+
+    // 6) 正确码通过
+    const verified = await api('/auth/email/verify', { method: 'POST', token: reg.token, body: { code } });
+    check('正确验证码通过', verified.ok === true && verified.user.emailVerified === true, `emailVerified=${verified.user.emailVerified}`);
+
+    // 7) 验证之后同一张票就能建房了
+    const room = await api('/rooms', {
+      method: 'POST',
+      token: reg.token,
+      body: { name: `已验证房间 ${RUN_ID}`, zone: 'auto', visibility: 'public', listenPort: BASE_PORT + 300 },
+    });
+    check('验证后立刻可以建房', Boolean(room.room?.id), `加入码=${room.room?.code}`);
+    if (room.room?.id) await api(`/rooms/${room.room.id}/close`, { method: 'POST', token: reg.token }).catch(() => {});
+
+    // 8) 60 秒内重复要码要被限流（否则就成了免费发信机）
+    const resend = await apiFail('/auth/email/start', { method: 'POST', token: reg.token, body: { email } });
+    check('短时间内重复要码被限流', resend.status === 429 && resend.code === 'rate_limited', `${resend.status} ${resend.code}`);
+
+    // 9) 控制台的测试邮件走的是同一条发送路径
+    const test = await api('/admin/mail/test', { method: 'POST', token: adminToken, body: { to: `admin-${RUN_ID}@example.com` } });
+    check('控制台测试邮件发送成功', test.ok === true, test.error ?? `to=${test.to}`);
+    check('测试邮件失败时会带回 SMTP 会话（此处为成功，会话为空）', test.transcript === null, String(test.transcript));
+
+    // 10) 配上账号密码后，客户端必须真的走 AUTH（而不是把凭据当摆设）
+    await api('/admin/settings', {
+      method: 'PATCH',
+      token: adminToken,
+      body: { smtpUser: 'no-reply@cnnic.link', smtpPassword: 'lab-not-a-real-password', smtpSecure: 'none' },
+    });
+    const authed = await api('/admin/mail/test', { method: 'POST', token: adminToken, body: { to: `auth-${RUN_ID}@example.com` } });
+    check('配置账号密码后发信仍成功', authed.ok === true, authed.error ?? '');
+    check('客户端确实做了 SMTP 认证', sink.state.authCommands.length > 0, `认证方式=${sink.state.authCommands.join(',')}`);
+    check('认证凭据没有泄漏进返回值', !JSON.stringify(authed).includes('lab-not-a-real-password'), '');
+  } finally {
+    sink.close();
+    // 中间这次：关掉开关让后面的实验能直接注册；收尾时会还原成快照值
+    await pauseVerification().catch(() => {});
+  }
+}
+
+/** 跑实验之前的邮件策略快照，收尾时用它还原 */
+let emailPolicySnapshot = null;
+let emailPolicyToken = null;
+
+async function restoreEmailPolicy() {
+  if (!emailPolicySnapshot || !emailPolicyToken) return;
+  try {
+    await api('/admin/settings', {
+      method: 'PATCH',
+      token: emailPolicyToken,
+      body: {
+        requireEmailVerification: emailPolicySnapshot.requireEmailVerification,
+        smtpHost: emailPolicySnapshot.smtpHost,
+        smtpPort: emailPolicySnapshot.smtpPort,
+        smtpSecure: emailPolicySnapshot.smtpSecure,
+        smtpUser: emailPolicySnapshot.smtpUser,
+        smtpFrom: emailPolicySnapshot.smtpFrom,
+        emailCodeTtlMinutes: emailPolicySnapshot.emailCodeTtlMinutes,
+      },
+    });
+    console.log(colors.dim(`  已还原邮件策略：验证邮箱=${emailPolicySnapshot.requireEmailVerification}`));
+  } catch (err) {
+    console.log(colors.warn(`  还原邮件策略失败：${err.message}`));
+  }
+}
+
 async function main() {
   for (const bin of [CORE, CLI]) {
     if (!fs.existsSync(bin)) {
@@ -380,6 +683,13 @@ async function main() {
   const admin = await api('/auth/login', { method: 'POST', body: { username: ADMIN_USER, password: ADMIN_PASS } });
   const adminToken = admin.token;
   check('管理员登录成功', Boolean(adminToken), `角色=${admin.user.role}`);
+
+  /*
+   * 先跑邮箱验证实验，并把开关恢复为关闭。
+   * 顺序有意放在最前面：它是唯一会改动平台级开关的实验，
+   * 放前面能保证后面的实验（需要"注册即可用"的账号）不受影响。
+   */
+  await runEmailVerificationLab(adminToken);
 
   step('注册一个子节点（区域中继）');
   const nodePort = BASE_PORT;
@@ -898,6 +1208,8 @@ process.on('SIGINT', () => {
 
 /** 结束进程前留一点时间让子进程真正退出，否则 libuv 在退出阶段 kill 会触发断言 */
 async function finish(code) {
+  // 先把平台设置还原成实验前的样子，再收进程：实验不该留下副作用
+  await restoreEmailPolicy();
   cleanup();
   await sleep(400);
   process.exit(code);

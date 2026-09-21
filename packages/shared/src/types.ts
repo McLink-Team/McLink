@@ -22,6 +22,8 @@ export interface User {
 /** 仅本人可见的账号信息 */
 export interface UserSelf extends User {
   email: string | null;
+  /** 邮箱是否已验证。开启「要求验证邮箱」后，未验证账号不能建房/进房 */
+  emailVerified: boolean;
   /** 月度流量配额（字节）；null = 不限 */
   quotaBytes: number | null;
   /** 本计费周期已用流量（字节） */
@@ -373,4 +375,39 @@ export interface PlatformSettings {
   relayPort: number;
   /** 公告 */
   announcement: string | null;
+
+  /* -------------------------------------------------------------- 邮件 */
+
+  /**
+   * 是否要求先验证邮箱才能建房/进房。
+   * 打开后：注册必须填邮箱；未验证邮箱的账号（含历史账号）会被服务端拒绝建房/进房。
+   */
+  requireEmailVerification: boolean;
+  /** SMTP 服务器地址；留空表示未配置邮件服务 */
+  smtpHost: string;
+  smtpPort: number;
+  /** 加密方式：ssl = 465 直连 TLS；starttls = 587 明文起手再升级；none = 不加密（仅限本机中继） */
+  smtpSecure: SmtpEncryption;
+  /** SMTP 登录账号；留空表示不做 AUTH（内网中继常见） */
+  smtpUser: string;
+  /**
+   * SMTP 登录密码。
+   * ⚠️ 只写不读：管理接口返回设置时会把它抹掉，只回 `smtpPasswordSet` 表示"已设置"。
+   */
+  smtpPassword: string | null;
+  /** 发件人，可写 `mclink <no-reply@example.com>`；留空则用 smtpUser */
+  smtpFrom: string;
+  /** 验证码有效期（分钟） */
+  emailCodeTtlMinutes: number;
 }
+
+/**
+ * 对外返回的平台设置：所有敏感字段被抹掉，只留"是否已设置"。
+ * 管理接口必须返回这个形状，而不是直接抛 PlatformSettings。
+ */
+export interface PublicPlatformSettings extends Omit<PlatformSettings, 'smtpPassword'> {
+  smtpPasswordSet: boolean;
+}
+
+/** SMTP 连接加密方式 */
+export type SmtpEncryption = 'ssl' | 'starttls' | 'none';

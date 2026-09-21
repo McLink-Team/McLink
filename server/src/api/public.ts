@@ -33,6 +33,13 @@ export function registerPublicRoutes(router: Router, app: App): void {
       serverTime: new Date().toISOString(),
       uptimeSeconds: Math.floor((Date.now() - app.startedAt) / 1000),
       registrationOpen: s.registrationOpen,
+      /**
+       * 是否要求验证邮箱才能建房/进房。
+       * 客户端/网页靠它决定"注册后要不要显示验证码界面"——所以必须是公开信息，
+       * 但**不能**顺带泄露 SMTP 配置。
+       */
+      requireEmailVerification: s.requireEmailVerification,
+      emailServiceAvailable: app.mailer.configured,
       announcement: s.announcement,
       relayPort: s.relayPort,
       easytierVersion: app.relay.cliVersion,

@@ -6,7 +6,7 @@
  * 改完需要重新部署；这里列出来只是为了让管理员知道「为什么改了没生效」。
  */
 import { computed, onMounted, reactive, ref } from 'vue';
-import { Routes, formatBytes, type PlatformSettings } from '@mclink/shared';
+import { Routes, emailProblem, formatBytes, type PublicPlatformSettings } from '@mclink/shared';
 import { api, friendlyError } from '../../lib/api.ts';
 import { asPatternList, reportError, toFloat, toInt } from '../../lib/ui.ts';
 import { notifyOk } from '../../lib/toast.ts';
@@ -17,22 +17,91 @@ interface EnvSettings {
   /** 服务端是空格分隔的字符串（MCLINK_RELAY_WHITELIST），不是数组 */
   relayNetworkWhitelist: string | string[];
   registrationOpen: boolean;
+  smtpHost: string;
+  smtpPort: number;
+  smtpSecure: string;
+  smtpFrom: string;
+  requireEmailVerification: boolean | null;
+}
+
+/** 控制台看到的设置：没有 SMTP 明文密码，只有"是否已设置" */
+type SettingsView = PublicPlatformSettings;
+
+/** SMTP 排障信息（来自 /admin/mail/status 与测试接口） */
+interface MailAttempt {
+  at: string;
+  to: string;
+  kind: 'verify' | 'test';
+  ok: boolean;
+  error: string | null;
+  transcript: string[] | null;
+}
+
+interface MailStatus {
+  configured: boolean;
+  host: string;
+  port: number;
+  secure: string;
+  user: string;
+  from: string;
+  passwordSet: boolean;
+  requireEmailVerification: boolean;
+  codeTtlMinutes: number;
+  lastAttempt: MailAttempt | null;
+  recent?: MailAttempt[];
 }
 
 interface SettingsResponse {
-  settings: PlatformSettings;
-  defaults: PlatformSettings;
+  settings: SettingsView;
+  defaults: SettingsView;
+  mail: MailStatus;
   env: EnvSettings;
 }
 
-const settings = ref<PlatformSettings | null>(null);
-const defaults = ref<PlatformSettings | null>(null);
+const settings = ref<SettingsView | null>(null);
+const defaults = ref<SettingsView | null>(null);
 const env = ref<EnvSettings | null>(null);
+const mail = ref<MailStatus | null>(null);
 const loading = ref(true);
 const error = ref<string | null>(null);
 const saving = ref(false);
 const saveError = ref<string | null>(null);
 const savedAt = ref<string | null>(null);
+
+/* ------------------------------------------------------------ 邮件排障 */
+
+const testTo = ref('');
+const testing = ref(false);
+const testResult = ref<MailAttempt | null>(null);
+const showTranscript = ref(false);
+
+async function sendTestMail(): Promise<void> {
+  const to = testTo.value.trim();
+  const problem = emailProblem(to);
+  if (problem) {
+    testResult.value = { at: new Date().toISOString(), to, kind: 'test', ok: false, error: problem, transcript: null };
+    return;
+  }
+  testing.value = true;
+  testResult.value = null;
+  try {
+    // 注意：发失败也返回 200 —— 这接口是"诊断"，失败时最有价值的是 SMTP 会话原文
+    testResult.value = await api.post<MailAttempt>(Routes.adminMailTest, { to });
+    mail.value = await api.get<MailStatus>(Routes.adminMailStatus);
+    if (testResult.value.ok) notifyOk(`测试邮件已投递给 ${to}`);
+  } catch (err) {
+    testResult.value = {
+      at: new Date().toISOString(),
+      to,
+      kind: 'test',
+      ok: false,
+      error: friendlyError(err),
+      transcript: null,
+    };
+  } finally {
+    testing.value = false;
+  }
+}
 
 const form = reactive({
   siteName: '',
@@ -49,9 +118,23 @@ const form = reactive({
   roomTtlMinutes: '720',
   defaultCapacityPeers: '500',
   relayBandwidthKbps: '0',
+  /* 邮件 */
+  requireEmailVerification: true,
+  smtpHost: '',
+  smtpPort: '465',
+  smtpSecure: 'ssl' as 'ssl' | 'starttls' | 'none',
+  smtpUser: '',
+  smtpFrom: '',
+  emailCodeTtlMinutes: '15',
+  /**
+   * 密码是三态：留空 = 不改（保留已存的），填了 = 改成这个。
+   * 不做回显是因为设置接口从不返回明文，界面也无从显示。
+   */
+  smtpPassword: '',
+  clearSmtpPassword: false,
 });
 
-function fillFrom(value: PlatformSettings): void {
+function fillFrom(value: SettingsView): void {
   form.siteName = value.siteName;
   form.siteTagline = value.siteTagline;
   form.clientDownloadUrl = value.clientDownloadUrl;
@@ -66,6 +149,15 @@ function fillFrom(value: PlatformSettings): void {
   form.roomTtlMinutes = String(value.roomTtlMinutes);
   form.defaultCapacityPeers = String(value.defaultCapacityPeers);
   form.relayBandwidthKbps = String(value.relayBandwidthKbps);
+  form.requireEmailVerification = value.requireEmailVerification;
+  form.smtpHost = value.smtpHost;
+  form.smtpPort = String(value.smtpPort);
+  form.smtpSecure = value.smtpSecure;
+  form.smtpUser = value.smtpUser;
+  form.smtpFrom = value.smtpFrom;
+  form.emailCodeTtlMinutes = String(value.emailCodeTtlMinutes);
+  form.smtpPassword = '';
+  form.clearSmtpPassword = false;
 }
 
 async function load(): Promise<void> {
@@ -75,6 +167,7 @@ async function load(): Promise<void> {
     settings.value = result.settings;
     defaults.value = result.defaults;
     env.value = result.env;
+    mail.value = result.mail;
     fillFrom(result.settings);
     error.value = null;
   } catch (err) {
@@ -93,7 +186,7 @@ async function save(): Promise<void> {
   saving.value = true;
   saveError.value = null;
   try {
-    const updated = await api.patch<PlatformSettings>(Routes.adminSettings, {
+    const payload: Record<string, unknown> = {
       siteName: form.siteName.trim(),
       siteTagline: form.siteTagline.trim(),
       clientDownloadUrl: form.clientDownloadUrl.trim(),
@@ -107,9 +200,22 @@ async function save(): Promise<void> {
       roomTtlMinutes: Math.max(0, toInt(form.roomTtlMinutes, 720)),
       defaultCapacityPeers: Math.max(10, toInt(form.defaultCapacityPeers, 500)),
       relayBandwidthKbps: Math.max(0, toInt(form.relayBandwidthKbps, 0)),
-    });
-    settings.value = updated;
-    fillFrom(updated);
+      requireEmailVerification: form.requireEmailVerification,
+      smtpHost: form.smtpHost.trim(),
+      smtpPort: Math.min(65535, Math.max(1, toInt(form.smtpPort, 465))),
+      smtpSecure: form.smtpSecure,
+      smtpUser: form.smtpUser.trim(),
+      smtpFrom: form.smtpFrom.trim(),
+      emailCodeTtlMinutes: Math.min(1440, Math.max(1, toInt(form.emailCodeTtlMinutes, 15))),
+    };
+    // 只有真的动了密码才提交这个字段：不传字段 = 服务端保留原密码
+    if (form.clearSmtpPassword) payload.smtpPassword = null;
+    else if (form.smtpPassword.trim().length > 0) payload.smtpPassword = form.smtpPassword.trim();
+
+    const updated = await api.patch<{ settings: SettingsView; mail: MailStatus }>(Routes.adminSettings, payload);
+    settings.value = updated.settings;
+    mail.value = updated.mail;
+    fillFrom(updated.settings);
     savedAt.value = new Date().toISOString();
     notifyOk('平台设置已保存');
   } catch (err) {
@@ -223,6 +329,169 @@ const envWhitelist = computed(() => asPatternList(env.value?.relayNetworkWhiteli
           <span class="mono">MCLINK_REGISTRATION_OPEN</span> 约束：环境变量关闭时，这里的开关不会覆盖它（当前环境值：
           {{ env?.registrationOpen ? '开放' : '关闭' }}）。
         </p>
+
+      <!-- 邮件服务（SMTP） -->
+      <section class="console-section">
+        <div class="console-section-head">
+          <div class="console-section-text">
+            <h2 class="console-section-title">邮件服务（SMTP）</h2>
+            <p class="console-section-note">
+              主控自己发信，不依赖外部服务。465 端口用 SSL，587 端口用 STARTTLS。
+            </p>
+          </div>
+          <div class="console-section-actions">
+            <Badge :tone="mail?.configured ? 'ok' : 'warn'">
+              {{ mail?.configured ? '已配置' : '未配置' }}
+            </Badge>
+          </div>
+        </div>
+
+        <div
+          v-if="form.requireEmailVerification && !mail?.configured"
+          class="notice notice-danger"
+        >
+          <Badge tone="danger">会挡住注册</Badge>
+          <span class="notice-body">
+            「要求验证邮箱」已打开，但邮件服务还没配好：新用户注册会直接失败。
+            请先填好下面的 SMTP 参数并发一封测试邮件，或者临时关掉这个开关。
+          </span>
+        </div>
+
+        <label class="switch switch-row">
+          <input v-model="form.requireEmailVerification" type="checkbox" />
+          <span>要求验证邮箱（未验证的账号不能建房/进房）</span>
+        </label>
+        <p class="hint hint-measure">
+          没绑定邮箱的历史账号与管理员建号不受影响；玩家自己填了邮箱就必须验证。
+          验证码 6 位数字，只存哈希，不存明文。
+        </p>
+
+        <div class="form-grid">
+          <div class="field">
+            <label class="label" for="smtp-host">SMTP 服务器</label>
+            <input
+              id="smtp-host"
+              v-model="form.smtpHost"
+              class="input mono"
+              maxlength="200"
+              placeholder="smtp.example.com"
+            />
+            <span v-if="env?.smtpHost" class="hint">环境变量给了初始值：{{ env.smtpHost }}</span>
+          </div>
+          <div class="field">
+            <label class="label" for="smtp-port">端口</label>
+            <input id="smtp-port" v-model="form.smtpPort" class="input mono" inputmode="numeric" placeholder="465" />
+            <span class="hint">SSL 一般 465，STARTTLS 一般 587。</span>
+          </div>
+          <div class="field">
+            <label class="label" for="smtp-secure">加密方式</label>
+            <select id="smtp-secure" v-model="form.smtpSecure" class="select">
+              <option value="ssl">SSL（直连 TLS，465）</option>
+              <option value="starttls">STARTTLS（先明文再升级，587）</option>
+              <option value="none">不加密（仅限本机/内网中继）</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="label" for="smtp-from">发件人</label>
+            <input
+              id="smtp-from"
+              v-model="form.smtpFrom"
+              class="input mono"
+              maxlength="200"
+              placeholder="mclink <no-reply@cnnic.link>"
+            />
+            <span class="hint">留空则用下面的登录账号当发件人。</span>
+          </div>
+          <div class="field">
+            <label class="label" for="smtp-user">登录账号</label>
+            <input
+              id="smtp-user"
+              v-model="form.smtpUser"
+              class="input mono"
+              maxlength="120"
+              autocomplete="off"
+              placeholder="no-reply@cnnic.link"
+            />
+            <span class="hint">内网中继不需要认证时留空。</span>
+          </div>
+          <div class="field">
+            <label class="label" for="smtp-pass">登录密码</label>
+            <input
+              id="smtp-pass"
+              v-model="form.smtpPassword"
+              class="input"
+              type="password"
+              autocomplete="new-password"
+              :placeholder="mail?.passwordSet ? '已设置（留空表示不修改）' : '未设置'"
+              :disabled="form.clearSmtpPassword"
+            />
+            <label class="switch" style="margin-top: 4px">
+              <input v-model="form.clearSmtpPassword" type="checkbox" />
+              <span class="hint">清空已保存的密码</span>
+            </label>
+            <span class="hint">只写不读：保存后服务端不会再把它回传给浏览器。</span>
+          </div>
+          <div class="field">
+            <label class="label" for="smtp-ttl">验证码有效期（分钟）</label>
+            <input id="smtp-ttl" v-model="form.emailCodeTtlMinutes" class="input mono" inputmode="numeric" />
+            <span class="hint">默认 15 分钟；同一账号 60 秒内只能要一次码。</span>
+          </div>
+        </div>
+
+        <!-- 测试邮件：走的是与验证码完全相同的发送路径 -->
+        <div class="console-section-sub">
+          <div class="console-section-text">
+            <h3 class="console-sub-title">发一封测试邮件</h3>
+            <p class="console-section-note">失败时会把完整的 SMTP 会话显示出来 —— 报错基本都在那段对话里。</p>
+          </div>
+        </div>
+        <div class="row wrap" style="gap: var(--s-3); align-items: flex-end">
+          <div class="field grow" style="min-width: 240px">
+            <label class="label" for="mail-test-to">收件地址</label>
+            <input
+              id="mail-test-to"
+              v-model="testTo"
+              class="input"
+              type="email"
+              placeholder="你自己的邮箱"
+              @keyup.enter="sendTestMail()"
+            />
+          </div>
+          <button class="btn" type="button" :disabled="testing" @click="sendTestMail">
+            <span v-if="testing" class="spinner" />
+            发送测试邮件
+          </button>
+        </div>
+
+        <div v-if="testResult" class="stack" style="margin-top: var(--s-3)">
+          <div :class="testResult.ok ? 'notice notice-ok' : 'notice notice-danger'">
+            <Badge :tone="testResult.ok ? 'ok' : 'danger'">{{ testResult.ok ? '已投递' : '失败' }}</Badge>
+            <span class="notice-body">
+              <template v-if="testResult.ok">
+                {{ testResult.to }} 已交给 {{ mail?.host }}:{{ mail?.port }}，请查收（也看看垃圾邮件）。
+              </template>
+              <template v-else>{{ testResult.error }}</template>
+            </span>
+            <button
+              v-if="testResult.transcript && testResult.transcript.length > 0"
+              class="btn btn-sm btn-ghost"
+              type="button"
+              @click="showTranscript = !showTranscript"
+            >
+              {{ showTranscript ? '收起会话' : '查看 SMTP 会话' }}
+            </button>
+          </div>
+          <pre v-if="showTranscript && testResult.transcript" class="code-block log-block">{{
+            testResult.transcript.join('\n')
+          }}</pre>
+        </div>
+
+        <div v-if="mail?.lastAttempt" class="hint hint-measure" style="margin-top: var(--s-3)">
+          上一次发信：{{ mail.lastAttempt.kind === 'test' ? '测试邮件' : '验证码' }} →
+          {{ mail.lastAttempt.to }}，{{ mail.lastAttempt.ok ? '成功' : '失败：' + mail.lastAttempt.error }}
+          <span class="mono">（{{ mail.lastAttempt.at }}）</span>
+        </div>
+      </section>
       </section>
 
       <!-- 客户端下载 -->

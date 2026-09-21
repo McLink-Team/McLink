@@ -78,10 +78,10 @@ pnpm dev:web          # Vite 开发服务器：http://127.0.0.1:5173
 
 ```bash
 # 正式发包（把域名换成你自己的主控）
-VITE_MCLINK_MASTER=https://mc.example.com pnpm dist:client
+VITE_MCLINK_MASTER=https://cnnic.link pnpm dist:client
 
 # 或在 client/.env.local 里写（该文件不入库，见 client/.env.example）
-VITE_MCLINK_MASTER=https://mc.example.com
+VITE_MCLINK_MASTER=https://cnnic.link
 ```
 
 这样设计有两个目的：一是避免玩家被诱导把客户端指向钓鱼主控；
@@ -93,7 +93,7 @@ VITE_MCLINK_MASTER=https://mc.example.com
 
 ```bash
 # 1) 打包（产物在 client/release/）
-VITE_MCLINK_MASTER=https://mc.example.com pnpm dist:client
+VITE_MCLINK_MASTER=https://cnnic.link pnpm dist:client
 
 # 2) 放进主控的下载目录（默认 server/data/downloads，可用 MCLINK_DOWNLOADS_DIR 改）
 cp client/release/mclink-client-0.1.0-x64.exe server/data/downloads/

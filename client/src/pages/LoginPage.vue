@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { clientState, login, register, setDevice } from '../lib/store.ts';
 import { USING_DEV_MASTER, friendlyError, getMasterUrl } from '../lib/api.ts';
-import { passwordProblem } from '@mclink/shared';
+import { emailProblem, passwordProblem } from '@mclink/shared';
 import PublicPlaza from '../components/PublicPlaza.vue';
 
 const mode = ref<'login' | 'register'>('login');
@@ -10,6 +10,7 @@ const username = ref('');
 const password = ref('');
 const password2 = ref('');
 const displayName = ref('');
+const email = ref('');
 const device = ref(clientState.deviceName);
 const busy = ref(false);
 const error = ref('');
@@ -18,12 +19,17 @@ const error = ref('');
 const master = computed(() => getMasterUrl());
 const isDevMaster = USING_DEV_MASTER;
 
+/** 平台是否要求验证邮箱（来自 /meta）：是的话注册表单把邮箱变成必填 */
+const emailRequired = computed(() => clientState.platform.requireEmailVerification);
+
 const canSubmit = computed(() => {
   if (busy.value) return false;
   if (!username.value.trim() || !password.value) return false;
   if (mode.value === 'register') {
     if (password.value !== password2.value) return false;
     if (passwordProblem(password.value)) return false;
+    if (emailRequired.value && email.value.trim().length === 0) return false;
+    if (email.value.trim().length > 0 && emailProblem(email.value.trim()) !== null) return false;
   }
   return true;
 });
@@ -40,7 +46,16 @@ async function submit(): Promise<void> {
     if (mode.value === 'login') {
       await login(username.value.trim(), password.value);
     } else {
-      await register(username.value.trim(), password.value, displayName.value.trim() || undefined);
+      const res = await register(
+        username.value.trim(),
+        password.value,
+        displayName.value.trim() || undefined,
+        email.value.trim() || undefined,
+      );
+      // 账号已经建好、也登录了；信没寄出去只影响"下一步验证"，不该让注册整体失败
+      if (!res.emailSent && res.emailError) {
+        error.value = `账号已创建，但验证码没寄出去：${res.emailError}`;
+      }
     }
   } catch (err) {
     error.value = friendlyError(err);
@@ -91,6 +106,20 @@ async function submit(): Promise<void> {
             <label class="label">确认密码</label>
             <input v-model="password2" class="input" type="password" autocomplete="new-password" />
             <div v-if="password2 && password !== password2" class="hint" style="color: var(--danger)">两次输入不一致</div>
+          </div>
+          <div class="field">
+            <label class="label">邮箱{{ emailRequired ? '' : '（可选）' }}</label>
+            <input
+              v-model="email"
+              class="input"
+              type="email"
+              autocomplete="email"
+              placeholder="you@example.com"
+            />
+            <div v-if="email && emailProblem(email.trim())" class="hint" style="color: var(--danger)">
+              {{ emailProblem(email.trim()) }}
+            </div>
+            <div v-else-if="emailRequired" class="hint">注册后会把 6 位验证码发到这个邮箱，验证完才能建房、进房。</div>
           </div>
           <div class="field">
             <label class="label">昵称（可选）</label>

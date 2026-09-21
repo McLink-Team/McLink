@@ -31,6 +31,32 @@ export const ROOM_NAME_MAX = 32;
 export const DEVICE_NAME_MAX = 32;
 
 /**
+ * 邮箱校验。
+ *
+ * 刻意不做"完全符合 RFC 5322"的解析——那种正则出了名地长且仍然会放过一堆东西，
+ * 而真正的判定标准是"验证码能不能寄到"。这里只挡明显不是邮箱的输入：
+ * 必须有且只有一个 @、本地部分与域名都非空、域名至少有一个点且顶级域是纯字母。
+ * 最长 120 字符（与 users.email 的截断长度一致）。
+ */
+export const EMAIL_MAX = 120;
+export const EMAIL_PATTERN = /^[^\s@]{1,64}@[^\s@.]+(\.[^\s@.]+)*\.[a-zA-Z]{2,24}$/;
+
+export function emailProblem(value: string): string | null {
+  const email = value.trim();
+  if (email.length === 0) return '邮箱不能为空';
+  if (email.length > EMAIL_MAX) return `邮箱不能超过 ${EMAIL_MAX} 个字符`;
+  if (!EMAIL_PATTERN.test(email)) return '邮箱格式不正确';
+  return null;
+}
+
+/** 验证码：6 位数字，允许用户带空格输入 */
+export const EMAIL_CODE_PATTERN = /^\d{6}$/;
+
+export function normalizeEmailCode(value: string): string {
+  return value.replace(/\s+/g, '');
+}
+
+/**
  * 校验一个纯字符串字段字典（来自 JSON body 或 query）。
  * 返回值只包含通过校验的键；数值用 `coerceInt` 另外转换。
  */
