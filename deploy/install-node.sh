@@ -29,6 +29,9 @@ MASTER=""
 ENROLL_KEY=""
 REGION=""
 ENDPOINT=""
+# 运行端口 / 链接端口：默认都取 --endpoint 的端口；NAT 后面两者可以不同
+LISTEN_PORT=""
+CONNECT_PORT=""
 NODE_NAME=""
 CAPACITY_PEERS="500"
 TAGS=""
@@ -69,8 +72,16 @@ mclink 子节点（区域中继）一键安装脚本（Debian 12 x86_64）
   --key <注册密钥>           管理台签发的一次性注册密钥
   --region <区域>            区域标识：cn-east / cn-south / cn-north / cn-central /
                             cn-southwest / cn-northwest / cn-northeast / hk / oversea
-  --endpoint <host:port>    客户端连接本节点用的公网地址，端口即 EasyTier 监听端口，
-                            例如 relay-sh.cnnic.link:11010
+  --endpoint <host:port>    客户端连接本节点用的公网地址；端口即**链接端口**，
+                            例如 relay-sh.cnnic.link:21010
+
+端口说明（NAT / 端口映射部署必读）：
+  --listen-port <端口>       **运行端口**：本机 easytier-core 实际监听的端口，默认取
+                            --endpoint 的端口。本机只能绑 11010、而对外只开放 21010 时，
+                            就写 --listen-port 11010（防火墙/安全组要放行的是**它**，
+                            以及映射出去的那个对外端口）。
+  --connect-port <端口>      **链接端口**：主控下发给客户端用的端口，默认取 --endpoint
+                            的端口。两者相同时（多数情况）不用写。
 
 可选：
   --name <名称>              节点显示名，默认取主机名
@@ -79,7 +90,7 @@ mclink 子节点（区域中继）一键安装脚本（Debian 12 x86_64）
   --dir <路径>               安装目录，默认 /opt/mclink-node
   --interval <秒>            心跳间隔，默认 20
   --easytier-version <版本>  EasyTier 发行版本，默认 v2.6.4
-  --agent-src <文件>         指定 agent.mjs 的来源路径（默认用本脚本同目录下的 agent.mjs）
+  --agent-src <文件>         指定 agent.mjs 的来源路径（默认从主控下载）
   --source <目录>            源码目录（用于在 node.env 里记录文档路径，可省略）
   --skip-easytier            跳过 EasyTier 下载
   --no-ufw                   不修改 ufw 规则
@@ -89,7 +100,9 @@ mclink 子节点（区域中继）一键安装脚本（Debian 12 x86_64）
 说明：
   * 注册密钥是一次性的：安装成功后 agent 会把长期令牌写入 /etc/mclink/node-token.json，
     之后重启服务无需再次注册。可以放心把 MCLINK_NODE_ENROLL_KEY 从 node.env 中删掉。
-  * 必须在安全组 / 防火墙放行 --endpoint 的端口（TCP 与 UDP 都要）。
+  * 防火墙要放行的是**运行端口**（本机监听的那个）与对外映射端口，TCP 与 UDP 都要。
+  * 典型的"一条命令"由管理台生成（控制台 → 中继节点 → 签发注册密钥），
+    形如 `curl -fsSL <主控>/agent/install.sh | sudo bash -s -- ...`，无需先拿到本仓库。
 EOF
 }
 
@@ -100,6 +113,8 @@ while [[ $# -gt 0 ]]; do
     --key)               [[ $# -ge 2 ]] || die "--key 缺少参数"; ENROLL_KEY="$2"; shift 2 ;;
     --region)            [[ $# -ge 2 ]] || die "--region 缺少参数"; REGION="$2"; shift 2 ;;
     --endpoint)          [[ $# -ge 2 ]] || die "--endpoint 缺少参数"; ENDPOINT="$2"; shift 2 ;;
+    --listen-port)       [[ $# -ge 2 ]] || die "--listen-port 缺少参数"; LISTEN_PORT="$2"; shift 2 ;;
+    --connect-port)      [[ $# -ge 2 ]] || die "--connect-port 缺少参数"; CONNECT_PORT="$2"; shift 2 ;;
     --name)              [[ $# -ge 2 ]] || die "--name 缺少参数"; NODE_NAME="$2"; shift 2 ;;
     --capacity-peers)    [[ $# -ge 2 ]] || die "--capacity-peers 缺少参数"; CAPACITY_PEERS="$2"; shift 2 ;;
     --tags)              [[ $# -ge 2 ]] || die "--tags 缺少参数"; TAGS="$2"; shift 2 ;;
@@ -128,13 +143,26 @@ case "$MASTER" in
 esac
 MASTER="${MASTER%/}"
 
+# endpoint 允许只写主机名：端口交给 --connect-port / --listen-port
 case "$ENDPOINT" in
-  *:*) : ;;
-  *) die "--endpoint 必须包含端口，例如 relay-sh.cnnic.link:11010" ;;
+  *:*) ENDPOINT_PORT="${ENDPOINT##*:}"
+       [[ "$ENDPOINT_PORT" =~ ^[0-9]+$ ]] || die "--endpoint 端口必须是数字: $ENDPOINT"
+       ;;
+  *)   ENDPOINT_PORT="" ;;
 esac
-ENDPOINT_PORT="${ENDPOINT##*:}"
-[[ "$ENDPOINT_PORT" =~ ^[0-9]+$ ]] || die "--endpoint 端口必须是数字: $ENDPOINT"
-if (( ENDPOINT_PORT < 1 || ENDPOINT_PORT > 65535 )); then die "--endpoint 端口超出范围: $ENDPOINT_PORT"; fi
+ENDPOINT_HOST="${ENDPOINT%%:*}"
+
+# 端口优先级：显式给的 > endpoint 里的 > 默认 11010
+CONNECT_PORT="${CONNECT_PORT:-$ENDPOINT_PORT}"
+LISTEN_PORT="${LISTEN_PORT:-$CONNECT_PORT}"
+CONNECT_PORT="${CONNECT_PORT:-11010}"
+LISTEN_PORT="${LISTEN_PORT:-$CONNECT_PORT}"
+for _p in "$LISTEN_PORT" "$CONNECT_PORT"; do
+  [[ "$_p" =~ ^[0-9]+$ ]] || die "端口必须是数字: $_p"
+  if (( _p < 1 || _p > 65535 )); then die "端口超出范围: $_p"; fi
+done
+unset _p
+ENDPOINT="${ENDPOINT_HOST}:${CONNECT_PORT}"
 
 case "$INSTALL_DIR" in
   /*) : ;;
@@ -156,7 +184,10 @@ fi
 NODE_NAME="${NODE_NAME:0:40}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -z "$AGENT_SRC" ]]; then
+# 只在**确实存在**本地副本时才用本地的：
+# 通过 `curl | sudo bash` 安装时同目录下不会有 agent.mjs，此时必须留空，
+# 好让 install_agent() 走"从主控下载"的分支。
+if [[ -z "$AGENT_SRC" && -f "${SCRIPT_DIR}/agent.mjs" ]]; then
   AGENT_SRC="${SCRIPT_DIR}/agent.mjs"
 fi
 
@@ -354,6 +385,9 @@ write_env_file() {
     echo "MCLINK_NODE_ENROLL_KEY=${ENROLL_KEY}"
     echo "MCLINK_NODE_REGION=${REGION}"
     echo "MCLINK_NODE_ENDPOINT=${ENDPOINT}"
+    echo "# 运行端口 = 本机 easytier-core 监听的端口；链接端口 = 主控下发给客户端的端口"
+    echo "MCLINK_NODE_LISTEN_PORT=${LISTEN_PORT}"
+    echo "MCLINK_NODE_CONNECT_PORT=${CONNECT_PORT}"
     echo "MCLINK_NODE_NAME=${NODE_NAME}"
     echo "MCLINK_NODE_CAPACITY_PEERS=${CAPACITY_PEERS}"
     [[ -n "$TAGS" ]] && echo "MCLINK_NODE_TAGS=${TAGS}"
@@ -426,17 +460,19 @@ configure_firewall() {
     return 0
   fi
   if ! command -v ufw >/dev/null 2>&1; then
-    log "未安装 ufw，跳过防火墙配置（请确认安全组已放行 ${ENDPOINT_PORT} TCP+UDP）"
+    log "未安装 ufw，跳过防火墙配置（请确认安全组已放行运行端口 ${LISTEN_PORT} TCP+UDP）"
     return 0
   fi
   if ! ufw status 2>/dev/null | grep -q "Status: active"; then
-    log "ufw 未启用，跳过防火墙配置（请确认安全组已放行 ${ENDPOINT_PORT} TCP+UDP）"
+    log "ufw 未启用，跳过防火墙配置（请确认安全组已放行运行端口 ${LISTEN_PORT} TCP+UDP）"
     return 0
   fi
-  log "为 ufw 放行中继端口 ${ENDPOINT_PORT}…"
-  ufw allow "${ENDPOINT_PORT}/tcp" comment 'mclink node relay tcp' >/dev/null 2>&1 || warn "ufw 放行 ${ENDPOINT_PORT}/tcp 失败"
-  ufw allow "${ENDPOINT_PORT}/udp" comment 'mclink node relay udp' >/dev/null 2>&1 || warn "ufw 放行 ${ENDPOINT_PORT}/udp 失败"
-  ok "已放行 ${ENDPOINT_PORT}（TCP+UDP）"
+  # 放行的是**运行端口**：本机 easytier-core 实际在它上面监听。
+  # 对外那个端口由 NAT / 端口映射负责，本机防火墙管不到。
+  log "为 ufw 放行运行端口 ${LISTEN_PORT}（对外链接端口 ${CONNECT_PORT}）…"
+  ufw allow "${LISTEN_PORT}/tcp" comment 'mclink node relay tcp' >/dev/null 2>&1 || warn "ufw 放行 ${LISTEN_PORT}/tcp 失败"
+  ufw allow "${LISTEN_PORT}/udp" comment 'mclink node relay udp' >/dev/null 2>&1 || warn "ufw 放行 ${LISTEN_PORT}/udp 失败"
+  ok "已放行 ${LISTEN_PORT}（TCP+UDP）"
 }
 
 # ---------------------------------------------------------------- 汇总
@@ -448,7 +484,9 @@ ${c_green}======================= mclink 子节点安装完成 =================
   主控     : ${MASTER}
   节点名   : ${NODE_NAME}
   区域     : ${REGION}
-  公网地址 : ${ENDPOINT}（请确保 TCP 与 UDP 都已放行）
+  运行端口 : ${LISTEN_PORT}（本机 easytier-core 监听；ufw/安全组要放行它，TCP+UDP）
+  链接端口 : ${CONNECT_PORT}（主控下发给客户端的端口；NAT/映射后的对外端口）
+  公网地址 : ${ENDPOINT}
   安装目录 : ${INSTALL_DIR}
   环境变量 : ${ENV_FILE}
   服务     : ${SERVICE_NAME}（systemd，已设为开机自启）
@@ -459,7 +497,8 @@ ${c_green}======================= mclink 子节点安装完成 =================
   3) 令牌就绪后可清理一次性密钥：
        sudo sed -i 's/^MCLINK_NODE_ENROLL_KEY=.*/MCLINK_NODE_ENROLL_KEY=/' ${ENV_FILE}
        sudo systemctl restart ${SERVICE_NAME}
-  4) 排障          : 参见主控上的 docs/troubleshooting.md 与 docs/deployment.md
+  4) 两个端口不同时（NAT/端口映射），请自行确认外部 ${CONNECT_PORT} → 本机 ${LISTEN_PORT} 的映射规则
+  5) 排障          : 参见主控上的 docs/troubleshooting.md 与 docs/deployment.md
 EOF
 }
 

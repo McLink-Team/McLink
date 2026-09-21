@@ -235,6 +235,7 @@ const MIME: Record<string, string> = {
   '.woff2': 'font/woff2',
   '.ttf': 'font/ttf',
   '.txt': 'text/plain; charset=utf-8',
+  '.sh': 'text/x-shellscript; charset=utf-8',
   '.map': 'application/json; charset=utf-8',
   '.exe': 'application/vnd.microsoft.portable-executable',
   '.zip': 'application/zip',

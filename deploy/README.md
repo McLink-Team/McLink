@@ -54,29 +54,38 @@ sudo bash deploy/install-server.sh --port 8787 --relay-port 11010
 
 ## 2. 主控 + 多区域子节点
 
-```bash
-# 步骤 1：在主控管理台 →「节点」→「签发注册密钥」，复制返回的一键命令
-#         （或只复制 enrollKey）
+管理台「节点」→「签发注册密钥」里填好**装在哪、跑哪个端口**，会直接给你一条命令：
 
-# 步骤 2：在区域服务器上执行（把仓库的 deploy/ 目录拷过去，或整仓 clone）
-sudo bash deploy/install-node.sh \
-  --master https://cnnic.link \
-  --key <注册密钥> \
-  --region cn-east \
-  --endpoint relay-sh.cnnic.link:11010 \
-  --name relay-sh
+```bash
+# 主控生成的一行命令（形如）：
+curl -fsSL https://cnnic.link/agent/install.sh | sudo bash -s -- \
+  --master https://cnnic.link --key <注册密钥> --region cn-east --name relay-sh \
+  --endpoint relay-sh.cnnic.link:21010 --listen-port 11010
 ```
+
+在区域服务器上**粘贴执行即可**：主控托管了安装脚本与 agent
+（`/agent/install.sh`、`/agent/agent.mjs`），目标机器不需要先拿到本仓库，
+也不需要 scp 任何文件。
 
 要点：
 
-* `--endpoint` 是**客户端连接该节点用的公网地址**，端口就是该节点的 EasyTier 监听端口；
-  安全组/防火墙必须同时放行该端口的 **TCP 与 UDP**。
+* **两个端口的区别**（NAT / 端口映射部署必读）：
+  * `--listen-port` = **运行端口**：本机 `easytier-core` 实际监听的端口。防火墙/安全组要放行**它**（TCP+UDP）。
+  * `--endpoint` 的端口 = **链接端口**：主控下发给客户端、用来连这个节点的端口。
+  * 两者相同（多数情况）时只写 `--endpoint host:port` 即可；不同（本机 11010、对外只开 21010）
+    就再加 `--listen-port 11010`，并自行在外部做好 `21010 → 11010` 的映射。
+  * 控制台的节点列表会分别显示「Endpoint（链接端口）」与「运行端口」，改链接端口时 endpoint 会自动跟随。
 * 节点注册后状态是 `pending`，**首次心跳成功**才转为 `online`（心跳间隔默认 20 秒，
   服务端 90 秒无心跳判定离线）。
 * 注册密钥是一次性的。装好后可以把 `MCLINK_NODE_ENROLL_KEY` 从 `/etc/mclink/node.env` 清空：
   ```bash
   sudo sed -i 's/^MCLINK_NODE_ENROLL_KEY=.*/MCLINK_NODE_ENROLL_KEY=/' /etc/mclink/node.env
   sudo systemctl restart mclink-node
+  ```
+* 手工安装（没有主控托管、或想从源码装）时，仍然可以直接跑仓库里的脚本：
+  ```bash
+  sudo bash deploy/install-node.sh --master https://cnnic.link --key <注册密钥> \
+    --region cn-east --endpoint relay-sh.cnnic.link:21010 --listen-port 11010 --name relay-sh
   ```
 * 房间调度按区域取节点：`auto` 时按「权重 × 剩余容量」排序取前 2 个做冗余；
   指定区域无可用节点时会回退到全局（并打 `warn` 日志）。
@@ -177,22 +186,31 @@ curl -fsSL https://cnnic.link/agent/install.sh | sudo bash -s -- \
   --master https://cnnic.link \
   --key <注册密钥> \
   --region cn-east \
-  --endpoint relay-sh.cnnic.link:11010
+  --name relay-sh \
+  --endpoint relay-sh.cnnic.link:21010 \
+  --listen-port 11010
 ```
 
-这条命令依赖主控静态目录里存在 `/agent/install.sh`（以及可选的 `/agent/agent.mjs`），
-而**当前代码只静态托管 `/downloads/` 与前端构建产物**，所以默认会取到前端页面而不是脚本，
-直接执行会失败。
+（实际给的是一条**单行**命令，直接复制粘贴即可；这里为了可读性折了行。）
 
-两种可用做法：
+**它现在是可以直接执行的**：主控自己托管这两个文件，不需要拷仓库、也不需要往
+`server/public/` 里手工放东西（早前版本那样给出的是一个 404 的命令）：
 
-1. **（推荐）手工拷贝**：把仓库 `deploy/install-node.sh` 与 `deploy/agent.mjs` 拷到区域服务器，
-   然后 `sudo bash install-node.sh --master ... --key ... --region ... --endpoint ...`。
-2. **让主控能提供安装脚本**（可选，注意构建会清空目录）：
-   ```bash
-   sudo install -D -m 0644 /opt/mclink/app/deploy/install-node.sh /opt/mclink/app/server/public/agent/install.sh
-   sudo install -D -m 0644 /opt/mclink/app/deploy/agent.mjs      /opt/mclink/app/server/public/agent/agent.mjs
-   ```
-   之后管理台给出的命令即可直接执行（`install-node.sh` 在本地找不到 `agent.mjs` 时会从
-   `${MASTER}/agent/agent.mjs` 下载）。
-   注意 `pnpm build:web` 会清空 `server/public/`，每次重新构建前端后都要重跑上面两条命令。
+| 路径 | 内容 | 来源 |
+| --- | --- | --- |
+| `GET /agent/install.sh` | 子节点安装脚本 | 主控读取仓库里的 `deploy/install-node.sh` |
+| `GET /agent/agent.mjs` | 子节点 agent | 主控读取仓库里的 `deploy/agent.mjs` |
+
+两者都由 `server/src/server.ts` 在根路径直接返回（与 `/downloads/` 同级），
+返回的是**文件本体**而不是前端 SPA。它们不含任何密钥：注册密钥是命令行参数，
+一次性且用完即废。
+
+自检：
+
+```bash
+curl -fsSL https://cnnic.link/agent/install.sh | head -n 3   # 应看到 #!/usr/bin/env bash
+curl -fsSL https://cnnic.link/agent/agent.mjs  | head -n 3   # 应看到 #!/usr/bin/env node
+```
+
+如果这两条返回的是 `<!doctype html>`，说明请求打到了前端静态目录（例如反代把它改写到了 `/`），
+检查 nginx 是否对 `/agent/` 做了额外 rewrite。

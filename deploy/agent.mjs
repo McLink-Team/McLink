@@ -76,7 +76,13 @@ const HELP = `mclink 子节点（区域中继）agent ${AGENT_VERSION}
                              cn-southwest / cn-northwest / cn-northeast /
                              hk / oversea（auto 仅用于房间调度，不能用于节点）
                              或 MCLINK_NODE_REGION
-  --endpoint <host:port>     客户端连接本节点用的公网地址，端口即 EasyTier 监听端口，
+  --endpoint <host:port>     客户端连接本节点用的公网地址；端口即**链接端口**，
+                             例如 relay-sh.cnnic.link:21010，或 MCLINK_NODE_ENDPOINT
+  --listen-port <端口>        **运行端口**：本机 easytier-core 实际监听的端口，
+                             默认取 --endpoint 的端口，或 MCLINK_NODE_LISTEN_PORT。
+                             NAT/端口映射后面时（本机 11010、对外 21010）写这个。
+  --connect-port <端口>       **链接端口**：主控下发给客户端用的端口，
+                             默认取 --endpoint 的端口，或 MCLINK_NODE_CONNECT_PORT
                              例如 relay-sh.cnnic.link:11010
                              或 MCLINK_NODE_ENDPOINT
 
@@ -236,6 +242,13 @@ function portOfEndpoint(endpoint) {
   if (!m) return DEFAULT_RELAY_PORT;
   const port = Number(m[1]);
   return port >= 1 && port <= 65535 ? port : DEFAULT_RELAY_PORT;
+}
+
+/** 端口解析：非法或越界当作"没给"（返回 null），让调用方回退 */
+function toPort(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const port = Number.parseInt(String(value), 10);
+  return Number.isFinite(port) && port >= 1 && port <= 65535 ? port : null;
 }
 
 /** 与服务端 rpcPortalForListenPort() 完全一致的推导规则 */
@@ -663,6 +676,12 @@ function parseArgv(argv) {
       case '--endpoint':
         opts.endpoint = value();
         break;
+      case '--listen-port':
+        opts.listenPort = value();
+        break;
+      case '--connect-port':
+        opts.connectPort = value();
+        break;
       case '--name':
         opts.name = value();
         break;
@@ -740,6 +759,14 @@ function resolveConfig(opts) {
     enrollKey: opts.enrollKey ?? envStr('MCLINK_NODE_ENROLL_KEY') ?? '',
     region: opts.region ?? envStr('MCLINK_NODE_REGION') ?? '',
     endpoint: (opts.endpoint ?? envStr('MCLINK_NODE_ENDPOINT') ?? '').trim(),
+    /*
+     * 两个端口：
+     *   listenPort  —— 本机 easytier-core 实际监听的端口（NAT 后面就是本机那个）
+     *   connectPort —— 主控下发给客户端的端口
+     * 都没给时回退到 endpoint 里的端口，保持与旧命令兼容。
+     */
+    listenPort: toPort(opts.listenPort ?? envStr('MCLINK_NODE_LISTEN_PORT')),
+    connectPort: toPort(opts.connectPort ?? envStr('MCLINK_NODE_CONNECT_PORT')),
     name: (opts.name ?? envStr('MCLINK_NODE_NAME') ?? os.hostname()).slice(0, 40),
     capacityPeers,
     tags: tags.slice(0, 8).map((t) => String(t).slice(0, 24)),
@@ -794,7 +821,8 @@ function saveState(cfg, state, log) {
     region: cfg.region,
     endpoint: cfg.endpoint,
     launchArgs: state.launchArgs ?? null,
-    listenPort: portOfEndpoint(cfg.endpoint),
+    listenPort: cfg.listenPort ?? portOfEndpoint(cfg.endpoint),
+    connectPort: cfg.connectPort ?? portOfEndpoint(cfg.endpoint),
     configRevision: state.configRevision ?? 0,
     updatedAt: new Date().toISOString(),
   };
@@ -839,7 +867,12 @@ async function register(cfg, log) {
       `尚未注册且没有可用的注册密钥。请带 --key <注册密钥> 再运行一次（注册密钥在管理台「节点」页签发）。`,
     );
   }
-  log.info('向主控注册子节点…', { master: cfg.master, region: cfg.region, endpoint: cfg.endpoint });
+  log.info('向主控注册子节点…', {
+    master: cfg.master,
+    region: cfg.region,
+    endpoint: cfg.endpoint,
+    listenPort: cfg.listenPort ?? portOfEndpoint(cfg.endpoint),
+  });
 
   const data = await apiFetch(`${cfg.master}${API_REGISTER}`, {
     method: 'POST',
@@ -848,6 +881,9 @@ async function register(cfg, log) {
       name: cfg.name,
       region: cfg.region,
       endpoint: cfg.endpoint,
+      // 运行端口与链接端口分开上报：主控据此生成监听配置与客户端票据
+      listenPort: cfg.listenPort ?? undefined,
+      connectPort: cfg.connectPort ?? undefined,
       capacityPeers: cfg.capacityPeers,
       version: AGENT_VERSION,
       tags: cfg.tags,
@@ -996,7 +1032,12 @@ async function main() {
   }
 
   const launchArgs = materializeLaunchArgs(state.launchArgs ?? ['-c', CONFIG_PLACEHOLDER], cfg.configFile);
-  const listenPort = portOfEndpoint(cfg.endpoint);
+  /*
+   * 这里必须用**运行端口**（本机监听的那个），不是链接端口：
+   * RPC portal 的推导规则在主控侧（rpcPortalForListenPort）也是按监听端口算的，
+   * 两边不一致时同机多节点会撞 RPC 端口。
+   */
+  const listenPort = cfg.listenPort ?? portOfEndpoint(cfg.endpoint);
   cfg.rpcPortal = resolveRpcPortal(launchArgs, listenPort);
   log.info('本机 EasyTier RPC 端口', { rpcPortal: cfg.rpcPortal, listenPort, rule: `${RPC_PORTAL_BASE} + port % ${RPC_PORTAL_MODULO}` });
 

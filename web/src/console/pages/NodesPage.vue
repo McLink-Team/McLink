@@ -39,7 +39,16 @@ interface EnrollKeyResult {
   enrollKey: string;
   note: string | null;
   createdAt: string;
+  /** 一条可直接粘贴到目标机器执行的安装命令 */
   command: string;
+  /** 命令里用到的部署参数，界面上用来提示端口映射关系 */
+  params: {
+    region: string;
+    name: string;
+    host: string | null;
+    listenPort: number;
+    connectPort: number;
+  };
 }
 
 const nodes = ref<RelayNode[]>([]);
@@ -108,11 +117,26 @@ const enrollError = ref<string | null>(null);
 const enrollCreated = ref<EnrollKeyResult | null>(null);
 const enrollKeys = ref<EnrollKeyInfo[]>([]);
 const enrollNote = ref('');
+/**
+ * 部署参数：签发密钥时一并收下，直接生成"一条命令"。
+ * 两个端口的区别是这块功能的核心，所以界面上要写清楚而不是塞进高级选项：
+ *   运行端口 = 子节点本机 easytier-core 监听的端口（防火墙要放行它）
+ *   链接端口 = 主控下发给客户端用的端口（NAT 映射后的对外端口）
+ */
+const enrollForm = reactive({
+  region: 'cn-east',
+  name: 'relay-sh',
+  host: '',
+  listenPort: '11010',
+  connectPort: '',
+});
 
 async function openEnroll(): Promise<void> {
   enrollOpen.value = true;
   enrollCreated.value = null;
   enrollError.value = null;
+  const host = window.location.hostname;
+  if (!enrollForm.host) enrollForm.host = host === 'localhost' || host === '127.0.0.1' ? '' : host;
   await loadEnrollKeys();
 }
 
@@ -130,7 +154,19 @@ async function loadEnrollKeys(): Promise<void> {
 async function createEnrollKey(): Promise<void> {
   enrollLoading.value = true;
   try {
-    const result = await api.post<EnrollKeyResult>(Routes.adminNodeEnrollKey, { note: enrollNote.value });
+    const listen = Math.min(65535, Math.max(1, toInt(enrollForm.listenPort, 11010)));
+    // 链接端口留空 = 与运行端口相同（多数部署就是这样）
+    const connect = enrollForm.connectPort.trim().length > 0
+      ? Math.min(65535, Math.max(1, toInt(enrollForm.connectPort, listen)))
+      : listen;
+    const result = await api.post<EnrollKeyResult>(Routes.adminNodeEnrollKey, {
+      note: enrollNote.value,
+      region: enrollForm.region,
+      name: enrollForm.name.trim() || undefined,
+      host: enrollForm.host.trim() || undefined,
+      listenPort: listen,
+      connectPort: connect,
+    });
     enrollCreated.value = result;
     enrollNote.value = '';
     notifyOk('注册密钥已签发');
@@ -151,6 +187,8 @@ const editForm = reactive({
   name: '',
   region: '',
   endpoint: '',
+  listenPort: '',
+  connectPort: '',
   weight: '100',
   capacityPeers: '500',
   tags: '',
@@ -162,6 +200,8 @@ function openEdit(node: RelayNode): void {
   editForm.name = node.name;
   editForm.region = node.region;
   editForm.endpoint = node.endpoint;
+  editForm.listenPort = node.listenPort === null ? '' : String(node.listenPort);
+  editForm.connectPort = node.connectPort === null ? '' : String(node.connectPort);
   editForm.weight = String(node.weight);
   editForm.capacityPeers = String(node.capacityPeers);
   editForm.tags = asStringList(node.tags).join(', ');
@@ -176,6 +216,8 @@ async function saveEdit(): Promise<void> {
       name: editForm.name.trim(),
       region: editForm.region,
       endpoint: editForm.endpoint.trim(),
+      listenPort: toInt(editForm.listenPort, node.listenPort ?? 11010),
+      connectPort: toInt(editForm.connectPort, node.connectPort ?? 11010),
       weight: toInt(editForm.weight, node.weight),
       capacityPeers: toInt(editForm.capacityPeers, node.capacityPeers),
       tags: editForm.tags
@@ -184,7 +226,7 @@ async function saveEdit(): Promise<void> {
         .filter((t) => t.length > 0)
         .slice(0, 8),
     });
-    notifyOk('节点已更新');
+    notifyOk('节点已更新；改了运行端口需要在该节点上重装或改 node.env 后重启服务');
     editing.value = null;
     await load();
   } catch (err) {
@@ -337,7 +379,8 @@ async function removeNode(node: RelayNode): Promise<void> {
             <tr>
               <th>名称</th>
               <th>区域</th>
-              <th>Endpoint</th>
+              <th>Endpoint（链接端口）</th>
+              <th class="table-num">运行端口</th>
               <th>状态</th>
               <th class="table-num">peer</th>
               <th class="table-num">房间</th>
@@ -355,7 +398,13 @@ async function removeNode(node: RelayNode): Promise<void> {
                 <div class="cell-sub">{{ n.id }}</div>
               </td>
               <td>{{ regionLabel(n.region) }}</td>
-              <td class="mono cell-sub">{{ n.endpoint }}</td>
+              <td>
+                <div class="mono wrap-anywhere">{{ n.endpoint }}</div>
+                <div v-if="n.listenPort !== null && n.connectPort !== null && n.listenPort !== n.connectPort" class="cell-sub">
+                  经 NAT：外部 {{ n.connectPort }} → 本机 {{ n.listenPort }}
+                </div>
+              </td>
+              <td class="table-num mono">{{ n.listenPort ?? '—' }}</td>
               <td><Badge :tone="nodeTone(n.status)" dot>{{ nodeLabel(n.status) }}</Badge></td>
               <td class="table-num">{{ n.peers }} / {{ n.capacityPeers }}</td>
               <td class="table-num">{{ n.rooms }}</td>
@@ -404,6 +453,47 @@ async function removeNode(node: RelayNode): Promise<void> {
           </button>
         </div>
 
+        <!--
+          部署参数：签发的同时就把"装在哪、跑哪个端口"定下来，
+          于是拿到的是一条可以直接粘贴的命令，而不是一堆需要手工替换的占位符。
+        -->
+        <div class="form-grid" style="margin-top: var(--s-3)">
+          <div class="field">
+            <label class="label" for="enroll-host">节点公网地址</label>
+            <input
+              id="enroll-host"
+              v-model="enrollForm.host"
+              class="input mono"
+              placeholder="relay-sh.cnnic.link 或 1.2.3.4"
+              maxlength="120"
+            />
+            <span class="hint">客户端最终会连到这个主机名，必须是能解析到该节点的域名或 IP。</span>
+          </div>
+          <div class="field">
+            <label class="label" for="enroll-name">节点名</label>
+            <input id="enroll-name" v-model="enrollForm.name" class="input" maxlength="40" placeholder="relay-sh" />
+          </div>
+          <div class="field">
+            <label class="label" for="enroll-region">区域</label>
+            <select id="enroll-region" v-model="enrollForm.region" class="select">
+              <option v-for="r in REGIONS" :key="r.id" :value="r.id">{{ r.label }}</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="label" for="enroll-listen">运行端口（本机监听）</label>
+            <input id="enroll-listen" v-model="enrollForm.listenPort" class="input mono" inputmode="numeric" placeholder="11010" />
+            <span class="hint">子节点 easytier-core 实际绑定的端口；防火墙/安全组要放行它（TCP+UDP）。</span>
+          </div>
+          <div class="field">
+            <label class="label" for="enroll-connect">链接端口（对外）</label>
+            <input id="enroll-connect" v-model="enrollForm.connectPort" class="input mono" inputmode="numeric" placeholder="留空 = 与运行端口相同" />
+            <span class="hint">
+              主控下发给客户端的端口。节点在 NAT / 端口映射后面时填映射后的对外端口
+              （例如本机 11010、对外 21010）。
+            </span>
+          </div>
+        </div>
+
         <div v-if="enrollError" class="notice notice-danger">{{ enrollError }}</div>
 
         <div v-if="enrollCreated" class="key-block">
@@ -413,10 +503,19 @@ async function removeNode(node: RelayNode): Promise<void> {
           </div>
           <div class="key-text">{{ enrollCreated.enrollKey }}</div>
           <div class="key-block-head">
-            <span class="cell-sub">在目标机器上执行（Debian/Ubuntu）</span>
-            <button class="btn btn-sm" type="button" @click="copyText(enrollCreated.command, '一键注册命令')">复制命令</button>
+            <span class="cell-sub">
+              在目标机器上执行（Debian/Ubuntu，一条命令，无需先拿到本仓库）
+            </span>
+            <button class="btn btn-sm" type="button" @click="copyText(enrollCreated.command, '一键安装命令')">复制命令</button>
           </div>
-          <pre class="code-block">{{ enrollCreated.command }}</pre>
+          <pre class="code-block wrap-anywhere">{{ enrollCreated.command }}</pre>
+          <p class="hint">
+            脚本由主控托管（<span class="mono">{{ '/agent/install.sh' }}</span>）：目标机器只要能访问主控，
+            就会自动下载安装脚本与 agent、注册节点、拉起 systemd 服务。
+            端口不同时，记得在外部把
+            <span class="mono">{{ enrollCreated.params.connectPort }}</span>
+            映射到本机的 <span class="mono">{{ enrollCreated.params.listenPort }}</span>。
+          </p>
         </div>
 
         <div class="key-issued">
@@ -483,9 +582,21 @@ async function removeNode(node: RelayNode): Promise<void> {
           </select>
         </div>
         <div class="field">
-          <label class="label" for="e-endpoint">Endpoint</label>
-          <input id="e-endpoint" v-model="editForm.endpoint" class="input mono" placeholder="relay-sh.example.com:11010" />
-          <span class="hint">格式必须为 host:port，且不能与其它节点重复。</span>
+          <label class="label" for="e-endpoint">Endpoint（客户端连接地址）</label>
+          <input id="e-endpoint" v-model="editForm.endpoint" class="input mono" placeholder="relay-sh.example.com:21010" />
+          <span class="hint">格式必须为 host:port，且不能与其它节点重复。改链接端口时这里会自动跟随。</span>
+        </div>
+        <div class="pair">
+          <div class="field">
+            <label class="label" for="e-listen">运行端口（本机监听）</label>
+            <input id="e-listen" v-model="editForm.listenPort" class="input mono" inputmode="numeric" placeholder="11010" />
+            <span class="hint">改动会 +1 配置版本；节点下次拉配置时按新端口重启。</span>
+          </div>
+          <div class="field">
+            <label class="label" for="e-connect">链接端口（下发给客户端）</label>
+            <input id="e-connect" v-model="editForm.connectPort" class="input mono" inputmode="numeric" placeholder="21010" />
+            <span class="hint">保存后 endpoint 的端口同步为它。</span>
+          </div>
         </div>
         <div class="pair">
           <div class="field">

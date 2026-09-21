@@ -28,12 +28,20 @@ export function registerAgentRoutes(router: Router, app: App): void {
       name: optStr(body, 'name', 40) ?? 'relay-node',
       region: optStr(body, 'region', 24) ?? 'cn-east',
       endpoint: optStr(body, 'endpoint', 120) ?? '',
+      // 运行端口与链接端口分开传：NAT 后面本机绑一个、对外开另一个
+      listenPort: optInt(body, 'listenPort', 1, 65535),
+      connectPort: optInt(body, 'connectPort', 1, 65535),
       capacityPeers: optInt(body, 'capacityPeers', 10, 100_000),
       version: optStr(body, 'version', 60) ?? null,
       tags: Array.isArray(body.tags) ? body.tags.map((t) => String(t).slice(0, 24)).slice(0, 8) : [],
       publicIp: ctx.ip,
     });
-    log.info('子节点注册完成', { node: result.node.id, region: result.node.region });
+    log.info('子节点注册完成', {
+      node: result.node.id,
+      region: result.node.region,
+      listenPort: result.node.listenPort,
+      connectPort: result.node.connectPort,
+    });
     return result;
   });
 
@@ -103,8 +111,19 @@ export function registerAgentRoutes(router: Router, app: App): void {
     return {
       configToml: app.nodeService.renderNodeConfig(row),
       launchArgs: app.nodeService.launchArgsFor(row),
+      listenPort: app.nodeService.listenPortOf(row),
+      connectPort: app.nodeService.connectPortOf(row),
       configRevision: row.config_revision,
       heartbeatIntervalSeconds: app.config.nodeHeartbeatIntervalSeconds,
     };
   });
+
+  /* ---------------------------------------------------------- 一键安装 */
+
+  /*
+   * 注意：安装脚本与 agent.mjs 的托管**不在这里**。
+   * 它们放在根路径 `/agent/install.sh`、`/agent/agent.mjs`（见 server.ts），
+   * 这样运维拿到的是 `curl -fsSL <主控>/agent/install.sh | sudo bash -s -- …`
+   * 这种一眼就懂的一行命令，而不是带 /api/v1 前缀的接口地址。
+   */
 }

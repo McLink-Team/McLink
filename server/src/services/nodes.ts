@@ -5,7 +5,15 @@
  * （单端口 + relay_network_whitelist 通配），区别只是归属与容量。
  */
 import { isKnownRegion, isValidHostPort, kbpsToBytesPerSecond, type RelayNode } from '@mclink/shared';
-import { NodeRepo, toNode, type NodeRow } from '../db/nodes.ts';
+import {
+  NodeRepo,
+  endpointPort,
+  nodeClientEndpoint,
+  nodeConnectPort,
+  nodeListenPort,
+  toNode,
+  type NodeRow,
+} from '../db/nodes.ts';
 import { EnrollKeyRepo } from '../db/users.ts';
 import { AuditRepo } from '../db/traffic.ts';
 import { HttpError } from '../util/errors.ts';
@@ -16,6 +24,13 @@ import type { ServerConfig } from '../config.ts';
 import type { SettingsService } from './settings.ts';
 
 const log = logger('nodes');
+
+/** 端口归一化：只接受 1–65535 的整数，其余一律当作"没给" */
+export function normalizePort(value: unknown): number | null {
+  const port = typeof value === 'number' ? value : Number.parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(port) || port < 1 || port > 65535) return null;
+  return Math.trunc(port);
+}
 
 export interface NodeAuthResult {
   node: NodeRow;
@@ -49,6 +64,10 @@ export class NodeService {
     name: string;
     region: string;
     endpoint: string;
+    /** 运行端口：子节点 easytier-core 实际监听的端口；缺省时与链接端口相同 */
+    listenPort?: number;
+    /** 链接端口：下发给客户端的端口；缺省时取 endpoint 里的端口 */
+    connectPort?: number;
     capacityPeers?: number;
     version?: string | null;
     tags?: string[];
@@ -70,6 +89,11 @@ export class NodeService {
       throw HttpError.conflict('该 endpoint 已被其它节点注册');
     }
 
+    // 端口解析：endpoint 里的端口是「链接端口」，运行端口可以单独给（NAT 后面的常见情形）
+    const endpointPortValue = endpointPort(input.endpoint);
+    const connectPort = normalizePort(input.connectPort) ?? endpointPortValue ?? this.config.easytier.relayPort;
+    const listenPort = normalizePort(input.listenPort) ?? connectPort;
+
     const nodeId = shortId('n');
     /**
      * 节点长期令牌。
@@ -82,6 +106,8 @@ export class NodeService {
       name: input.name.trim().slice(0, 40),
       region: input.region,
       endpoint: input.endpoint.trim(),
+      listenPort,
+      connectPort,
       tokenHash: sha256(nodeToken),
       capacityPeers: Math.max(10, input.capacityPeers ?? this.settings.current.defaultCapacityPeers),
       version: input.version ?? null,
@@ -97,9 +123,15 @@ export class NodeService {
       action: 'node.enroll',
       targetType: 'node',
       targetId: nodeId,
-      detail: { region: row.region, endpoint: row.endpoint },
+      detail: { region: row.region, endpoint: row.endpoint, listenPort, connectPort },
     });
-    log.info('子节点已注册，等待管理员启用', { node: nodeId, name: row.name, region: row.region });
+    log.info('子节点已注册，等待管理员启用', {
+      node: nodeId,
+      name: row.name,
+      region: row.region,
+      listenPort,
+      connectPort,
+    });
 
     return {
       node: toNode(row),
@@ -139,10 +171,22 @@ export class NodeService {
     });
   }
 
-  /** 子节点的监听端口（从 endpoint 推导） */
+  /**
+   * 子节点的**运行端口**：easytier-core 实际 bind 的端口。
+   * 规则本体在仓储层（`nodeListenPort`），房间服务生成票据时用的是同一份逻辑。
+   */
   listenPortOf(row: NodeRow): number {
-    const port = Number.parseInt(row.endpoint.split(':')[1] ?? '', 10);
-    return Number.isFinite(port) && port > 0 ? port : this.config.easytier.relayPort;
+    return nodeListenPort(row, this.config.easytier.relayPort);
+  }
+
+  /** 子节点的**链接端口**：主控下发给客户端连接用的端口 */
+  connectPortOf(row: NodeRow): number {
+    return nodeConnectPort(row, this.config.easytier.relayPort);
+  }
+
+  /** 下发给客户端的中继地址（`host:connectPort`） */
+  clientEndpointOf(row: NodeRow): string {
+    return nodeClientEndpoint(row, this.config.easytier.relayPort);
   }
 
   /**
@@ -235,7 +279,16 @@ export class NodeService {
 
   update(
     id: string,
-    fields: { name?: string; region?: string; endpoint?: string; weight?: number; capacityPeers?: number; tags?: string[] },
+    fields: {
+      name?: string;
+      region?: string;
+      endpoint?: string;
+      listenPort?: number;
+      connectPort?: number;
+      weight?: number;
+      capacityPeers?: number;
+      tags?: string[];
+    },
   ): RelayNode {
     const row = this.nodes.findById(id);
     if (!row) throw HttpError.notFound('节点不存在');
@@ -247,8 +300,42 @@ export class NodeService {
       const other = this.nodes.findByEndpoint(fields.endpoint);
       if (other && other.id !== id) throw HttpError.conflict('该 endpoint 已被占用');
     }
-    this.nodes.updateMeta(id, fields);
-    return this.get(id);
+    if (fields.listenPort !== undefined && normalizePort(fields.listenPort) === null) {
+      throw HttpError.badRequest('运行端口必须是 1-65535', { listenPort: '端口不合法' });
+    }
+    if (fields.connectPort !== undefined && normalizePort(fields.connectPort) === null) {
+      throw HttpError.badRequest('链接端口必须是 1-65535', { connectPort: '端口不合法' });
+    }
+    /*
+     * 改端口要顺带做两件事：
+     *   1) endpoint 里的端口必须跟着链接端口走 —— 它对外就表示 `host:connectPort`，
+     *      不改的话库里会留下一个自相矛盾的地址；
+     *   2) 配置版本 +1，节点下次拉配置时才知道"运行端口变了，得重启"。
+     */
+    const patch: typeof fields = { ...fields };
+    if (fields.connectPort !== undefined) {
+      const port = normalizePort(fields.connectPort)!;
+      const host = (fields.endpoint ?? row.endpoint).split(':')[0] ?? '';
+      patch.endpoint = `${host}:${port}`;
+      this.nodes.bumpConfigRevision(id);
+    }
+    if (fields.listenPort !== undefined && normalizePort(fields.listenPort) !== this.listenPortOf(row)) {
+      this.nodes.bumpConfigRevision(id);
+    }
+    this.nodes.updateMeta(id, patch);
+    const fresh = this.get(id);
+    this.audit.write({
+      actorType: 'admin',
+      action: 'node.update',
+      targetType: 'node',
+      targetId: id,
+      detail: {
+        listenPort: fresh.listenPort,
+        connectPort: fresh.connectPort,
+        endpoint: fresh.endpoint,
+      },
+    });
+    return fresh;
   }
 
   setDisabled(id: string, disabled: boolean): RelayNode {

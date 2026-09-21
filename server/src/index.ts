@@ -323,6 +323,9 @@ function toNodePublic(row: {
     name: row.name,
     region: row.region,
     endpoint: row.endpoint,
+    // 这里描述的是主控自己的中继：没有 NAT 映射，两个端口就是同一个
+    listenPort: null,
+    connectPort: null,
     publicIp: null,
     status: row.status as RelayNode['status'],
     version: null,

@@ -34,6 +34,7 @@ import { buildLaunchArgs, renderAcl, renderEasytierToml, rpcPortalForListenPort,
 import { buildRoomAcl } from '../easytier/acl.ts';
 import { RoomRepo, toMember, toRoom, toRoomForUser, type JoinedRoomRow, type MemberRow } from '../db/rooms.ts';
 import { NodeRepo, type NodeRow } from '../db/nodes.ts';
+import { nodeClientEndpoint } from '../db/nodes.ts';
 import { UserRepo } from '../db/users.ts';
 import { AuditRepo } from '../db/traffic.ts';
 import { MessageRepo } from '../db/chat.ts';
@@ -599,9 +600,16 @@ export class RoomService {
 
     const room = toRoom(row);
     const relayRows = this.nodes.findByIds(room.relayNodeIds);
+    /*
+     * 下发给客户端的端口必须是**链接端口**，不是节点本机的运行端口：
+     * 节点在 NAT / 端口映射后面时（本机 11010、对外 21010），
+     * 给客户端的地址只能是对外那个，否则客户端永远连不上。
+     * 规则本体在 db/nodes.ts，节点服务生成配置时用的是同一份。
+     */
     const relays: RelayEndpoint[] = relayRows.map((n) => {
-      const host = n.endpoint.split(':')[0] ?? n.endpoint;
-      const port = n.endpoint.split(':')[1] ?? String(this.settings.current.relayPort);
+      const endpoint = nodeClientEndpoint(n, this.settings.current.relayPort);
+      const port = endpoint.slice(endpoint.lastIndexOf(':') + 1);
+      const host = endpoint.slice(0, endpoint.lastIndexOf(':'));
       return {
         nodeId: n.id,
         region: n.region,

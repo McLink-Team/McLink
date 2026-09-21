@@ -120,12 +120,27 @@ export function registerAdminRoutes(router: Router, app: App): void {
       ip: ctx.ip,
     });
     log.info('已签发节点注册密钥', { by: auth.username });
+    // 签发时就把部署参数一并收下：控制台填好"要装在哪、跑哪个端口"，直接拿到可粘贴的命令
+    const options = {
+      region: optStr(body, 'region', 24),
+      name: optStr(body, 'name', 40),
+      host: optStr(body, 'host', 120),
+      listenPort: optInt(body, 'listenPort', 1, 65535),
+      connectPort: optInt(body, 'connectPort', 1, 65535),
+    };
     return {
       enrollKey: key,
       note: row.note,
       createdAt: row.created_at,
-      /** 节点侧一键注册命令，直接贴到 Debian 上执行 */
-      command: buildAgentCommand(app, key),
+      /** 节点侧一键安装命令：整条命令复制到 Debian 上执行即可 */
+      command: buildAgentCommand(app, key, options),
+      params: {
+        region: options.region ?? 'cn-east',
+        name: options.name ?? 'relay-sh',
+        host: options.host ?? null,
+        listenPort: options.listenPort ?? app.config.easytier.relayPort,
+        connectPort: options.connectPort ?? options.listenPort ?? app.config.easytier.relayPort,
+      },
     };
   }, { auth: true, admin: true });
 
@@ -148,6 +163,9 @@ export function registerAdminRoutes(router: Router, app: App): void {
       name: optStr(body, 'name', 40),
       region: optStr(body, 'region', 24),
       endpoint: optStr(body, 'endpoint', 120),
+      // 两个端口都可以单独改：节点换机房/改端口映射时不用重新注册
+      listenPort: optInt(body, 'listenPort', 1, 65535),
+      connectPort: optInt(body, 'connectPort', 1, 65535),
       weight: optInt(body, 'weight', 0, 100000),
       capacityPeers: optInt(body, 'capacityPeers', 10, 100_000),
       tags: Array.isArray(body.tags) ? body.tags.map((t) => String(t).slice(0, 24)).slice(0, 8) : undefined,
@@ -594,22 +612,42 @@ export function registerAdminRoutes(router: Router, app: App): void {
 }
 
 /**
- * 生成子节点部署命令，管理员直接复制到目标机器执行。
+ * 生成子节点部署命令：**一条命令**，复制到目标机器粘贴执行即可。
  *
- * 注意不要在这里指向某个 HTTP 静态资源：主控只托管前端产物与 /downloads，
- * 并没有 /agent/install.sh 这个文件（早期版本这样写会给出一个 404 的命令）。
- * 这里改为「把仓库里的部署脚本拷过去再执行」，与 deploy/README.md 保持一致。
+ * 主控现在自己托管 `deploy/install-node.sh` 与 `deploy/agent.mjs`
+ * （见 Routes.agentInstallScript / Routes.agentScript），所以目标机器不需要先拿到仓库，
+ * 也不需要 scp —— 这是「一键探针」与「先拷文件再装」的区别。
+ *
+ * 命令里带齐了：主控地址、一次性注册密钥、区域、节点名、运行端口、链接端口。
+ * 链接端口进 endpoint（主控下发给客户端的就是它），运行端口单独给 —— 两者不同
+ * 是 NAT / 端口映射部署的常态。
  */
-function buildAgentCommand(app: App, key: string): string {
-  const base = app.config.publicBaseUrl || `http://<主控地址>:${app.config.port}`;
+function buildAgentCommand(
+  app: App,
+  key: string,
+  options: { region?: string; name?: string; host?: string; listenPort?: number; connectPort?: number } = {},
+): string {
+  const base = app.config.publicBaseUrl || `http://${publicHostOf(app)}`;
+  const listen = options.listenPort ?? app.config.easytier.relayPort;
+  const connect = options.connectPort ?? listen;
+  const region = options.region ?? 'cn-east';
+  const name = options.name ?? 'relay-sh';
+  // 没给主机名时留一个明显的占位符，让管理员知道必须替换
+  const host = options.host ?? '<把这个换成子节点的公网域名或IP>';
   return [
-    '# 1) 把仓库里的子节点安装脚本拷到目标机器（与主控同版本）',
-    '#    scp deploy/install-node.sh deploy/agent.mjs root@<子节点IP>:/root/',
-    '# 2) 在子节点上执行：',
-    `sudo bash install-node.sh \\`,
-    `  --master ${base} \\`,
-    `  --key ${key} \\`,
-    '  --region cn-east \\',
-    '  --endpoint relay-sh.example.com:11010',
-  ].join('\n');
+    `curl -fsSL ${base}/agent/install.sh | sudo bash -s --`,
+    `--master ${base}`,
+    `--key ${key}`,
+    `--region ${region}`,
+    `--name ${name}`,
+    `--endpoint ${host}:${connect}`,
+    `--listen-port ${listen}`,
+  ].join(' ');
+}
+
+/** 兜底用的"本机地址"：优先公网基础 URL 的主机名，其次回退中继公网主机 */
+function publicHostOf(app: App): string {
+  const fromRelay = app.config.easytier.relayPublicHost;
+  if (fromRelay) return fromRelay;
+  return `127.0.0.1:${app.config.port}`;
 }
