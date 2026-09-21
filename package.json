@@ -21,6 +21,7 @@
     "test": "pnpm --filter @mclink/server test",
     "typecheck": "pnpm -r typecheck",
     "verify:lockfile": "pnpm install --frozen-lockfile --lockfile-only",
+    "check:contrast": "node scripts/check-contrast.mjs",
     "pack:server": "node scripts/pack-server-source.mjs",
     "fetch:easytier": "node scripts/fetch-easytier.mjs",
     "icons": "node scripts/make-icons.mjs",

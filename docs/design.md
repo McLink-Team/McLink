@@ -100,6 +100,16 @@ $env:IMPECCABLE_BROWSER="C:\Program Files (x86)\Microsoft\Edge\Application\msedg
 它是**对渲染后的真实页面**判定（computed style + 几何），不是读源码，
 所以改完必须先 `pnpm build:web`（产物进 `server/public/`，主控直接托管），再检测。
 
+改配色之前先跑更快的算术检查（几秒钟，读完令牌文件即可，两个主题一起算）：
+
+```bash
+pnpm check:contrast
+```
+
+它从 `tokens.css` 解析实际值来算对比度，**脚本里不写任何颜色字面量**——
+曾有一版把候选色抄进脚本，令牌改了而脚本没改，于是长期报着不存在的"未达标"。
+门槛 4.5:1，另外还检查亮色页面底的 R−B ≤ 4（对应检测器的 `cream-palette`）。
+
 当前基线（**每条路由都必须是 0**）：
 
 | 路由 | 说明 |

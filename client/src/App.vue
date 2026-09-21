@@ -258,7 +258,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown));
   align-items: center;
   justify-content: space-between;
   gap: var(--s-3);
-  padding: 0 var(--s-4) 6px;
+  /* 底部留 10px：无边框窗口下 6px 会让这一行贴着窗口下沿，看起来像被切掉了半行 */
+  padding: 0 var(--s-4) 10px;
   font-size: var(--fs-xs);
   min-height: 17px;
 }
