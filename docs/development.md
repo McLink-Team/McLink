@@ -87,6 +87,34 @@ VITE_MCLINK_MASTER=https://mc.example.com
 这样设计有两个目的：一是避免玩家被诱导把客户端指向钓鱼主控；
 二是让「房间票据只能由官方主控签发」这条安全前提真正成立。
 
+### 发布步骤（打包完 ≠ 下载页就能用）
+
+下载页的产物来自主控的下载目录，**不是** `client/release/`，所以打完包还要发布一次：
+
+```bash
+# 1) 打包（产物在 client/release/）
+VITE_MCLINK_MASTER=https://mc.example.com pnpm dist:client
+
+# 2) 放进主控的下载目录（默认 server/data/downloads，可用 MCLINK_DOWNLOADS_DIR 改）
+cp client/release/mclink-client-0.1.0-x64.exe server/data/downloads/
+
+# 3) 登记校验值：下载页显示的 sha256 取自设置项 clientSha256，
+#    服务端**不会**每次请求都去哈希一个 87 MB 的文件（见 server/src/api/public.ts
+#    的 listDownloads）。忘了这步的现象是：页面显示旧哈希，玩家按页面校验会以为文件被篡改。
+node -e "const {createHash}=require('crypto'),fs=require('fs');\
+console.log(createHash('sha256').update(fs.readFileSync(process.argv[1])).digest('hex'))" \
+  server/data/downloads/mclink-client-0.1.0-x64.exe
+# 然后把得到的值 PATCH 到 /api/v1/admin/settings 的 clientSha256
+# （控制台「平台设置」里也能改；clientDownloadUrl 同理，文件名变了要一起改）
+```
+
+发布后建议按下载页给的链接**真下一次**并核对哈希——这条链路上
+「静态服务是否真的吐出了那个文件」是唯一无法靠读代码确认的一环：
+
+```bash
+curl -sO http://<主控>/downloads/mclink-client-0.1.0-x64.exe && sha256sum mclink-client-0.1.0-x64.exe
+```
+
 ## 4. 端到端实验（`pnpm lab`）
 
 `scripts/lab.mjs` 不是 mock：它会真的拉起 **1 个主控中继 + 1 个子节点 + 4~5 个客户端**
