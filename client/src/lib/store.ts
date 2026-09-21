@@ -20,7 +20,7 @@ import {
   type RegionDef,
 } from '@mclink/shared';
 import { REGIONS } from '@mclink/shared';
-import { api, friendlyError, getDeviceName, getMasterUrl, getToken, setDeviceName, setMasterUrl, setToken } from './api.ts';
+import { api, friendlyError, getDeviceName, getMasterUrl, getToken, setDeviceName, setToken } from './api.ts';
 import type { CoreLogEntry, CoreStatus } from './core-types.ts';
 
 /* ------------------------------------------------------------ 工具函数 */
@@ -170,14 +170,6 @@ export async function bootstrap(): Promise<void> {
       state.user = null;
     }
   }
-}
-
-export function setMaster(url: string): void {
-  setMasterUrl(url);
-  state.masterUrl = getMasterUrl();
-  setToken(null);
-  state.user = null;
-  disconnectRealtime();
 }
 
 export function setDevice(name: string): void {

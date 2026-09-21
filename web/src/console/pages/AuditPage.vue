@@ -6,7 +6,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { Routes, type AuditEntry } from '@mclink/shared';
 import { api, friendlyError } from '../../lib/api.ts';
-import { formatDateTime } from '../../lib/ui.ts';
+import { asArray, formatDateTime } from '../../lib/ui.ts';
 import Badge from '../../components/Badge.vue';
 import type { BadgeTone } from '../../lib/ui.ts';
 
@@ -35,7 +35,7 @@ async function load(): Promise<void> {
     const result = await api.get<{ rows: AuditEntry[]; total: number }>(Routes.adminAudit, {
       query: { action: action.value, limit, offset: page.value * limit },
     });
-    entries.value = result.rows;
+    entries.value = asArray(result.rows);
     total.value = result.total;
     error.value = null;
   } catch (err) {
@@ -204,7 +204,7 @@ function actorLabel(type: AuditEntry['actorType']): string {
                   <td class="mono" style="font-size: var(--fs-xs)">{{ e.ip ?? '—' }}</td>
                 </tr>
                 <tr v-if="e.detail && expanded.has(e.id)">
-                  <td colspan="7" style="background: rgba(4, 7, 16, 0.4)">
+                  <td colspan="7" class="detail-cell">
                     <pre class="json-block">{{ detailJson(e) }}</pre>
                   </td>
                 </tr>
@@ -257,7 +257,7 @@ function actorLabel(type: AuditEntry['actorType']): string {
   margin: 0;
   padding: var(--s-3);
   border-radius: var(--r-sm);
-  background: rgba(2, 4, 10, 0.7);
+  background: color-mix(in srgb, var(--bg-0) 70%, transparent);
   border: 1px solid var(--border);
   color: var(--text-dim);
   font-size: var(--fs-xs);
@@ -265,5 +265,8 @@ function actorLabel(type: AuditEntry['actorType']): string {
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
+}
+.detail-cell {
+  background: color-mix(in srgb, var(--bg-0) 40%, transparent);
 }
 </style>

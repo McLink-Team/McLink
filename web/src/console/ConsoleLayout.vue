@@ -148,7 +148,7 @@ async function handleLogout(): Promise<void> {
   position: fixed;
   inset: 0;
   z-index: var(--z-drawer);
-  background: rgba(3, 5, 12, 0.6);
+  background: color-mix(in srgb, var(--bg-0) 60%, transparent);
   backdrop-filter: blur(2px);
 }
 
@@ -181,7 +181,7 @@ async function handleLogout(): Promise<void> {
   place-items: center;
   border-radius: var(--r-sm);
   background: var(--grad-brand);
-  color: #04121a;
+  color: var(--bg-0);
 }
 .brand-mark svg {
   width: 20px;
@@ -258,7 +258,7 @@ async function handleLogout(): Promise<void> {
   align-items: center;
   gap: var(--s-3);
   padding: 0 var(--s-5);
-  background: rgba(5, 7, 15, 0.82);
+  background: color-mix(in srgb, var(--bg-0) 82%, transparent);
   backdrop-filter: blur(14px);
   border-bottom: 1px solid var(--border);
 }

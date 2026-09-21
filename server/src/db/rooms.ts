@@ -81,6 +81,27 @@ export function toRoom(row: JoinedRoomRow): Room {
   };
 }
 
+/**
+ * 剥掉房间的「钥匙」字段，供面向玩家/匿名的接口使用。
+ *
+ * 为什么必须这么做：在单端口共享中继架构下，EasyTier 的网络名就是准入凭证
+ * （中继只按网络名校验，network_secret 仅在 private_mode 下校验，而 private_mode
+ * 对多密钥共享中继不可用）。历史上 `room.id` 曾被写成网络名的后缀，加上
+ * `/rooms/public` 匿名可读，等于把房间钥匙公开了。现在 ID 已与网络名解耦，
+ * 再叠加这一层剥离，杜绝任何列表/详情接口泄露网络名。
+ */
+export function toPublicRoom(row: JoinedRoomRow): Room {
+  const room = toRoom(row);
+  delete room.networkName;
+  return room;
+}
+
+/** 面向成员：保留房间信息，但只有房主能看到网络名 */
+export function toRoomForUser(row: JoinedRoomRow, userId: string): Room {
+  if (row.host_user_id === userId) return toRoom(row);
+  return toPublicRoom(row);
+}
+
 export function toMember(row: MemberRow): RoomMember {
   return {
     roomId: row.room_id,
@@ -133,6 +154,8 @@ export class RoomRepo {
   }
 
   create(input: {
+    /** 显式传入的内部 ID；刻意与网络名解耦，避免「知道 ID 就推算出网络名」 */
+    id: string;
     code: string;
     name: string;
     hostUserId: string;
@@ -148,7 +171,7 @@ export class RoomRepo {
     passwordHash: string | null;
     expiresAt: string | null;
   }): JoinedRoomRow {
-    const id = input.networkName.replace(/^mclink-room-/, '') || input.code.toLowerCase();
+    const id = input.id;
     const ts = nowIso();
     this.db.run(
       `insert into rooms (id, code, name, host_user_id, status, access, visibility, zone,

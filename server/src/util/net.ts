@@ -3,13 +3,20 @@ import type { IncomingMessage } from 'node:http';
 
 /**
  * 解析客户端真实 IP。
- * 只有配置了 trustProxy 时才采信 X-Forwarded-For（主控通常位于 nginx 之后）。
+ *
+ * 只有当「直连对端本身是内网/回环地址」时才采信 X-Forwarded-For。
+ * 这是安全底线：主控通常挂在 nginx 后面，但一旦直接暴露到公网，
+ * 无条件信任 XFF 就意味着任何人都能随便伪造 IP，从而绕过按 IP 的限流、
+ * 污染审计日志、伪装子节点上报的公网地址。
  */
 export function clientIp(req: IncomingMessage, trustProxy = true): string {
-  if (trustProxy) {
+  const direct = normalizeIp(req.socket.remoteAddress ?? '0.0.0.0');
+  if (trustProxy && isPrivateIp(direct)) {
     const xff = req.headers['x-forwarded-for'];
     const raw = Array.isArray(xff) ? xff[0] : xff;
     if (raw) {
+      // XFF 由客户端到服务端逐跳追加，最左边是「声称的来源」；
+      // 有可信代理时最左边才是真实客户端。
       const first = raw.split(',')[0]?.trim();
       if (first) return normalizeIp(first);
     }
@@ -17,7 +24,7 @@ export function clientIp(req: IncomingMessage, trustProxy = true): string {
     const realRaw = Array.isArray(real) ? real[0] : real;
     if (realRaw) return normalizeIp(realRaw.trim());
   }
-  return normalizeIp(req.socket.remoteAddress ?? '0.0.0.0');
+  return direct;
 }
 
 export function normalizeIp(ip: string): string {

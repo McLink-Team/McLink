@@ -28,10 +28,10 @@ import type { ServerConfig } from '../config.ts';
 import type { AppEventBus } from '../app.ts';
 import { HttpError } from '../util/errors.ts';
 import { logger } from '../logger.ts';
-import { randomBytesBuf } from '../util/id.ts';
+import { randomBytesBuf, shortId } from '../util/id.ts';
 import { buildLaunchArgs, renderAcl, renderEasytierToml, rpcPortalForListenPort, CONFIG_PLACEHOLDER, type AclSpec } from '../easytier/config.ts';
 import { buildRoomAcl } from '../easytier/acl.ts';
-import { RoomRepo, toMember, toRoom, type JoinedRoomRow, type MemberRow } from '../db/rooms.ts';
+import { RoomRepo, toMember, toRoom, toRoomForUser, type JoinedRoomRow, type MemberRow } from '../db/rooms.ts';
 import { NodeRepo, type NodeRow } from '../db/nodes.ts';
 import { UserRepo } from '../db/users.ts';
 import { AuditRepo } from '../db/traffic.ts';
@@ -132,6 +132,21 @@ export class RoomService {
     }
   }
 
+  /**
+   * 断言调用者是该房间的房主或活跃成员。
+   *
+   * 为什么需要：`GET /rooms/:id` 与 `/rooms/:id/members` 早期只校验了「已登录」，
+   * 于是任何登录用户只要拿到 roomId 就能读到加入码、成员列表与虚拟 IP。
+   * 房间内容属于房间成员，不属于全体登录用户。
+   */
+  assertMember(room: JoinedRoomRow, userId: string): void {
+    if (room.host_user_id === userId) return;
+    const member = this.rooms.findMember(room.id, userId);
+    if (!member || member.status !== 'active') {
+      throw HttpError.forbidden('你不是该房间的成员');
+    }
+  }
+
   members(roomId: string): RoomMember[] {
     return this.rooms.listMembers(roomId).map(toMember);
   }
@@ -182,6 +197,7 @@ export class RoomService {
     const passwordHash = input.password ? hashRoomPassword(input.password) : null;
 
     const row = this.rooms.create({
+      id: shortId('r'),
       code,
       name: input.name,
       hostUserId: input.userId,
@@ -224,7 +240,7 @@ export class RoomService {
     const fresh = this.rooms.findById(row.id)!;
     const member = this.rooms.findMember(row.id, input.userId)!;
     return {
-      room: toRoom(fresh),
+      room: toRoomForUser(fresh, input.userId),
       member: toMember(member),
       ticket: this.ticket(
         row.id,
@@ -280,8 +296,7 @@ export class RoomService {
       };
     }
 
-    const policy = toRoom(row).policy;
-    const activeCount = this.rooms.listMembers(row.id).filter((m) => m.status === 'active').length;
+    const policy = toRoom(row).policy;    const activeCount = this.rooms.listMembers(row.id).filter((m) => m.status === 'active').length;
     if (activeCount >= policy.maxPlayers) {
       throw new HttpError(409, ErrorCodes.ROOM_FULL, `房间人数已满（${policy.maxPlayers} 人）`);
     }
@@ -328,9 +343,9 @@ export class RoomService {
 
     const fresh = this.rooms.findById(row.id)!;
     return {
-      room: toRoom(fresh),
+      // 待审批时连房间对象也不能带网络名，否则「审批」这道门形同虚设
+      room: toRoomForUser(fresh, input.userId),
       member: toMember(member),
-      // 待审批的成员先不给票据，避免拿到网络密钥
       ticket: pending
         ? null
         : this.ticket(row.id, input.userId, input.listenPort ?? this.settings.current.relayPort, input.hostHint),
@@ -569,7 +584,9 @@ export class RoomService {
       ipv4: virtualIp,
       listeners: [`tcp://0.0.0.0:${listenPort}`, `udp://0.0.0.0:${listenPort}`],
       peers,
-      networkName: room.networkName,
+      // 用数据库行里的值：Room.networkName 现在是可选的（对玩家接口会剥掉），
+      // 但票据是唯一有权携带网络名的地方，这里必须拿到确定的字符串
+      networkName: row.network_name,
       networkSecret: row.network_secret,
       flags: {
         enableEncryption: true,
@@ -590,10 +607,23 @@ export class RoomService {
         enableUdpBroadcastRelay: true,
         // 允许成员间直连；关闭后一律走中继
         disableP2p: !room.policy.allowP2p,
-        // 单成员带宽上限：限制本机接收速率
-        ...(room.policy.perMemberKbps > 0
-          ? { instanceRecvBpsLimit: room.policy.perMemberKbps * 1000 }
-          : {}),
+        /**
+         * 实例级接收限速。
+         *
+         * EasyTier 只有「本实例接收」这一个可按实例设置的字节速率上限
+         * （`instance_recv_bps_limit`，u64 以字符串写进 TOML）。落到不同角色上语义不同：
+         *   - 房主：所有成员→房主的流量都汇到这一个实例，所以它就是「房间上行入口总量」，
+         *         用 policy.maxBandwidthKbps 约束（房间总带宽）。
+         *   - 成员：约束的是该成员自己的下载速率，用 policy.perMemberKbps。
+         * 取两者中较小的一个，避免房主既设了房间总限速又被单成员限速放宽。
+         */
+        ...(() => {
+          const limits = [room.policy.perMemberKbps, isHost ? room.policy.maxBandwidthKbps : 0].filter(
+            (v) => v > 0,
+          );
+          if (limits.length === 0) return {};
+          return { instanceRecvBpsLimit: Math.min(...limits) * 1000 };
+        })(),
         lazyP2p: false,
         multiThread: true,
       },
@@ -605,7 +635,7 @@ export class RoomService {
       roomId: room.id,
       roomCode: room.code,
       roomName: room.name,
-      networkName: room.networkName,
+      networkName: row.network_name,
       networkSecret: row.network_secret,
       virtualIp,
       hostVirtualIp,

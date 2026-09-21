@@ -254,7 +254,7 @@ const displayName = computed(() => currentUser.value?.displayName ?? null);
 .auth-glow {
   position: absolute;
   inset: 0;
-  background: radial-gradient(600px 320px at 50% 30%, rgba(53, 224, 200, 0.14), transparent 70%);
+  background: radial-gradient(600px 320px at 50% 30%, color-mix(in srgb, var(--brand) 14%, transparent), transparent 70%);
   pointer-events: none;
 }
 .auth-inner {
@@ -280,7 +280,7 @@ const displayName = computed(() => currentUser.value?.displayName ?? null);
   place-items: center;
   border-radius: var(--r-sm);
   background: var(--grad-brand);
-  color: #04121a;
+  color: var(--bg-0);
 }
 .brand-mark svg {
   width: 20px;
@@ -296,7 +296,7 @@ const displayName = computed(() => currentUser.value?.displayName ?? null);
   flex-direction: column;
   gap: var(--s-4);
   box-shadow: var(--shadow-lg);
-  background: rgba(8, 12, 26, 0.86);
+  background: color-mix(in srgb, var(--bg-1) 86%, transparent);
 }
 .auth-head {
   display: flex;
@@ -350,7 +350,7 @@ const displayName = computed(() => currentUser.value?.displayName ?? null);
   padding: var(--s-2) var(--s-3);
   border-radius: var(--r-sm);
   background: var(--danger-bg);
-  border: 1px solid rgba(255, 107, 107, 0.3);
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
 }
 .warn-inline {
   font-size: var(--fs-xs);
@@ -358,7 +358,7 @@ const displayName = computed(() => currentUser.value?.displayName ?? null);
   padding: var(--s-2) var(--s-3);
   border-radius: var(--r-sm);
   background: var(--warn-bg);
-  border: 1px solid rgba(255, 200, 74, 0.24);
+  border: 1px solid color-mix(in srgb, var(--warn) 24%, transparent);
 }
 .auth-foot {
   display: flex;

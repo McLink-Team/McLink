@@ -8,13 +8,14 @@
 import { computed, onMounted, reactive, ref } from 'vue';
 import { Routes, formatBytes, type PlatformSettings } from '@mclink/shared';
 import { api, friendlyError } from '../../lib/api.ts';
-import { reportError, toFloat, toInt } from '../../lib/ui.ts';
+import { asPatternList, reportError, toFloat, toInt } from '../../lib/ui.ts';
 import { notifyOk } from '../../lib/toast.ts';
 import Badge from '../../components/Badge.vue';
 
 interface EnvSettings {
   relayPort: number;
-  relayNetworkWhitelist: string[];
+  /** 服务端是空格分隔的字符串（MCLINK_RELAY_WHITELIST），不是数组 */
+  relayNetworkWhitelist: string | string[];
   registrationOpen: boolean;
 }
 
@@ -130,7 +131,8 @@ const currentQuotaText = computed(() => {
   return value === null ? '不限' : formatBytes(value);
 });
 
-const envWhitelist = computed(() => env.value?.relayNetworkWhitelist ?? []);
+/** 白名单：环境变量给的是空格分隔字符串，统一拆成数组再渲染 */
+const envWhitelist = computed(() => asPatternList(env.value?.relayNetworkWhitelist));
 </script>
 
 <template>
@@ -341,7 +343,7 @@ const envWhitelist = computed(() => env.value?.relayNetworkWhitelist ?? []);
   padding: var(--s-3) var(--s-4);
   border-radius: var(--r-md);
   background: var(--danger-bg);
-  border: 1px solid rgba(255, 107, 107, 0.3);
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
   font-size: var(--fs-sm);
 }
 .ok-bar {
@@ -351,7 +353,7 @@ const envWhitelist = computed(() => env.value?.relayNetworkWhitelist ?? []);
   padding: var(--s-3) var(--s-4);
   border-radius: var(--r-md);
   background: var(--ok-bg);
-  border: 1px solid rgba(61, 220, 151, 0.28);
+  border: 1px solid color-mix(in srgb, var(--ok) 28%, transparent);
   font-size: var(--fs-sm);
 }
 </style>

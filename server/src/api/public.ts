@@ -146,6 +146,9 @@ export function buildOverview(app: App): PlatformOverview {
 export function listDownloads(app: App): DownloadArtifact[] {
   const root = app.downloads.root;
   if (!fs.existsSync(root)) return [];
+  const s = app.settings.current;
+  // 已登记 sha256 的主产物：用设置里的值，避免每次请求都对 ~87MB 的文件重新做哈希
+  const primaryFile = s.clientDownloadUrl ? path.basename(s.clientDownloadUrl) : '';
   const out: DownloadArtifact[] = [];
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
     if (!entry.isFile()) continue;
@@ -160,11 +163,16 @@ export function listDownloads(app: App): DownloadArtifact[] {
       label: labelFor(entry.name),
       filename: entry.name,
       size: stat.size,
-      sha256: null,
+      sha256: entry.name === primaryFile ? (s.clientSha256 ?? null) : null,
       url: `/downloads/${encodeURIComponent(entry.name)}`,
     });
   }
-  return out.sort((a, b) => a.filename.localeCompare(b.filename));
+  return out.sort((a, b) => {
+    // 主产物排在最前，便于前端把主下载按钮指向它
+    if (a.filename === primaryFile) return -1;
+    if (b.filename === primaryFile) return 1;
+    return a.filename.localeCompare(b.filename);
+  });
 }
 
 function labelFor(name: string): string {

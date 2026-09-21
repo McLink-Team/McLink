@@ -350,15 +350,15 @@ install_easytier() {
   fi
 
   # 1) 仓库里若已带 Linux 产物（deploy/vendor/ 已被 gitignore，通常是本机下载的），直接复用
-  if [[ -x "${APP_DIR}/deploy/vendor/linux-x86_64/easytier-core" ]]; then
+  if [[ -f "${APP_DIR}/deploy/vendor/linux-x86_64/easytier-core" ]]; then
     log "复用仓库自带的 Linux 产物：${APP_DIR}/deploy/vendor/linux-x86_64/"
     cp -f "${APP_DIR}/deploy/vendor/linux-x86_64/easytier-core" "${et_dir}/easytier-core"
     [[ -f "${APP_DIR}/deploy/vendor/linux-x86_64/easytier-cli" ]] \
       && cp -f "${APP_DIR}/deploy/vendor/linux-x86_64/easytier-cli" "${et_dir}/easytier-cli" || true
   fi
 
-  # 2) 否则从 GitHub Releases 下载
-  if [[ ! -x "${et_dir}/easytier-core" || ! -x "${et_dir}/easytier-cli" ]]; then
+  # 2) 否则从 GitHub Releases 下载（用 -f 而不是 -x：复制过来的文件可能还没可执行位）
+  if [[ ! -f "${et_dir}/easytier-core" || ! -f "${et_dir}/easytier-cli" ]]; then
     local url tmp
     url="https://github.com/EasyTier/EasyTier/releases/download/${ET_VERSION}/easytier-linux-x86_64-${ET_VERSION}.zip"
     tmp="$(mktemp -d)"
@@ -385,10 +385,10 @@ install_easytier() {
 
   chmod 0755 "${et_dir}"/* 2>/dev/null || true
 
-  if [[ -x "${et_dir}/easytier-core" ]]; then
+  if [[ -f "${et_dir}/easytier-core" ]]; then
     ok "EasyTier 核心已就绪：${et_dir}/easytier-core"
     sha256sum "${et_dir}/easytier-core" 2>/dev/null | sed 's/^/    sha256 /' >&2 || true
-    if [[ -x "${et_dir}/easytier-cli" ]]; then
+    if [[ -f "${et_dir}/easytier-cli" ]]; then
       ok "EasyTier CLI 已就绪：${et_dir}/easytier-cli"
     else
       warn "缺少 easytier-cli：流量统计与 ACL 下发将不可用（房间仍可联机）"
@@ -505,7 +505,8 @@ install_unit() {
   local unit_src="${APP_DIR}/deploy/mclink-server.service"
   local node_bin
   [[ -f "$unit_src" ]] || die "找不到单元文件：$unit_src"
-  node_bin="$(command -v node)"
+  node_bin="$(command -v node || true)"
+  [[ -n "$node_bin" ]] || die "在 PATH 中找不到 node，无法生成 systemd 单元"
   if [[ "$node_bin" != "/usr/bin/node" ]]; then
     warn "node 实际路径为 ${node_bin}，将同步写入单元文件"
   fi
@@ -591,11 +592,16 @@ EOF
     用户名 : admin
     密码   : ${ADMIN_PASSWORD_FINAL}
 
+  ${c_yellow}注意${c_reset}：该密码只在「库里还没有任何用户」时用于建号。
+  如果数据库里已经有 admin 账号，这里显示的密码不会改变现有密码 ——
+  请用旧密码登录后在「账号设置」里修改。
+
 EOF
   else
     cat >&2 <<EOF
   初始管理员密码沿用 ${ENV_FILE} 中已有的值（未修改）。
-  忘记密码时可在管理台外部改库，或参考 docs/troubleshooting.md。
+  注意：该变量只在首次建号时生效，改它不会修改已存在账号的密码；
+  请用旧密码登录后在「账号设置」改密（见 docs/troubleshooting.md 第 13 节）。
 
 EOF
   fi

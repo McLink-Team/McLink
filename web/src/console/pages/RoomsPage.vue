@@ -14,7 +14,7 @@ import {
   type RoomMember,
 } from '@mclink/shared';
 import { api, friendlyError } from '../../lib/api.ts';
-import { accessLabel, copyText, formatDateTime, memberLabel, memberTone, roomLabel, roomTone } from '../../lib/ui.ts';
+import { accessLabel, asArray, asStringList, copyText, formatDateTime, memberLabel, memberTone, roomLabel, roomTone } from '../../lib/ui.ts';
 import { notifyOk, notifyWarn } from '../../lib/toast.ts';
 import Badge from '../../components/Badge.vue';
 
@@ -65,7 +65,7 @@ async function load(): Promise<void> {
         offset: page.value * limit,
       },
     });
-    rooms.value = result.rooms;
+    rooms.value = asArray(result.rooms);
     total.value = result.total;
     error.value = null;
   } catch (err) {
@@ -114,6 +114,14 @@ async function openDetail(roomId: string): Promise<void> {
   secretVisible.value = false;
   try {
     detail.value = await api.get<RoomDetail>(Routes.adminRoom(roomId));
+    if (detail.value) {
+      // 成员/日志等数组字段做一次归一化，避免旧版主控缺字段时整页渲染失败
+      detail.value = {
+        ...detail.value,
+        members: asArray(detail.value.members),
+        accessLog: asArray(detail.value.accessLog),
+      };
+    }
   } catch (err) {
     detailError.value = friendlyError(err);
   } finally {
@@ -334,7 +342,9 @@ async function recomputeAcl(): Promise<void> {
             <span class="kv-k">虚拟网段</span><span class="kv-v mono">{{ detail.room.subnet }}（槽位 {{ detail.room.subnetSlot }}）</span>
             <span class="kv-k">EasyTier 网络</span><span class="kv-v mono truncate" :title="detail.room.networkName">{{ detail.room.networkName }}</span>
             <span class="kv-k">中继节点</span>
-            <span class="kv-v mono">{{ detail.room.relayNodeIds.length > 0 ? detail.room.relayNodeIds.join(', ') : '仅主控兜底中继' }}</span>
+            <span class="kv-v mono">
+              {{ asStringList(detail.room.relayNodeIds).length > 0 ? asStringList(detail.room.relayNodeIds).join(', ') : '仅主控兜底中继' }}
+            </span>
             <span class="kv-k">累计流量</span>
             <span class="kv-v">
               收 {{ formatBytes(detail.usage.rxBytes) }} / 发 {{ formatBytes(detail.usage.txBytes) }} ·
@@ -354,7 +364,7 @@ async function recomputeAcl(): Promise<void> {
               最多 {{ detail.room.policy.maxPlayers }} 人 ·
               {{ detail.room.policy.allowP2p ? '允许 P2P' : '全部走中继' }} ·
               {{ detail.room.policy.strictPorts ? '严格端口' : '宽松端口' }} ·
-              端口 {{ detail.room.policy.allowedPorts.length > 0 ? detail.room.policy.allowedPorts.join(', ') : '不限' }}
+              端口 {{ asStringList(detail.room.policy.allowedPorts).length > 0 ? asStringList(detail.room.policy.allowedPorts).join(', ') : '不限' }}
             </span>
             <span class="kv-k">创建时间</span><span class="kv-v">{{ formatDateTime(detail.room.createdAt) }}</span>
           </div>
@@ -474,7 +484,7 @@ async function recomputeAcl(): Promise<void> {
   position: fixed;
   inset: 0;
   z-index: var(--z-modal);
-  background: rgba(3, 5, 12, 0.68);
+  background: color-mix(in srgb, var(--bg-0) 68%, transparent);
   backdrop-filter: blur(3px);
   display: flex;
   justify-content: flex-end;
@@ -530,7 +540,7 @@ async function recomputeAcl(): Promise<void> {
   margin: 0;
   padding: var(--s-3);
   border-radius: var(--r-sm);
-  background: rgba(4, 7, 16, 0.6);
+  background: color-mix(in srgb, var(--bg-0) 60%, transparent);
   border: 1px solid var(--border);
   color: var(--text-dim);
   font-size: var(--fs-xs);

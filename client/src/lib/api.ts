@@ -1,13 +1,34 @@
 /**
  * 客户端侧的 API 封装。
- * 与 web 版本的区别：主控地址由用户在设置里填写（可指向任意自建主控），
- * 因此基址是运行时可变的。
+ *
+ * 主控地址是**编译期常量**：平台不开放自建主控，客户端只能连官方主控。
+ * 打包时通过 `VITE_MCLINK_MASTER` 注入（见 client/.env.example 与 scripts/build.mjs），
+ * 不注入时回退到本地开发地址。运行时没有任何修改入口 ——
+ * 这既避免了玩家被诱导连到钓鱼主控，也让「票据只能来自官方主控」这条
+ * 安全前提成立。
  */
 import { API_PREFIX, type ApiError } from '@mclink/shared';
 
-const MASTER_KEY = 'mclink.master';
 const TOKEN_KEY = 'mclink.token';
 const DEVICE_KEY = 'mclink.device';
+/** 本地开发用回退地址；正式包一定会被 VITE_MCLINK_MASTER 覆盖 */
+const DEV_FALLBACK_MASTER = 'http://127.0.0.1:8787';
+
+function readEnvMaster(): string {
+  const raw = import.meta.env.VITE_MCLINK_MASTER;
+  if (typeof raw === 'string' && raw.trim().length > 0) return raw.trim().replace(/\/+$/, '');
+  return DEV_FALLBACK_MASTER;
+}
+
+/** 主控地址（只读）。不要再往 localStorage 里存它 —— 那等于给了篡改入口。 */
+export const MASTER_URL = readEnvMaster();
+
+/** 是否使用了开发回退地址（界面据此提示「当前连的是本地主控」） */
+export const USING_DEV_MASTER = !import.meta.env.VITE_MCLINK_MASTER;
+
+export function getMasterUrl(): string {
+  return MASTER_URL;
+}
 
 export class ApiRequestError extends Error {
   readonly code: string;
@@ -35,16 +56,6 @@ function writeLocal(key: string, value: string | null): void {
   } catch {
     /* ignore */
   }
-}
-
-export function getMasterUrl(): string {
-  const saved = readLocal(MASTER_KEY);
-  const base = saved && saved.trim().length > 0 ? saved : 'http://127.0.0.1:8787';
-  return base.replace(/\/+$/, '');
-}
-
-export function setMasterUrl(url: string): void {
-  writeLocal(MASTER_KEY, url.trim().replace(/\/+$/, ''));
 }
 
 export function getToken(): string | null {

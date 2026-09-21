@@ -10,7 +10,7 @@ import { EnrollKeyRepo } from '../db/users.ts';
 import { AuditRepo } from '../db/traffic.ts';
 import { HttpError } from '../util/errors.ts';
 import { logger } from '../logger.ts';
-import { sha256, shortId } from '../util/id.ts';
+import { sha256, shortId, randomBytesBuf } from '../util/id.ts';
 import { renderEasytierToml, buildLaunchArgs, rpcPortalForListenPort, CONFIG_PLACEHOLDER } from '../easytier/config.ts';
 import type { ServerConfig } from '../config.ts';
 import type { SettingsService } from './settings.ts';
@@ -54,7 +54,7 @@ export class NodeService {
     tags?: string[];
     publicIp?: string | null;
     /** 同一 endpoint 重复上线时，允许用原令牌覆盖（节点重装场景） */
-  }): { node: RelayNode; nodeToken: string; relayConfigToml: string; launchArgs: string[] } {
+  }): { node: RelayNode; nodeToken: string; relayConfigToml: string; launchArgs: string[]; heartbeatIntervalSeconds: number } {
     const key = this.enrollKeys.find(input.enrollKey.trim().toUpperCase());
     if (!key) throw HttpError.forbidden('注册密钥无效');
     if (key.revoked === 1) throw HttpError.forbidden('注册密钥已被吊销');
@@ -71,7 +71,12 @@ export class NodeService {
     }
 
     const nodeId = shortId('n');
-    const nodeToken = `${nodeId}.${sha256(`${nodeId}:${Date.now()}:${Math.random()}`)}`;
+    /**
+     * 节点长期令牌。
+     * 必须用 CSPRNG：`Math.random()` 是可预测的 PRNG，拿它当长期凭证的熵源
+     * 等于给攻击者留了一条伪造节点身份的路。
+     */
+    const nodeToken = `${nodeId}.${randomBytesBuf(32).toString('base64url')}`;
     const row = this.nodes.create({
       id: nodeId,
       name: input.name.trim().slice(0, 40),
@@ -101,6 +106,7 @@ export class NodeService {
       nodeToken,
       relayConfigToml: this.renderNodeConfig(row),
       launchArgs: this.launchArgsFor(row),
+      heartbeatIntervalSeconds: this.config.nodeHeartbeatIntervalSeconds,
     };
   }
 
