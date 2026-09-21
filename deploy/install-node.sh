@@ -12,10 +12,10 @@
 #
 # 用法：
 #   sudo bash deploy/install-node.sh \
-#     --master https://master.example.com \
+#     --master https://cnnic.link \
 #     --key <注册密钥> \
 #     --region cn-east \
-#     --endpoint relay-sh.example.com:11010 \
+#     --endpoint relay-sh.cnnic.link:11010 \
 #     --name relay-sh
 #
 set -euo pipefail
@@ -65,12 +65,12 @@ mclink 子节点（区域中继）一键安装脚本（Debian 12 x86_64）
     --region <区域> --endpoint <公网地址> [选项]
 
 必填：
-  --master <URL>            主控地址，例如 https://master.example.com
+  --master <URL>            主控地址，例如 https://cnnic.link
   --key <注册密钥>           管理台签发的一次性注册密钥
   --region <区域>            区域标识：cn-east / cn-south / cn-north / cn-central /
                             cn-southwest / cn-northwest / cn-northeast / hk / oversea
   --endpoint <host:port>    客户端连接本节点用的公网地址，端口即 EasyTier 监听端口，
-                            例如 relay-sh.example.com:11010
+                            例如 relay-sh.cnnic.link:11010
 
 可选：
   --name <名称>              节点显示名，默认取主机名
@@ -120,7 +120,7 @@ done
 [[ "${EUID}" -eq 0 ]] || die "请用 root 运行：sudo bash deploy/install-node.sh ..."
 [[ -n "$MASTER" ]] || die "缺少 --master"
 [[ -n "$REGION" ]] || die "缺少 --region"
-[[ -n "$ENDPOINT" ]] || die "缺少 --endpoint（形如 relay-sh.example.com:11010）"
+[[ -n "$ENDPOINT" ]] || die "缺少 --endpoint（形如 relay-sh.cnnic.link:11010）"
 
 case "$MASTER" in
   http://*|https://*) : ;;
@@ -130,7 +130,7 @@ MASTER="${MASTER%/}"
 
 case "$ENDPOINT" in
   *:*) : ;;
-  *) die "--endpoint 必须包含端口，例如 relay-sh.example.com:11010" ;;
+  *) die "--endpoint 必须包含端口，例如 relay-sh.cnnic.link:11010" ;;
 esac
 ENDPOINT_PORT="${ENDPOINT##*:}"
 [[ "$ENDPOINT_PORT" =~ ^[0-9]+$ ]] || die "--endpoint 端口必须是数字: $ENDPOINT"

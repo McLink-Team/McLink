@@ -18,6 +18,10 @@ export const Routes = {
   logout: '/auth/logout',
   me: '/auth/me',
   changePassword: '/auth/password',
+  /** 开始邮箱验证：给自己的账号绑定邮箱并寄出 6 位验证码 */
+  emailStart: '/auth/email/start',
+  /** 提交验证码完成验证 */
+  emailVerify: '/auth/email/verify',
 
   /* ---------- 房间（玩家） ---------- */
   rooms: '/rooms',
@@ -54,6 +58,10 @@ export const Routes = {
   adminTraffic: '/admin/traffic',
   adminAudit: '/admin/audit',
   adminSettings: '/admin/settings',
+  /** 发一封测试邮件，失败时回显 SMTP 会话，便于运维定位 */
+  adminMailTest: '/admin/mail/test',
+  /** 查询邮件服务状态（配置是否齐全、最近一次发信结果） */
+  adminMailStatus: '/admin/mail/status',
   adminRelay: '/admin/relay',
   adminRelayAcl: '/admin/relay/acl',
   adminRelayRestart: '/admin/relay/restart',
@@ -141,6 +149,13 @@ export const ErrorCodes = {
   ROOM_PENDING: 'room_approval_pending',
   QUOTA_EXCEEDED: 'quota_exceeded',
   REGISTRATION_CLOSED: 'registration_closed',
+  /* 邮箱相关：客户端/网页靠这几个码决定"跳到验证邮箱界面"而不是弹一句看不懂的错 */
+  EMAIL_REQUIRED: 'email_required',
+  EMAIL_NOT_VERIFIED: 'email_not_verified',
+  EMAIL_TAKEN: 'email_taken',
+  EMAIL_CODE_INVALID: 'email_code_invalid',
+  SMTP_NOT_CONFIGURED: 'smtp_not_configured',
+  SMTP_FAILED: 'smtp_failed',
   INTERNAL: 'internal_error',
   SERVICE_UNAVAILABLE: 'service_unavailable',
 } as const;

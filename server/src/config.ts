@@ -6,6 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { SmtpEncryption } from '@mclink/shared';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 /** server/ 目录 */
@@ -42,6 +43,13 @@ export interface ServerConfig {
   /** 主控自身 EasyTier 中继 */ 
   easytier: EasytierConfig;
 
+  /* ---- 邮件（SMTP）---- */
+  /**
+   * 这些只是**初始默认值**：管理台里保存过的设置会覆盖它们。
+   * 好处是 `install-server.sh` 一次性注入即可跑起来，之后运维仍能在控制台改。
+   */
+  smtp: SmtpEnvConfig;
+
   /* ---- 运行时行为 ---- */
   nodeOfflineTimeoutSeconds: number;
   nodeHeartbeatIntervalSeconds: number;
@@ -52,6 +60,20 @@ export interface ServerConfig {
   logLevel: LogLevel;
   /** 是否在启动时自动拉起主控中继实例 */
   autoStartRelay: boolean;
+}
+
+/** 邮件相关的环境变量默认值（管理台保存过的设置优先） */
+export interface SmtpEnvConfig {
+  host: string;
+  port: number;
+  secure: SmtpEncryption;
+  user: string;
+  password: string | null;
+  from: string;
+  /** 是否要求验证邮箱才能建房/进房 */
+  requireVerification: boolean | null;
+  /** 验证码有效期（分钟） */
+  codeTtlMinutes: number | null;
 }
 
 export interface EasytierConfig {
@@ -193,9 +215,43 @@ export function loadConfig(): ServerConfig {
     registrationOpen: boolEnv('MCLINK_REGISTRATION_OPEN', true),
     logLevel: pickLogLevel(),
     autoStartRelay: boolEnv('MCLINK_AUTOSTART_RELAY', true),
+
+    smtp: {
+      host: env('MCLINK_SMTP_HOST') ?? '',
+      port: intEnv('MCLINK_SMTP_PORT', 465, 1, 65535),
+      secure: pickSmtpSecure(env('MCLINK_SMTP_SECURE')),
+      user: env('MCLINK_SMTP_USER') ?? '',
+      password: env('MCLINK_SMTP_PASSWORD') ?? null,
+      from: env('MCLINK_SMTP_FROM') ?? '',
+      requireVerification: optionalBoolEnv('MCLINK_REQUIRE_EMAIL_VERIFICATION'),
+      codeTtlMinutes: optionalIntEnv('MCLINK_EMAIL_CODE_TTL_MINUTES', 1, 1440),
+    },
   };
 
   return config;
+}
+
+/** ssl / starttls / none，写错时回退到 ssl 并留给调用方一条警告 */
+function pickSmtpSecure(raw: string | undefined): SmtpEncryption {
+  const value = (raw ?? '').trim().toLowerCase();
+  if (value === 'starttls' || value === 'tls') return 'starttls';
+  if (value === 'none' || value === 'plain' || value === 'insecure') return 'none';
+  return 'ssl';
+}
+
+/** 只在显式设置时返回布尔；未设置返回 null，好让管理台里的值说了算 */
+function optionalBoolEnv(name: string): boolean | null {
+  const v = env(name);
+  if (v === undefined) return null;
+  return ['1', 'true', 'yes', 'on'].includes(v.trim().toLowerCase());
+}
+
+function optionalIntEnv(name: string, min: number, max: number): number | null {
+  const v = env(name);
+  if (v === undefined) return null;
+  const n = Number.parseInt(v, 10);
+  if (!Number.isFinite(n)) return null;
+  return Math.min(max, Math.max(min, n));
 }
 
 /**

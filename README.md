@@ -48,6 +48,9 @@ mclink = **主控（Master）** + **区域子节点（Relay）** + **Windows 客
   并给出可执行的改善建议（而不是只丢一堆数字）。
 * **联机地址一眼可见、一点即复制**：房间页顶部的地址铭牌放大显示，点整块或点「复制地址」
   都能立刻拿到，直接粘贴给朋友（不用切窗口、也不用去翻日志）。
+* **邮箱验证**：主控内置 SMTP 客户端（SSL 465 / STARTTLS 587，零外部依赖与额外进程），
+  注册时发 6 位验证码；开启「要求验证邮箱」后，未验证的账号无法建房/进房。
+  SMTP 参数在控制台可配，并能发测试邮件（失败时回显完整 SMTP 会话）。
 * **公共广场 / 收藏 / 最近**：浏览公开房间，收藏常去的房间，一键重新进入。
 * **首次使用向导**：检测管理员权限（建虚拟网卡必需）并引导完成第一次联机。
 
@@ -137,7 +140,7 @@ pnpm lab:dataplane    # 数据面：真实 TCP 跑通，并验证限速真的把
 
 ```bash
 git clone <仓库地址> /opt/src/mclink && cd /opt/src/mclink
-sudo bash deploy/install-server.sh --public-url https://mclink.example.com
+sudo bash deploy/install-server.sh --public-url https://cnnic.link
 ```
 
 脚本会装 Node、装依赖、构建前端、下载 EasyTier、写 `/etc/mclink/mclink.env`、
@@ -147,10 +150,10 @@ sudo bash deploy/install-server.sh --public-url https://mclink.example.com
 
 ```bash
 sudo bash deploy/install-node.sh \
-  --master https://mclink.example.com \
+  --master https://cnnic.link \
   --key <注册密钥> \
   --region cn-east \
-  --endpoint relay-sh.example.com:11010 \
+  --endpoint relay-sh.cnnic.link:11010 \
   --name relay-sh
 ```
 

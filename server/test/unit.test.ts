@@ -16,14 +16,27 @@ import { buildRoomAcl, isAclEmpty } from '../src/easytier/acl.ts';
 import { parseHumanNumber, parseLatencyMs } from '../src/easytier/manager.ts';
 import { hashRoomPassword, verifyRoomPassword, deriveNetworkName } from '../src/services/rooms.ts';
 import {
+  buildMessage,
+  encodeHeader,
+  maskAuthLine,
+  parseCapabilities,
+  type SmtpConfig,
+} from '../src/mail/smtp.ts';
+import { resolveFrom } from '../src/services/mailer.ts';
+import { emailGateProblem } from '../src/services/email-gate.ts';
+import type { UserRow } from '../src/db/users.ts';
+import {
   DEFAULT_ROOM_POLICY,
   allocateSeat,
   allocateSlot,
+  EMAIL_CODE_PATTERN,
+  emailProblem,
   hostIpCidr,
   kbpsToBps,
   kbpsToBytesPerSecond,
   memberIpCidr,
   memberIpForSlot,
+  normalizeEmailCode,
   slotFromIp,
   subnetForSlot,
   generateNetworkSecret,
@@ -296,5 +309,150 @@ describe('输入校验', () => {
     assert.ok(passwordProblem('12345678'), '纯数字不通过');
     assert.ok(passwordProblem('abcdefgh'), '纯字母不通过');
     assert.equal(passwordProblem('abcd1234'), null);
+  });
+
+  test('邮箱校验：挡明显不是邮箱的输入，放过正常地址', () => {
+    assert.equal(emailProblem('player@cnnic.link'), null);
+    assert.equal(emailProblem('a.b+tag@sub.example.co.uk'), null);
+    assert.equal(emailProblem('  trim@example.com  '), null, '两侧空格应被容忍');
+
+    assert.ok(emailProblem(''));
+    assert.ok(emailProblem('no-at-sign'));
+    assert.ok(emailProblem('two@@example.com'));
+    assert.ok(emailProblem('@example.com'), '缺本地部分');
+    assert.ok(emailProblem('user@'), '缺域名');
+    assert.ok(emailProblem('user@localhost'), '顶级域必须有');
+    assert.ok(emailProblem('user@example.c'), '顶级域至少 2 位');
+    assert.ok(emailProblem('has space@example.com'));
+    assert.ok(emailProblem(`${'x'.repeat(120)}@example.com`), '过长要挡');
+  });
+
+  test('验证码：只接受 6 位数字，允许用户带空格输入', () => {
+    assert.ok(EMAIL_CODE_PATTERN.test('123456'));
+    assert.ok(!EMAIL_CODE_PATTERN.test('12345'));
+    assert.ok(!EMAIL_CODE_PATTERN.test('1234567'));
+    assert.ok(!EMAIL_CODE_PATTERN.test('12345a'));
+    assert.equal(normalizeEmailCode(' 12 34 56 '), '123456');
+  });
+});
+
+describe('邮箱门禁（开启后谁能建房/进房）', () => {
+  const user = (over: Partial<UserRow>): UserRow => ({
+    id: 'u_test',
+    username: 'tester',
+    display_name: 'tester',
+    password_hash: '',
+    role: 'user',
+    banned: 0,
+    email: null,
+    email_verified: 0,
+    quota_bytes: null,
+    used_bytes: 0,
+    max_rooms: null,
+    created_at: '',
+    updated_at: '',
+    ...over,
+  });
+
+  test('开关关闭时一律放行（哪怕没邮箱、没验证）', () => {
+    assert.equal(emailGateProblem(user({}), false), null);
+    assert.equal(emailGateProblem(user({ email: 'a@b.com', email_verified: 0 }), false), null);
+  });
+
+  test('开关打开时：没绑邮箱被挡，且提示去绑定', () => {
+    const problem = emailGateProblem(user({}), true);
+    assert.ok(problem, '应当被拒绝');
+    assert.equal(problem?.status, 403);
+    assert.equal(problem?.code, 'email_not_verified');
+    assert.match(problem?.message ?? '', /绑定/);
+  });
+
+  test('开关打开时：绑了但没验证也被挡', () => {
+    const problem = emailGateProblem(user({ email: 'a@b.com', email_verified: 0 }), true);
+    assert.ok(problem);
+    assert.match(problem?.message ?? '', /尚未验证/);
+  });
+
+  test('开关打开时：验证过才放行', () => {
+    assert.equal(emailGateProblem(user({ email: 'a@b.com', email_verified: 1 }), true), null);
+  });
+});
+
+describe('SMTP 组信（中文邮件最容易坏的两个地方）', () => {  const config: SmtpConfig = {
+    host: 'smtp.example.com',
+    port: 465,
+    secure: 'ssl',
+    from: 'no-reply@cnnic.link',
+    fromName: 'mclink 联机',
+  };
+
+  test('非 ASCII 头部按 RFC 2047 编码，纯 ASCII 保持可读', () => {
+    assert.equal(encodeHeader('SMTP test'), 'SMTP test');
+    const encoded = encodeHeader('mclink 邮箱验证码');
+    assert.match(encoded, /^=\?UTF-8\?B\?[A-Za-z0-9+/=]+\?=$/);
+    // 解回来必须与原文一致，否则邮件客户端显示乱码
+    const base64 = encoded.slice('=?UTF-8?B?'.length, -2);
+    assert.equal(Buffer.from(base64, 'base64').toString('utf8'), 'mclink 邮箱验证码');
+  });
+
+  test('正文用 base64：既没有裸中文，也不需要 dot-stuffing', () => {
+    const message = buildMessage(config, {
+      to: 'player@example.com',
+      subject: 'mclink 邮箱验证码',
+      text: '你的验证码是：123456\n\n请在 15 分钟内输入。',
+    });
+    assert.match(message, /Content-Transfer-Encoding: base64/);
+    assert.match(message, /Subject: =\?UTF-8\?B\?/);
+    assert.match(message, /From: =\?UTF-8\?B\?[^?]+\?= <no-reply@cnnic.link>/);
+
+    const [, body = ''] = message.split('\r\n\r\n');
+    assert.ok(!/[\u4e00-\u9fa5]/.test(body), '正文里不该出现裸中文');
+    assert.ok(!/^\./m.test(body), 'base64 正文不可能出现以点开头的行');
+    const decoded = Buffer.from(body.replace(/\r\n/g, ''), 'base64').toString('utf8');
+    assert.match(decoded, /123456/);
+    // 每行不超过 76 字符（RFC 2045）
+    for (const line of body.split('\r\n')) assert.ok(line.length <= 76, `base64 行过长: ${line.length}`);
+  });
+
+  test('发件人显示名走编码，裸地址不带尖括号', () => {
+    const bare = buildMessage({ ...config, fromName: undefined }, { to: 'a@b.com', subject: 'x', text: 'y' });
+    assert.match(bare, /^From: no-reply@cnnic\.link\r\n/);
+  });
+
+  test('EHLO 能力解析：多行响应、带参数与不带参数', () => {
+    const reply = [
+      '250-smtp.example.com',
+      '250-STARTTLS',
+      '250-AUTH PLAIN LOGIN',
+      '250-SIZE 35882577',
+      '250 8BITMIME',
+    ].join('\r\n');
+    const caps = parseCapabilities(reply);
+    assert.equal(caps.get('STARTTLS'), '');
+    assert.equal(caps.get('AUTH'), 'PLAIN LOGIN');
+    assert.equal(caps.get('SIZE'), '35882577');
+    assert.ok(caps.has('8BITMIME'));
+  });
+
+  test('AUTH 命令在会话记录里被脱敏（会被管理员看到）', () => {
+    const masked = maskAuthLine('AUTH PLAIN AG5vLXJlcGx5QGNubmljLmxpbmsAc2VjcmV0');
+    assert.equal(masked, 'AUTH PLAIN <已隐藏>');
+    assert.equal(maskAuthLine('AG5vLXJlcGx5'), '<已隐藏>');
+    assert.equal(maskAuthLine('MAIL FROM:<no-reply@cnnic.link>'), 'MAIL FROM:<no-reply@cnnic.link>');
+  });
+
+  test('发件人拆分：带显示名 / 裸地址 / 留空退回账号', () => {
+    assert.deepEqual(resolveFrom('mclink <no-reply@cnnic.link>', ''), {
+      address: 'no-reply@cnnic.link',
+      name: 'mclink',
+      display: 'mclink <no-reply@cnnic.link>',
+    });
+    assert.deepEqual(resolveFrom('no-reply@cnnic.link', ''), {
+      address: 'no-reply@cnnic.link',
+      name: '',
+      display: 'no-reply@cnnic.link',
+    });
+    assert.equal(resolveFrom('', 'fallback@cnnic.link').address, 'fallback@cnnic.link');
+    assert.equal(resolveFrom('"带引号" <a@b.com>', '').name, '带引号');
   });
 });

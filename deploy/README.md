@@ -60,10 +60,10 @@ sudo bash deploy/install-server.sh --port 8787 --relay-port 11010
 
 # 步骤 2：在区域服务器上执行（把仓库的 deploy/ 目录拷过去，或整仓 clone）
 sudo bash deploy/install-node.sh \
-  --master https://master.example.com \
+  --master https://cnnic.link \
   --key <注册密钥> \
   --region cn-east \
-  --endpoint relay-sh.example.com:11010 \
+  --endpoint relay-sh.cnnic.link:11010 \
   --name relay-sh
 ```
 
@@ -87,7 +87,7 @@ sudo bash deploy/install-node.sh \
 sudo cp deploy/nginx.conf.example /etc/nginx/conf.d/mclink.conf
 sudo nano /etc/nginx/conf.d/mclink.conf     # 改 server_name 与证书路径
 sudo apt-get install -y certbot python3-certbot-nginx
-sudo certbot --nginx -d mclink.example.com
+sudo certbot --nginx -d cnnic.link
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
@@ -96,7 +96,7 @@ sudo nginx -t && sudo systemctl reload nginx
 * 只走反代时不要对公网放行 8787；**中继端口 11010 仍要开放 TCP+UDP**（它不是 HTTP，无法走 http 反代），
   或者用 `nginx.conf.example` 末尾的 `stream {}` 示例代理 TCP 与 UDP。
 * 记得给系统环境变量补上对外地址，否则下载链接与客户端中继地址会推导错：
-  `MCLINK_PUBLIC_BASE_URL=https://mclink.example.com`（`install-server.sh --public-url` 会自动写入）。
+  `MCLINK_PUBLIC_BASE_URL=https://cnnic.link`（`install-server.sh --public-url` 会自动写入）。
 
 ## 4. 升级流程（重点：别把密钥弄丢）
 
@@ -173,11 +173,11 @@ curl -s http://127.0.0.1:8787/api/v1/stats | head -c 400
 管理台「签发注册密钥」返回的 `command` 形如：
 
 ```bash
-curl -fsSL https://master.example.com/agent/install.sh | sudo bash -s -- \
-  --master https://master.example.com \
+curl -fsSL https://cnnic.link/agent/install.sh | sudo bash -s -- \
+  --master https://cnnic.link \
   --key <注册密钥> \
   --region cn-east \
-  --endpoint relay-sh.example.com:11010
+  --endpoint relay-sh.cnnic.link:11010
 ```
 
 这条命令依赖主控静态目录里存在 `/agent/install.sh`（以及可选的 `/agent/agent.mjs`），

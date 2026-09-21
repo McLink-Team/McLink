@@ -11,6 +11,7 @@ export interface UserRow {
   role: string;
   banned: number;
   email: string | null;
+  email_verified: number;
   quota_bytes: number | null;
   used_bytes: number;
   max_rooms: number | null;
@@ -44,6 +45,7 @@ function toUserSelf(row: UserRow): UserSelf {
   return {
     ...toUser(row),
     email: row.email,
+    emailVerified: toBool(row.email_verified),
     quotaBytes: row.quota_bytes,
     usedBytes: row.used_bytes,
     maxRooms: row.max_rooms,
@@ -75,21 +77,26 @@ export class UserRepo {
     passwordHash: string;
     role?: UserRole;
     email?: string | null;
+    /** 显式指定邮箱验证状态；默认 false —— 只有真的验证过才是 true */
+    emailVerified?: boolean;
     quotaBytes?: number | null;
     maxRooms?: number | null;
   }): UserRow {
     const id = shortId('u');
     const ts = nowIso();
+    const email = input.email ?? null;
+    const verified = input.emailVerified ?? false;
     this.db.run(
-      `insert into users (id, username, display_name, password_hash, role, banned, email,
+      `insert into users (id, username, display_name, password_hash, role, banned, email, email_verified,
         quota_bytes, used_bytes, max_rooms, created_at, updated_at)
-       values (?, ?, ?, ?, ?, 0, ?, ?, 0, ?, ?, ?)`,
+       values (?, ?, ?, ?, ?, 0, ?, ?, ?, 0, ?, ?, ?)`,
       id,
       input.username,
       input.displayName,
       input.passwordHash,
       input.role ?? 'user',
-      input.email ?? null,
+      email,
+      boolToInt(verified),
       input.quotaBytes ?? null,
       input.maxRooms ?? null,
       ts,
@@ -98,6 +105,25 @@ export class UserRepo {
     const row = this.findById(id);
     if (!row) throw new Error('创建用户后无法读回记录');
     return row;
+  }
+
+  /** 换绑邮箱：地址变了就重新进入「待验证」，否则老邮箱的验证状态会被新地址白拿 */
+  setEmail(id: string, email: string | null, verified: boolean): void {
+    this.db.run(
+      'update users set email = ?, email_verified = ?, updated_at = ? where id = ?',
+      email,
+      boolToInt(verified),
+      nowIso(),
+      id,
+    );
+  }
+
+  markEmailVerified(id: string): void {
+    this.db.run('update users set email_verified = 1, updated_at = ? where id = ?', nowIso(), id);
+  }
+
+  findByEmail(email: string): UserRow | undefined {
+    return this.db.get<UserRow>('select * from users where email = ? collate nocase', email);
   }
 
   updatePassword(id: string, passwordHash: string): void {
@@ -112,8 +138,9 @@ export class UserRepo {
       params.push(fields.displayName);
     }
     if (fields.email !== undefined) {
-      sets.push('email = ?');
-      params.push(fields.email);
+      // 换绑邮箱要一起把验证状态打回未验证：否则改个地址就能白拿别人的验证状态
+      sets.push('email = ?', 'email_verified = ?');
+      params.push(fields.email, 0);
     }
     if (sets.length === 0) return;
     sets.push('updated_at = ?');
@@ -310,6 +337,113 @@ export class SettingsRepo {
     const out: Record<string, unknown> = {};
     for (const row of rows) out[row.key] = parseJson<unknown>(row.value, null);
     return out;
+  }
+}
+
+export interface EmailCodeRow {
+  id: string;
+  user_id: string;
+  email: string;
+  code_hash: string;
+  purpose: string;
+  attempts: number;
+  created_at: string;
+  expires_at: string;
+  consumed_at: string | null;
+}
+
+/**
+ * 邮箱验证码仓储。
+ *
+ * 安全约定：
+ *   · 只存 `sha256(code + user_id)`，不存明文——库被读走也换不出验证码；
+ *   · 校验用时间常量比较（见 AuthService.verifyEmail），避免按比较耗时猜码；
+ *   · 每次签发前把该用户旧的未用码标记为作废，保证"同时只有一个有效码"。
+ */
+export class EmailCodeRepo {
+  private readonly db: Db;
+
+  constructor(db: Db) {
+    this.db = db;
+  }
+
+  issue(input: { userId: string; email: string; codeHash: string; ttlMinutes: number }): EmailCodeRow {
+    const id = shortId('ec');
+    const ts = nowIso();
+    const expires = new Date(Date.now() + input.ttlMinutes * 60_000).toISOString();
+    // 旧码立刻作废：否则用户拿到两封邮件，两串码都可能被接受
+    this.db.run(
+      `update email_codes set consumed_at = ? where user_id = ? and consumed_at is null`,
+      ts,
+      input.userId,
+    );
+    this.db.run(
+      `insert into email_codes (id, user_id, email, code_hash, purpose, attempts, created_at, expires_at, consumed_at)
+       values (?, ?, ?, ?, 'verify', 0, ?, ?, null)`,
+      id,
+      input.userId,
+      input.email,
+      input.codeHash,
+      ts,
+      expires,
+    );
+    const row = this.db.get<EmailCodeRow>('select * from email_codes where id = ?', id);
+    if (!row) throw new Error('写入验证码后无法读回记录');
+    return row;
+  }
+
+  /** 最近一条还有效的验证码（未消费、未过期） */
+  findActive(userId: string): EmailCodeRow | undefined {
+    return this.db.get<EmailCodeRow>(
+      `select * from email_codes
+       where user_id = ? and consumed_at is null and expires_at > ?
+       order by created_at desc limit 1`,
+      userId,
+      nowIso(),
+    );
+  }
+
+  /** 最近一条验证码，不管是否过期/已用（用于告诉用户"码过期了，请重发"） */
+  findLatest(userId: string): EmailCodeRow | undefined {
+    return this.db.get<EmailCodeRow>(
+      'select * from email_codes where user_id = ? order by created_at desc limit 1',
+      userId,
+    );
+  }
+
+  bumpAttempts(id: string): void {
+    this.db.run('update email_codes set attempts = attempts + 1 where id = ?', id);
+  }
+
+  consume(id: string): void {
+    this.db.run('update email_codes set consumed_at = ? where id = ?', nowIso(), id);
+  }
+
+  /** 限流用：该用户/该邮箱在时间窗内签发过几次 */
+  countSince(by: { userId?: string; email?: string }, sinceIso: string): number {
+    if (by.userId) {
+      return Number(
+        this.db.scalar<number>(
+          'select count(*) as c from email_codes where user_id = ? and created_at > ?',
+          by.userId,
+          sinceIso,
+        ) ?? 0,
+      );
+    }
+    return Number(
+      this.db.scalar<number>(
+        'select count(*) as c from email_codes where email = ? and created_at > ?',
+        by.email ?? '',
+        sinceIso,
+      ) ?? 0,
+    );
+  }
+
+  /** 清理过期记录，由后台定时器调用 */
+  purgeExpired(beforeIso: string): number {
+    const before = this.db.scalar<number>('select count(*) as c from email_codes where expires_at < ?', beforeIso) ?? 0;
+    this.db.run('delete from email_codes where expires_at < ?', beforeIso);
+    return Number(before);
   }
 }
 

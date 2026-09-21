@@ -46,15 +46,42 @@ export async function login(username: string, password: string): Promise<UserSel
   return result.user;
 }
 
-export async function register(username: string, password: string, displayName?: string): Promise<UserSelf> {
-  const result = await api.post<{ token: string; user: UserSelf }>(Routes.register, {
-    username,
-    password,
-    displayName,
-  });
+export async function register(
+  username: string,
+  password: string,
+  displayName?: string,
+  email?: string,
+): Promise<{ user: UserSelf; emailSent: boolean; emailError: string | null }> {
+  const result = await api.post<{
+    token: string;
+    user: UserSelf;
+    emailSent?: boolean;
+    emailError?: string | null;
+  }>(Routes.register, { username, password, displayName, email });
   setToken(result.token);
   user.value = result.user;
   loaded.value = true;
+  return { user: result.user, emailSent: result.emailSent === true, emailError: result.emailError ?? null };
+}
+
+/** 邮箱验证状态（未登录时抛 401，由调用方处理） */
+export async function emailStatus(): Promise<{
+  email: string | null;
+  verified: boolean;
+  codeExpiresAt: string | null;
+  resendAfterSeconds: number;
+  required: boolean;
+}> {
+  return api.get('/auth/email');
+}
+
+export async function startEmailVerification(email: string): Promise<{ email: string; expiresAt: string | null }> {
+  return api.post(Routes.emailStart, { email });
+}
+
+export async function submitEmailCode(code: string): Promise<UserSelf> {
+  const result = await api.post<{ user: UserSelf }>(Routes.emailVerify, { code });
+  user.value = result.user;
   return result.user;
 }
 

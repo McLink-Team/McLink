@@ -6,9 +6,16 @@
  */
 import { computed, onMounted, reactive, ref } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
-import { Routes } from '@mclink/shared';
+import { Routes, emailProblem, type UserSelf } from '@mclink/shared';
 import { ApiError, api, friendlyError } from '../lib/api.ts';
-import { currentUser, login, register } from '../lib/session.ts';
+import {
+  currentUser,
+  emailStatus,
+  login,
+  register,
+  startEmailVerification,
+  submitEmailCode,
+} from '../lib/session.ts';
 import { notifyError, notifyOk, notifyWarn } from '../lib/toast.ts';
 
 const props = withDefaults(defineProps<{ initialMode?: 'login' | 'register' }>(), {
@@ -28,17 +35,36 @@ const form = reactive({
   password: '',
   confirm: '',
   displayName: '',
+  email: '',
 });
 
 const siteName = ref('mclink');
 const registrationOpen = ref(true);
+/** 平台是否要求验证邮箱（来自 /meta） */
+const requireEmailVerification = ref(false);
+
+/* ------------------------------------------------------------ 验证邮箱 */
+
+/**
+ * 登录/注册成功后如果还没验证邮箱，界面**停在验证这一步**，
+ * 而不是先跳走、再让玩家在建房时吃一个 403。
+ */
+const pendingVerify = ref<UserSelf | null>(null);
+const verifyEmail = ref('');
+const verifyCode = ref('');
+const verifyCooldown = ref(0);
+const verifyNotice = ref<string | null>(null);
 
 const isRegister = computed(() => mode.value === 'register');
-const title = computed(() => (isRegister.value ? '创建账号' : '登录 mclink'));
+const title = computed(() =>
+  pendingVerify.value ? '验证邮箱' : isRegister.value ? '创建账号' : '登录 mclink',
+);
 const subtitle = computed(() =>
-  isRegister.value
-    ? '注册后即可创建或加入房间；第一个注册的账号会成为管理员。'
-    : '登录后即可创建房间、邀请好友，管理员可进入控制台。',
+  pendingVerify.value
+    ? '平台要求验证邮箱后才能建房、进房。验证码发到你填写的邮箱，15 分钟内有效。'
+    : isRegister.value
+      ? '注册后即可创建或加入房间；第一个注册的账号会成为管理员。'
+      : '登录后即可创建房间、邀请好友，管理员可进入控制台。',
 );
 
 onMounted(() => {
@@ -46,15 +72,86 @@ onMounted(() => {
     notifyWarn('需要管理员权限才能进入控制台');
   }
   void api
-    .get<{ siteName: string; registrationOpen: boolean }>(Routes.meta)
+    .get<{ siteName: string; registrationOpen: boolean; requireEmailVerification: boolean }>(Routes.meta)
     .then((m) => {
       siteName.value = m.siteName;
       registrationOpen.value = m.registrationOpen;
+      requireEmailVerification.value = m.requireEmailVerification === true;
     })
     .catch(() => {
       /* 元信息拿不到不影响登录，静默降级 */
     });
 });
+
+/** 倒计时：服务端有 60 秒重发间隔，界面必须同步，否则玩家会反复点 */
+function startCooldown(seconds: number): void {
+  verifyCooldown.value = Math.max(0, Math.floor(seconds));
+  const tick = window.setInterval(() => {
+    verifyCooldown.value = Math.max(0, verifyCooldown.value - 1);
+    if (verifyCooldown.value === 0) window.clearInterval(tick);
+  }, 1000);
+}
+
+/** 登录/注册成功后都走这里：该验证就先验证，否则按角色跳转 */
+async function finish(user: UserSelf): Promise<void> {
+  if (requireEmailVerification.value && user.emailVerified === false) {
+    pendingVerify.value = user;
+    verifyEmail.value = user.email ?? '';
+    verifyNotice.value = null;
+    try {
+      const status = await emailStatus();
+      if (status.resendAfterSeconds > 0) startCooldown(status.resendAfterSeconds);
+    } catch {
+      /* 状态拿不到也能手动点发送 */
+    }
+    return;
+  }
+  const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : null;
+  if (user.role === 'admin') {
+    notifyOk(isRegister.value ? '注册成功，已以管理员身份登录' : '登录成功');
+    await router.push(redirect ?? '/console/dashboard');
+  } else {
+    notifyOk(isRegister.value ? '注册成功，欢迎加入' : '登录成功');
+    await router.push(redirect ?? '/');
+  }
+}
+
+async function sendCode(): Promise<void> {
+  const email = verifyEmail.value.trim();
+  const problem = emailProblem(email);
+  if (problem) {
+    formError.value = problem;
+    return;
+  }
+  submitting.value = true;
+  formError.value = null;
+  try {
+    await startEmailVerification(email);
+    verifyNotice.value = `验证码已发送到 ${email}，请查收（也看看垃圾邮件）。`;
+    startCooldown(60);
+  } catch (err) {
+    formError.value = friendlyError(err);
+    notifyError(formError.value);
+  } finally {
+    submitting.value = false;
+  }
+}
+
+async function confirmCode(): Promise<void> {
+  submitting.value = true;
+  formError.value = null;
+  try {
+    const user = await submitEmailCode(verifyCode.value.trim());
+    notifyOk('邮箱验证完成');
+    pendingVerify.value = null;
+    await finish(user);
+  } catch (err) {
+    formError.value = friendlyError(err);
+    notifyError(formError.value);
+  } finally {
+    submitting.value = false;
+  }
+}
 
 function switchMode(next: 'login' | 'register'): void {
   mode.value = next;
@@ -72,6 +169,14 @@ function validate(): string | null {
     return '密码需要同时包含字母和数字';
   }
   if (isRegister.value && form.password !== form.confirm) return '两次输入的密码不一致';
+  if (isRegister.value) {
+    const email = form.email.trim();
+    if (requireEmailVerification.value && email.length === 0) return '请填写邮箱地址';
+    if (email.length > 0) {
+      const problem = emailProblem(email);
+      if (problem) return problem;
+    }
+  }
   return null;
 }
 
@@ -88,17 +193,20 @@ async function submit(): Promise<void> {
 
   submitting.value = true;
   try {
-    const user = isRegister.value
-      ? await register(form.username.trim(), form.password, form.displayName.trim() || undefined)
-      : await login(form.username.trim(), form.password);
-
-    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : null;
-    if (user.role === 'admin') {
-      notifyOk(isRegister.value ? '注册成功，已以管理员身份登录' : '登录成功');
-      await router.push(redirect ?? '/console/dashboard');
+    if (isRegister.value) {
+      const res = await register(
+        form.username.trim(),
+        form.password,
+        form.displayName.trim() || undefined,
+        form.email.trim() || undefined,
+      );
+      // 账号已建好、也已登录，只是信没寄出去：提示重发，而不是假装注册失败
+      if (!res.emailSent && res.emailError) {
+        notifyWarn(`账号已创建，但验证码没寄出去：${res.emailError}`);
+      }
+      await finish(res.user);
     } else {
-      notifyOk(isRegister.value ? '注册成功，欢迎加入' : '登录成功');
-      await router.push(redirect ?? '/');
+      await finish(await login(form.username.trim(), form.password));
     }
   } catch (err) {
     if (err instanceof ApiError && err.fields) {
@@ -160,7 +268,48 @@ const displayName = computed(() => currentUser.value?.displayName ?? null);
           </button>
         </div>
 
-        <form class="stack" @submit.prevent="submit">
+        <!-- 验证邮箱：登录/注册成功后如果账号还没验证，界面停在这一步 -->
+        <form v-if="pendingVerify" class="stack" @submit.prevent="confirmCode">
+          <div class="field">
+            <label class="label" for="verify-email">邮箱地址</label>
+            <input
+              id="verify-email"
+              v-model="verifyEmail"
+              class="input"
+              type="email"
+              autocomplete="email"
+              :disabled="submitting"
+            />
+            <span class="hint">一个邮箱只能绑定一个账号；换邮箱需要重新验证。</span>
+          </div>
+
+          <button class="btn btn-block" type="button" :disabled="submitting || verifyCooldown > 0" @click="sendCode">
+            {{ verifyCooldown > 0 ? `${verifyCooldown} 秒后可重发` : '发送验证码' }}
+          </button>
+
+          <div class="field">
+            <label class="label" for="verify-code">验证码</label>
+            <input
+              id="verify-code"
+              v-model="verifyCode"
+              class="input mono"
+              inputmode="numeric"
+              maxlength="6"
+              placeholder="6 位数字"
+              :disabled="submitting"
+            />
+          </div>
+
+          <p v-if="verifyNotice" class="hint">{{ verifyNotice }}</p>
+          <p v-if="formError" class="form-error">{{ formError }}</p>
+
+          <button class="btn btn-primary btn-block" type="submit" :disabled="submitting || verifyCode.trim().length === 0">
+            <span v-if="submitting" class="spinner" />
+            {{ submitting ? '验证中…' : '完成验证' }}
+          </button>
+        </form>
+
+        <form v-else class="stack" @submit.prevent="submit">
           <div class="field">
             <label class="label" for="username">用户名</label>
             <input
@@ -201,6 +350,26 @@ const displayName = computed(() => currentUser.value?.displayName ?? null);
             />
             <span v-if="fieldErrors.password" class="field-error">{{ fieldErrors.password }}</span>
             <span v-else-if="isRegister" class="hint">密码规则：至少 8 位，且同时包含字母与数字。</span>
+          </div>
+
+          <div v-if="isRegister" class="field">
+            <label class="label" for="email">邮箱{{ requireEmailVerification ? '' : '（可选）' }}</label>
+            <input
+              id="email"
+              v-model="form.email"
+              class="input"
+              type="email"
+              autocomplete="email"
+              placeholder="you@example.com"
+              :disabled="submitting"
+            />
+            <span v-if="fieldErrors.email" class="field-error">{{ fieldErrors.email }}</span>
+            <span v-else-if="form.email && emailProblem(form.email.trim())" class="field-error">
+              {{ emailProblem(form.email.trim()) }}
+            </span>
+            <span v-else-if="requireEmailVerification" class="hint">
+              注册后会把 6 位验证码发到这个邮箱，验证完才能建房、进房。
+            </span>
           </div>
 
           <div v-if="isRegister" class="field">

@@ -11,7 +11,7 @@
  */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { copyText } from './lib/clipboard.ts';
-import { bootstrap, clearError, clearKicked, clientState, hasRoom, isOnline } from './lib/store.ts';
+import { bootstrap, clearError, clearKicked, clientState, hasRoom, isOnline, mustVerifyEmail } from './lib/store.ts';
 import { onboardingVisible } from './lib/onboarding.ts';
 import TitleBar from './components/TitleBar.vue';
 import LoginPage from './pages/LoginPage.vue';
@@ -20,6 +20,7 @@ import RoomPage from './pages/RoomPage.vue';
 import SettingsPage from './pages/SettingsPage.vue';
 import LogPanel from './components/LogPanel.vue';
 import OnboardingWizard from './components/OnboardingWizard.vue';
+import VerifyEmail from './components/VerifyEmail.vue';
 
 type View = 'home' | 'room' | 'settings' | 'logs';
 
@@ -100,6 +101,9 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown));
     </div>
 
     <LoginPage v-else-if="!loggedIn" />
+
+    <!-- 平台要求验证邮箱时先过这一关：服务端会拒绝未验证账号建房/进房 -->
+    <VerifyEmail v-else-if="mustVerifyEmail" />
 
     <template v-else>
       <div class="app-body">

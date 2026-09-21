@@ -68,7 +68,7 @@ cd /opt/src/mclink
 sudo bash deploy/install-server.sh \
   --port 8787 \
   --relay-port 11010 \
-  --public-url https://mclink.example.com
+  --public-url https://cnnic.link
 
 # 3) 记下打印出来的初始管理员密码（只打印一次）
 ```
@@ -99,7 +99,7 @@ sudo bash deploy/install-server.sh \
 sudo cp /opt/mclink/app/deploy/nginx.conf.example /etc/nginx/conf.d/mclink.conf
 sudo nano /etc/nginx/conf.d/mclink.conf          # 改 server_name
 sudo apt-get install -y nginx certbot python3-certbot-nginx
-sudo certbot --nginx -d mclink.example.com
+sudo certbot --nginx -d cnnic.link
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
@@ -112,10 +112,10 @@ sudo nginx -t && sudo systemctl reload nginx
 ```bash
 # 在主控管理台「节点」页签发注册密钥，然后在区域服务器上：
 sudo bash deploy/install-node.sh \
-  --master https://mclink.example.com \
+  --master https://cnnic.link \
   --key <注册密钥> \
   --region cn-east \
-  --endpoint relay-sh.example.com:11010 \
+  --endpoint relay-sh.cnnic.link:11010 \
   --name relay-sh
 ```
 
@@ -126,7 +126,7 @@ sudo bash deploy/install-node.sh \
 
 ### 2.4 浏览器访问
 
-打开 `https://mclink.example.com` → 用 `admin` + 初始密码登录 → 立即在「账号设置」改密
+打开 `https://cnnic.link` → 用 `admin` + 初始密码登录 → 立即在「账号设置」改密
 （改密会让所有旧会话失效，这是预期行为）。
 
 ---
@@ -370,6 +370,33 @@ curl -s http://127.0.0.1:8787/api/v1/regions   # 各区域中继可用性
 | `MCLINK_ROOM_IDLE_TIMEOUT` | `600` | 空房回收时间（秒，最小 60） |
 | `MCLINK_REGISTRATION_OPEN` | `true` | 是否开放注册 |
 | `MCLINK_LOG_LEVEL` | `debug`（非生产）/`info`（`NODE_ENV=production`） | 日志级别 |
+| `MCLINK_SMTP_HOST` | 空 | SMTP 服务器地址（留空 = 未配置邮件服务） |
+| `MCLINK_SMTP_PORT` | `465` | SMTP 端口 |
+| `MCLINK_SMTP_SECURE` | `ssl` | `ssl`（465 直连 TLS）/ `starttls`（587）/ `none`（仅内网） |
+| `MCLINK_SMTP_USER` | 空 | SMTP 登录账号（留空 = 不认证） |
+| `MCLINK_SMTP_PASSWORD` | 空 | SMTP 登录密码 |
+| `MCLINK_SMTP_FROM` | 空 | 发件人，可写 `mclink <no-reply@cnnic.link>`；留空则用账号 |
+| `MCLINK_REQUIRE_EMAIL_VERIFICATION` | 未设置 | 是否要求验证邮箱才能建房/进房（未设置时用控制台里的值，出厂默认**开启**） |
+| `MCLINK_EMAIL_CODE_TTL_MINUTES` | 未设置 | 验证码有效期（分钟，1–1440） |
+| `MCLINK_SMTP_HELO` | `mclink.local` | EHLO 时通告的主机名 |
+
+> 邮件相关变量的语义是**初始默认值**：管理台「平台设置 → 邮件服务」里保存过的值优先。
+> 所以运维可以先用环境变量注一套能用的配置让平台跑起来，之后再在控制台改。
+> 例外的两个是 `MCLINK_SMTP_PORT` 与 `MCLINK_SMTP_SECURE`——只在显式设置时才覆盖控制台的值。
+
+### 邮件服务（SMTP）
+
+主控**自己发信**，不依赖外部服务，也不需要额外进程。上线时要做的只有三件事：
+
+1. 在控制台「平台设置 → 邮件服务」填 SMTP 地址、端口、加密方式、账号密码、发件人；
+2. 点「发送测试邮件」——**成功才说明配置可用**（失败会把完整 SMTP 会话显示出来，报错基本都在那段对话里）；
+3. 保持「要求验证邮箱」开启（出厂默认开启）。
+
+注意「要求验证邮箱」与邮件服务是**一组开关**：开着验证却没有可用的 SMTP 时，
+新用户注册会直接失败（控制台会显示一条红色提示）。此时要么把 SMTP 配好，要么临时关掉验证。
+
+发件域名建议配好 SPF/DKIM，否则验证码邮件大概率进垃圾箱 —— 主控只负责把信交给你的
+SMTP 服务器，投递信誉是发件域名的事。
 
 子节点侧变量（`install-node.sh` 写入 `/etc/mclink/node.env`，由 `deploy/agent.mjs` 读取）：
 `MCLINK_NODE_MASTER`、`MCLINK_NODE_ENROLL_KEY`、`MCLINK_NODE_REGION`、`MCLINK_NODE_ENDPOINT`、
