@@ -382,6 +382,8 @@ curl -s http://127.0.0.1:8787/api/v1/regions   # 各区域中继可用性
 | `MCLINK_DATA_DIR` | `<repo>/server/data` | 数据目录 |
 | `MCLINK_DB_FILE` | `<data>/mclink.sqlite` | 数据库文件 |
 | `MCLINK_DOWNLOADS_DIR` | `<data>/downloads` | 客户端安装包目录 |
+| `MCLINK_SLOW_REQUEST_MS` | `30000` | 请求超过这么久未返回就记一条 warn（排障用） |
+| `MCLINK_REQUEST_DEADLINE_MS` | `110000` | 请求超过这么久未返回则由主控主动回 JSON 504，避免反代先吐 HTML 错误页 |
 | `MCLINK_WEB_ROOT` | `<repo>/server/public` | 前端构建产物目录 |
 | `MCLINK_JWT_SECRET` | 自动生成并落盘 | JWT 签名密钥（≥16 字符） |
 | `MCLINK_TOKEN_TTL_SECONDS` | `1209600`（14 天） | 登录令牌有效期，最小 300 |

@@ -92,6 +92,15 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     try {
       payload = JSON.parse(text);
     } catch {
+      // 非 JSON 通常是反向代理的 HTML 错误页：502/503/504 各有一句能行动的解释
+      if (res.status === 502 || res.status === 503 || res.status === 504) {
+        throw new ApiError(
+          res.status,
+          'proxy_error',
+          `主控暂时没有响应（HTTP ${res.status}）。这是反向代理给出的错误页，通常意味着主控正在重启，` +
+            '或这个请求处理得太久、超过了代理的等待时间。请稍后重试；若反复出现，查主控日志里的「慢请求」记录。',
+        );
+      }
       throw new ApiError(res.status, 'bad_response', `主控返回了非 JSON 响应（HTTP ${res.status}）`);
     }
   }

@@ -117,6 +117,60 @@ export function createServer(app: App): RunningServer {
 
     applySecurityHeaders(res);
 
+    /**
+     * API 请求的兜底超时 + 在途请求看门狗。
+     *
+     * 起因：线上出现过 HTTP 504，而客户端只能拿到反向代理那张 HTML 错误页，
+     * 于是报「主控返回了非 JSON 响应」——玩家和管理员都看不出是哪个接口卡住了。
+     * 更麻烦的是：主控**只在请求结束时**记日志，一个卡住的请求上线前不留任何痕迹。
+     *
+     * 所以这里做两件事：
+     *   1. 看门狗：在途超过 WATCHDOG_MS 就写一条 warn（只写一次），日志里能直接看到卡住的是谁；
+     *   2. 兜底超时：到 DEADLINE_MS 还没回，就自己回一个 JSON 504，
+     *      让客户端拿到结构化错误（而不是让 nginx 先超时吐 HTML）。
+     * DEADLINE_MS 特意小于 nginx 示例里的 120s，保证这个 JSON 一定能发出去。
+     */
+    const WATCHDOG_MS = readMs('MCLINK_SLOW_REQUEST_MS', 30_000);
+    const DEADLINE_MS = readMs('MCLINK_REQUEST_DEADLINE_MS', 110_000);
+    let watchdog: NodeJS.Timeout | null = null;
+    let deadline: NodeJS.Timeout | null = null;
+    if (url.pathname.startsWith(API_PREFIX)) {
+      const inflight = { method: ctx.method, path: url.pathname, ip: ctx.ip, user: undefined as string | undefined };
+      watchdog = setTimeout(() => {
+        log.warn(`请求仍未返回（超过 ${WATCHDOG_MS}ms，可能在等外部进程或数据库）`, {
+          ...inflight,
+          user: ctx.auth?.username,
+          ms: Date.now() - started,
+        });
+      }, WATCHDOG_MS);
+      deadline = setTimeout(() => {
+        if (res.writableEnded) return;
+        log.warn('请求处理超时，已由主控主动结束（而不是让反代 504）', {
+          ...inflight,
+          user: ctx.auth?.username,
+          ms: Date.now() - started,
+        });
+        try {
+          res.statusCode = 504;
+          res.setHeader('content-type', 'application/json; charset=utf-8');
+          res.end(
+            JSON.stringify({
+              ok: false,
+              error: { code: 'server_timeout', message: '主控处理这个请求超时了，请稍后重试' },
+            }),
+          );
+        } catch {
+          /* 已经断开就算了 */
+        }
+      }, DEADLINE_MS);
+      const clearTimers = (): void => {
+        if (watchdog) clearTimeout(watchdog);
+        if (deadline) clearTimeout(deadline);
+      };
+      res.once('finish', clearTimers);
+      res.once('close', clearTimers);
+    }
+
     // CORS：仅对配置的来源放行（客户端 Electron 用的是 file:// 与本地端口）
     const origin = req.headers.origin;
     if (origin && isAllowedOrigin(app, origin)) {
@@ -269,6 +323,19 @@ export function createServer(app: App): RunningServer {
       }
       notFound(ctx);
     } catch (err) {
+      /*
+       * 响应可能已经由兜底超时（或 streamFile）结束了：这时再写一次头会抛
+       * 「Cannot write headers after they are sent」，把它当错误报出来只会误导排查
+       * （真正的原因在 30s 前那条「请求仍未返回」的 warn 里）。所以先看响应状态。
+       */
+      if (res.headersSent || res.writableEnded) {
+        log.debug('响应已结束，忽略处理异常', {
+          method: ctx.method,
+          path: url.pathname,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return;
+      }
       errorResponse(ctx, err);
       logRequest(ctx, started, err);
     }
@@ -355,8 +422,14 @@ function isAllowedOrigin(app: App, origin: string): boolean {
   return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) || origin === 'file://' || origin === 'null';
 }
 
-function logRequest(ctx: Ctx, startedAt: number, err?: unknown): void {
-  const ms = Date.now() - startedAt;
+/** 读一个毫秒级环境变量；非法值（负数、非数字）退回默认，不让配置错误把请求打死 */
+function readMs(name: string, fallback: number): number {
+  const raw = process.env[name];
+  const value = Number.parseInt(raw ?? '', 10);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function logRequest(ctx: Ctx, startedAt: number, err?: unknown): void {  const ms = Date.now() - startedAt;
   const fields = {
     method: ctx.method,
     path: ctx.url.pathname,
