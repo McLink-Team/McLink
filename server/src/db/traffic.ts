@@ -116,10 +116,33 @@ export class TrafficRepo {
     return { ts: row.ts, rxBps: row.rx_bps, txBps: row.tx_bps };
   }
 
-  prune(keepHours = 72): number {
+  /**
+   * 分批删除过期采样。
+   *
+   * 为什么不能是一条 `delete from traffic_samples where ts < ?`：
+   * 这里是同步 SQLite（node:sqlite 的 DatabaseSync），一条大 DELETE 会把整个
+   * Node 事件循环按住。采样每 5 秒写一条、还分 4 个维度（relay/platform/room/node），
+   * 长期跑的库一次要删几十万行 —— 期间主控**连 TCP 都不应答**（内核 accept 队列满、
+   * SYN 被丢），nginx 日志表现为
+   *   `upstream timed out (110: Connection timed out) while connecting to upstream`
+   * 而且心跳、静态资源一起挂 —— 线上实测就是这个现象，不是某个接口慢。
+   *
+   * 改成按 rowid 一批批删，调用方在批与批之间让出事件循环（见 index.ts 的 purgeOldData）。
+   */
+  pruneBatch(keepHours = 72, limit = 5000): number {
     const cutoff = new Date(Date.now() - keepHours * 3600 * 1000).toISOString();
-    const res = this.db.run('delete from traffic_samples where ts < ?', cutoff);
+    const res = this.db.run(
+      `delete from traffic_samples
+        where rowid in (select rowid from traffic_samples where ts < ? limit ?)`,
+      cutoff,
+      limit,
+    );
     return Number(res.changes ?? 0);
+  }
+
+  /** 单批删除（保留给脚本与小库调用；定时清理走 pruneBatch 循环） */
+  prune(keepHours = 72): number {
+    return this.pruneBatch(keepHours);
   }
 
   /** 今日累计流量（用于仪表盘） */
