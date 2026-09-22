@@ -52,13 +52,35 @@ if (master.length === 0) {
  *      而开发模式一切正常（开发模式读的是仓库根目录的 vendor/，那里文件是全的）。
  *      这种「开发正常、装完就坏」的差异极难排查，所以清单必须显式且带缺失告警。
  */
-const WANTED_VENDOR_FILES = [
+/**
+ * 按**宿主平台**决定要拷哪些 EasyTier 文件。
+ *
+ * 之前这里是一份写死的 Windows 清单，于是在 macOS 上构建会打印
+ * "仓库 vendor/easytier 里缺少：easytier-core.exe, wintun.dll …" 的告警 ——
+ * 那些文件在 mac 上本来就不需要，纯属误导（CI 日志里就出现过）。
+ * macOS 用的是 macos-arm64/ 或 macos-x64/ 子目录里的那一份（见 electron/main.cjs）。
+ */
+const WINDOWS_VENDOR_FILES = [
   'easytier-core.exe',
   'easytier-cli.exe',
   'wintun.dll',
   'WinDivert64.sys',
   'Packet.dll',
 ];
+const macSubdir = process.arch === 'arm64' ? 'macos-arm64' : 'macos-x64';
+const WANTED_VENDOR_FILES =
+  process.platform === 'darwin'
+    ? [`${macSubdir}/easytier-core`, `${macSubdir}/easytier-cli`]
+    : process.platform === 'win32'
+      ? WINDOWS_VENDOR_FILES
+      : ['easytier-core', 'easytier-cli'];
+
+/**
+ * 清理旧文件时要保留的**顶层**名字。
+ * macOS 的清单是 `macos-arm64/easytier-core` 这种带子目录的路径，
+ * 直接拿它跟 readdirSync 的结果比会认为 `macos-arm64` 是多余文件并删掉。
+ */
+const KEEP_TOP_LEVEL = new Set(WANTED_VENDOR_FILES.map((n) => n.split('/')[0]));
 
 const vendorSrc = path.join(REPO_ROOT, 'vendor', 'easytier');
 // 打包时读的是 client/vendor（electron-builder 的 from 相对 client/ 解析）
@@ -68,7 +90,8 @@ if (fs.existsSync(vendorSrc)) {
   // 先清掉上一次遗留的多余文件，否则旧的 Linux 二进制会一直躺在安装包里
   let removed = 0;
   for (const name of fs.readdirSync(vendorDst)) {
-    if (WANTED_VENDOR_FILES.includes(name)) continue;
+    // 用顶层名字比较：macOS 的清单是 `macos-arm64/easytier-core` 这种带子目录的路径
+    if (KEEP_TOP_LEVEL.has(name)) continue;
     fs.rmSync(path.join(vendorDst, name), { force: true, recursive: true });
     removed += 1;
   }
@@ -80,19 +103,25 @@ if (fs.existsSync(vendorSrc)) {
       missing.push(name);
       continue;
     }
-    fs.copyFileSync(from, path.join(vendorDst, name));
+    const to = path.join(vendorDst, name);
+    // macOS 的清单带子目录（macos-arm64/easytier-core），要先把目录建出来
+    fs.mkdirSync(path.dirname(to), { recursive: true });
+    fs.copyFileSync(from, to);
     copied += 1;
   }
   console.log(
     `[build] 已准备 ${copied} 个 EasyTier 文件到 client/vendor/easytier` +
-      (removed > 0 ? `（清理掉 ${removed} 个不属于 Windows 端的旧文件）` : ''),
+      (removed > 0 ? `（清理掉 ${removed} 个不属于当前平台的旧文件）` : ''),
   );
   if (missing.length > 0) {
-    console.warn(
-      `[build] ⚠ 仓库 vendor/easytier 里缺少：${missing.join(', ')}\n` +
-        '        缺 easytier-core.exe 客户端将无法联机；缺 WinDivert64.sys/Packet.dll 时\n' +
-        '        「局域网广播直通」在打包版里会静默失效。请先运行 pnpm fetch:easytier。',
-    );
+    const hint =
+      process.platform === 'darwin'
+        ? `        缺 ${macSubdir}/easytier-core 客户端将无法联机。请先运行 pnpm fetch:easytier --macos。`
+        : process.platform === 'win32'
+          ? '        缺 easytier-core.exe 客户端将无法联机；缺 WinDivert64.sys/Packet.dll 时\n' +
+            '        「局域网广播直通」在打包版里会静默失效。请先运行 pnpm fetch:easytier。'
+          : '        缺 easytier-core 客户端将无法联机。请先运行 pnpm fetch:easytier。';
+    console.warn(`[build] ⚠ 仓库 vendor/easytier 里缺少：${missing.join(', ')}\n${hint}`);
   }
 } else {
   console.warn('[build] 未找到 vendor/easytier，打包出的客户端将缺少 EasyTier 核心。请先运行 pnpm fetch:easytier');

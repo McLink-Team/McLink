@@ -94,7 +94,7 @@ jobs:
       - name: 打包 dmg + zip（两个架构）
         env:
           VITE_MCLINK_MASTER: ${{ inputs.master || 'https://cnnic.link' }}
-        run: pnpm --filter @mclink/client exec node scripts/dist.mjs --mac dmg zip --arm64 --x64
+        run: pnpm --filter @mclink/client exec node scripts/dist.mjs --mac zip --arm64 --x64
 
       - name: 列出产物（体积核对）
         run: ls -lh client/release/ | grep -Ei '\.(dmg|zip)$' || true

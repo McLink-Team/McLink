@@ -42,7 +42,10 @@ pnpm install
 node scripts/fetch-easytier.mjs --macos  # 会下 vendor/easytier/macos-{arm64,x64}/
 pnpm icons                               # 生成含 1024 的图标（.icns 需要 ≥512）
 cd client
-VITE_MCLINK_MASTER=https://cnnic.link node scripts/dist.mjs --mac dmg zip --arm64 --x64
+VITE_MCLINK_MASTER=https://cnnic.link node scripts/dist.mjs --mac zip --arm64 --x64
+cd ..
+# 补 ad-hoc 签名并生成 dmg（无证书时 electron-builder 不会签名，产物在 Apple 芯片上起不来）
+bash deploy/sign-macos-app.sh
 # 产物在 client/release/
 ```
 

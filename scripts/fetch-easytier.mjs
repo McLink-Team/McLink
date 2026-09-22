@@ -97,31 +97,29 @@ function extract(zipFile, destDir) {
   }
 }
 
-/** 把解压出来的文件铺平到 vendor/easytier/（macOS 走 subdir，不铺平） */
-function flatten(dir, subdir = null) {
-  const dest = subdir ? path.join(dir, subdir) : dir;
-  fs.mkdirSync(dest, { recursive: true });
-  const entries = fs.readdirSync(dir, { withFileTypes: true });
-  for (const entry of entries) {
+/**
+ * 把解压出来的文件铺到目标目录。
+ *
+ * 注意参数是**两个**目录：源（解压临时目录）与目标。
+ * 上一版只有一个参数、并把它同时当源和目标用，macOS 分支于是把二进制拷进了
+ * `.cache/…/extract-mac/macos-arm64/` —— 而不是 `vendor/easytier/macos-arm64/`，
+ * 结果 electron-builder 报 `file source doesn't exist from=…/vendor/easytier/macos-arm64`，
+ * 打出来的包里**没有 EasyTier 核心**（CI 日志实锤）。
+ * 日志里那句"已安装 -> vendor/..."是拼出来的字符串，掩盖了这个错误。
+ */
+function flatten(srcDir, destDir, { onlyBinaries = false } = {}) {
+  fs.mkdirSync(destDir, { recursive: true });
+  for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
-    const nested = path.join(dir, entry.name);
-    // macOS 包解出来是 easytier-macos-<arch>/ 一层目录，整目录搬进子目录
-    if (subdir) {
-      for (const file of fs.readdirSync(nested)) {
-        const from = path.join(nested, file);
-        if (!fs.statSync(from).isFile()) continue;
-        // 只搬运行时要用的两个二进制（web 版对客户端没用，白白多占 40MB）
-        if (!/^easytier-(core|cli)$/.test(file)) continue;
-        fs.copyFileSync(from, path.join(dest, file));
-        fs.chmodSync(path.join(dest, file), 0o755);
-      }
-      fs.rmSync(nested, { recursive: true, force: true });
-      continue;
-    }
+    const nested = path.join(srcDir, entry.name);
     for (const file of fs.readdirSync(nested)) {
       const from = path.join(nested, file);
       if (!fs.statSync(from).isFile()) continue;
-      fs.copyFileSync(from, path.join(dest, file));
+      // macOS 只搬运行时要用的两个二进制（web 版对客户端没用，白白多占 40MB）
+      if (onlyBinaries && !/^easytier-(core|cli)$/.test(file)) continue;
+      const to = path.join(destDir, file);
+      fs.copyFileSync(from, to);
+      if (onlyBinaries) fs.chmodSync(to, 0o755);
     }
     fs.rmSync(nested, { recursive: true, force: true });
   }
@@ -132,12 +130,14 @@ async function main() {
   for (const { key, name, subdir } of targets()) {
     const url = `https://github.com/EasyTier/EasyTier/releases/download/${VERSION}/${name}`;
     const zip = path.join(CACHE, name);
+    // macOS 解到临时目录再筛（只留 core/cli），其它平台直接铺进 vendor/
+    const extractDir = subdir ? path.join(CACHE, 'extract-mac') : VENDOR;
+    const destDir = subdir ? path.join(VENDOR, subdir) : VENDOR;
     try {
       await download(url, zip);
-      // macOS 解到临时目录再筛，避免把 web 版塞进子目录
-      extract(zip, subdir ? path.join(CACHE, 'extract-mac') : VENDOR);
-      flatten(subdir ? path.join(CACHE, 'extract-mac') : VENDOR, subdir);
-      console.log(`已安装 ${name}（${key}）-> ${subdir ? path.join(VENDOR, subdir) : VENDOR}`);
+      extract(zip, extractDir);
+      flatten(extractDir, destDir, { onlyBinaries: Boolean(subdir) });
+      console.log(`已安装 ${name}（${key}）-> ${destDir}`);
     } catch (err) {
       console.error(`处理 ${name} 失败: ${err.message}`);
       if (/fetch failed|ENOTFOUND|timeout/i.test(err.message)) {

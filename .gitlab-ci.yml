@@ -66,7 +66,8 @@ build:macos:
     # --macos = 两个架构的 mac 核心（arm64 用 aarch64 命名，别再按宿主架构拼）
     - node scripts/fetch-easytier.mjs --macos
     - pnpm icons
-    - cd client && node scripts/dist.mjs --mac dmg zip --arm64 --x64 && cd ..
+    # 只出 zip：dmg 由下面的签名脚本在**签名之后**生成（electron-builder 的 dmg 里是未签名副本）
+    - cd client && node scripts/dist.mjs --mac zip --arm64 --x64 && cd ..
     # 未签名包在 Apple 芯片上会被内核拒绝执行 —— 这里补 ad-hoc 签名并用 zip -y 重打包
     - bash deploy/sign-macos-app.sh
     # 证据：核心架构、asar 是否在、签名结果
