@@ -81,44 +81,6 @@ let realtime: RealtimeClient | null = null;
 const announcement = computed(() => meta.value?.announcement ?? null);
 
 const stats = computed(() => meta.value?.stats ?? null);
-/**
- * 双端入口：访客是什么系统就先给他那个按钮。
- *
- * `downloads` 是主控扫描下载目录得到的产物列表，带 platform/arch ——
- * macOS 包一旦上传，这里就会自动出现，不需要改任何配置。
- */
-const detectedPlatform = computed<'windows' | 'macos' | 'other'>(() => {
-  const ua = typeof navigator === 'undefined' ? '' : navigator.userAgent;
-  if (/Mac OS X|Macintosh|iPhone|iPad/i.test(ua)) return 'macos';
-  if (/Windows/i.test(ua)) return 'windows';
-  return 'other';
-});
-const windowsDownload = computed<DownloadArtifact | null>(
-  () => downloads.value.find((a) => a.platform === 'windows') ?? null,
-);
-const macDownload = computed<DownloadArtifact | null>(
-  () => downloads.value.find((a) => a.platform === 'macos' && a.arch === 'arm64')
-    ?? downloads.value.find((a) => a.platform === 'macos')
-    ?? null,
-);
-/** 主按钮：按访客系统选；访客系统没有产物时退回 Windows（老部署只有这一种） */
-const heroPrimary = computed<{ url: string; label: string; size: number } | null>(() => {
-  const win = windowsDownload.value ?? primaryDownload.value;
-  const mac = macDownload.value;
-  if (detectedPlatform.value === 'macos' && mac) return { url: mac.url, label: '下载 macOS 客户端', size: mac.size };
-  if (win) return { url: win.url, label: '下载 Windows 客户端', size: win.size };
-  if (mac) return { url: mac.url, label: '下载 macOS 客户端', size: mac.size };
-  return null;
-});
-/** 次按钮：另一个平台，没有就不显示 */
-const heroSecondary = computed<{ url: string; label: string; size: number } | null>(() => {
-  const win = windowsDownload.value;
-  const mac = macDownload.value;
-  const primaryIsMac = detectedPlatform.value === 'macos' && mac;
-  if (primaryIsMac && win) return { url: win.url, label: 'Windows 版', size: win.size };
-  if (!primaryIsMac && mac) return { url: mac.url, label: 'macOS 版', size: mac.size };
-  return null;
-});
 const primaryDownload = computed<DownloadArtifact | null>(() => {
   if (downloads.value.length > 0) return downloads.value[0] ?? null;
   if (!meta.value) return null;
@@ -261,16 +223,12 @@ const steps = [
             玩家按区域就近接入，房主一条加入码就能把单人存档变成一个小服务器。
           </p>
           <div class="hero-actions rise rise-3">
-            <!-- 主按钮按访客系统给对应平台的包；另一个平台作为次按钮，不藏起来 -->
-            <a v-if="heroPrimary" :href="heroPrimary.url" class="btn btn-primary btn-lg">
-              {{ heroPrimary.label }}
-              <span v-if="heroPrimary.size" class="size-note">
-                {{ (heroPrimary.size / 1048576).toFixed(0) }} MB
-              </span>
-            </a>
-            <a v-if="heroSecondary" :href="heroSecondary.url" class="btn btn-lg">
-              {{ heroSecondary.label }}
-            </a>
+            <!--
+              首屏不再猜平台/芯片，只给一个入口 → 下载页。
+              理由：平台能猜（UA 可靠），**芯片猜不出来**（Safari 在 M 系列上也报 Intel Mac），
+              猜错的代价是玩家白下 130MB。下载页把三个包并排列出来让他自己选。
+            -->
+            <RouterLink to="/download" class="btn btn-primary btn-lg">下载客户端</RouterLink>
             <a href="#how" class="btn btn-lg">看它怎么工作</a>
           </div>
           <dl class="hero-facts rise rise-3">

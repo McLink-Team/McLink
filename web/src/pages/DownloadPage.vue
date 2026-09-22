@@ -10,6 +10,7 @@ import { Routes, formatBytes } from '@mclink/shared';
 import { api, friendlyError } from '../lib/api.ts';
 import { asArray, copyText } from '../lib/ui.ts';
 
+
 interface DownloadArtifact {
   id: string;
   platform: string;
@@ -130,7 +131,12 @@ const requirements: Array<{ label: string; value: string }> = [
           自动拉起本机 EasyTier 实例，无需手动配置网络名、密钥或中继地址。
         </p>
 
-        <!-- 双端：Windows 与 macOS 各一张卡；访客自己的系统会被标出来 -->
+        <!--
+          三个按钮，玩家自己选：Windows / macOS(Apple 芯片) / macOS(Intel)。
+          不做芯片"自动判断" —— 浏览器根本拿不到可靠的芯片信息
+          （Safari 在 M 系列上也把 UA 报成 Intel Mac），猜错就是白下一次 130MB。
+          能可靠判断的只有**平台**（Windows 还是 macOS），所以只用它做高亮。
+        -->
         <div class="dl-platforms">
           <article class="dl-platform" :class="{ 'is-current': detectedPlatform === 'windows' }">
             <div class="dl-platform-head">
@@ -160,24 +166,30 @@ const requirements: Array<{ label: string; value: string }> = [
 
           <article class="dl-platform" :class="{ 'is-current': detectedPlatform === 'macos' }">
             <div class="dl-platform-head">
-              <span class="dl-platform-name">macOS</span>
-              <span v-if="detectedPlatform === 'macos'" class="badge badge-brand">你正在用它</span>
+              <span class="dl-platform-name">macOS · Apple 芯片</span>
+              <span v-if="detectedPlatform === 'macos'" class="badge badge-brand">macOS</span>
             </div>
-            <p class="dl-platform-meta">macOS 12+ · 按芯片分两种，选错会提示"无法打开"</p>
-            <div class="dl-platform-actions">
-              <a v-if="macArmArtifact" class="btn btn-primary" :href="macArmArtifact.url" download>
-                Apple 芯片 · {{ mb(macArmArtifact.size) }}
-              </a>
-              <a v-if="macIntelArtifact" class="btn" :href="macIntelArtifact.url" download>
-                Intel · {{ mb(macIntelArtifact.size) }}
-              </a>
-              <p v-if="macMissing" class="hint">
-                macOS 版还在构建中，产物上传到下载目录后这里会自动出现。
-              </p>
-            </div>
+            <p class="dl-platform-meta">M1 / M2 / M3 / M4 等 Apple 自研芯片</p>
+            <a v-if="macArmArtifact" class="btn btn-primary" :href="macArmArtifact.url" download>
+              下载 dmg · {{ mb(macArmArtifact.size) }}
+            </a>
+            <p v-else class="hint">这个架构的产物还没上传（构建完放进下载目录会自动出现）。</p>
             <p class="hint">
-              怎么查芯片：左上角  → 「关于本机」，写着 Apple M… 选 Apple 芯片，写着 Intel 选 Intel。
+              怎么查芯片：左上角  →「关于本机」，写着 <b>Apple M…</b> 就是这一份；
+              写着 <b>Intel</b> 请用右边那张卡。
             </p>
+          </article>
+
+          <article class="dl-platform" :class="{ 'is-current': detectedPlatform === 'macos' }">
+            <div class="dl-platform-head">
+              <span class="dl-platform-name">macOS · Intel</span>
+              <span v-if="detectedPlatform === 'macos'" class="badge badge-brand">macOS</span>
+            </div>
+            <p class="dl-platform-meta">Intel 处理器的旧款 Mac</p>
+            <a v-if="macIntelArtifact" class="btn" :href="macIntelArtifact.url" download>
+              下载 dmg · {{ mb(macIntelArtifact.size) }}
+            </a>
+            <p v-else class="hint">这个架构的产物还没上传（构建完放进下载目录会自动出现）。</p>
             <p class="hint">
               未签名的包首次打开会被 Gatekeeper 拦下 —— 右键点图标选「打开」，或执行
               <code class="mono">xattr -dr com.apple.quarantine /Applications/McLink.app</code>。
@@ -416,7 +428,9 @@ const requirements: Array<{ label: string; value: string }> = [
   font-size: var(--fs-3xl);
 }
 .head p {
-  max-width: 60em;
+  /* 用共享令牌的阅读行宽（原来写死 60em = 870px，压过了全局 p 的 max-width，
+     一行能排 ~115 个字符 —— 设计检测器的 line-length 报的就是它） */
+  max-width: var(--measure);
 }
 .hero-hint {
   display: flex;
