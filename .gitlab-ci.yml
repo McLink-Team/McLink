@@ -1,0 +1,78 @@
+# GitLab CI：出 Windows 与 macOS 客户端安装包
+#
+# ⚠️ 能不能跑，取决于你的 GitLab 档位（这一点必须先确认，别白等）：
+#
+#   · GitLab.com **免费档不含 macOS runner**。macOS 属于托管 runner 里的付费能力，
+#     需要 Premium/Ultimate 档位，且 macOS 任务消耗的 compute minutes 有**倍数**
+#     （比 Linux 贵好几倍），额度要留够。
+#   · 自建 GitLab（自托管）就更没有托管 macOS runner 了 —— 只能自己注册一台 Mac
+#     上的 runner（executor 用 shell），把标签写成 macos，下面的 job 就能跑。
+#   · 所以本文件里 macOS 的 job 是 `when: manual`：**不会**因为推代码就自动失败，
+#     你有对应 runner 时手动点一下即可。
+#
+# 如果档位不够又不想花钱：把仓库镜像到 GitHub，用 .github/workflows/build-clients.yml
+# （公开仓库的 macOS runner 免费）。见 docs/build-clients.md。
+#
+# 为什么必须 macOS：electron-builder 明确拒绝跨平台构建 macOS 包 ——
+#   ⨯ Build for macOS is supported only on macOS
+
+stages:
+  - build
+
+# ---------------------------------------------------------------- Windows
+build:windows:
+  stage: build
+  tags:
+    - saas-windows-medium-amd64    # GitLab.com 托管 Windows runner（免费档也有）
+  rules:
+    - if: $CI_COMMIT_TAG
+    - if: $CI_PIPELINE_SOURCE == 'web'
+  variables:
+    VITE_MCLINK_MASTER: 'https://cnnic.link'
+    CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+  script:
+    - node --version
+    - corepack enable
+    - pnpm install --frozen-lockfile
+    - node scripts/fetch-easytier.mjs
+    - pnpm icons
+    - cd client && node scripts/dist.mjs --win nsis
+  artifacts:
+    name: 'mclink-windows-$CI_COMMIT_SHORT_SHA'
+    paths:
+      - client/release/*.exe
+    expire_in: 30 days
+
+# ---------------------------------------------------------------- macOS
+# 需要付费档位的 macOS runner（或你自己注册的 Mac runner，标签改成 macos）
+build:macos:
+  stage: build
+  when: manual
+  allow_failure: true
+  tags:
+    - saas-macos-medium-m1         # Apple 芯片 runner；Intel 用 saas-macos-large-m2pro 之类按档位选
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: manual
+    - if: $CI_PIPELINE_SOURCE == 'web'
+      when: manual
+  variables:
+    VITE_MCLINK_MASTER: 'https://cnnic.link'
+    # 没有 Apple 证书时关闭签名发现；**不要**因此跳过 ad-hoc 签名 ——
+    # Apple 芯片要求二进制至少有 ad-hoc 签名，否则内核直接拒绝执行。
+    CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+  script:
+    - node --version
+    - corepack enable
+    - pnpm install --frozen-lockfile
+    # --all 会额外把两个架构的 macOS 核心下到 vendor/easytier/macos-{arm64,x64}/
+    - node scripts/fetch-easytier.mjs --all
+    - pnpm icons
+    - cd client && node scripts/dist.mjs --mac dmg zip --arm64 --x64
+    - ls -lh release/ | grep -Ei '\.(dmg|zip)$' || true
+  artifacts:
+    name: 'mclink-macos-$CI_COMMIT_SHORT_SHA'
+    paths:
+      - client/release/*.dmg
+      - client/release/*.zip
+    expire_in: 30 days
