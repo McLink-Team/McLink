@@ -536,7 +536,6 @@ const requirements: Array<{ label: string; value: string }> = [
     font-size: var(--fs-2xl);
   }
 }
-</style>
 
 /* ------------------------------------------------------------ 双端下载卡片 */
 .dl-platforms {
@@ -545,6 +544,12 @@ const requirements: Array<{ label: string; value: string }> = [
   gap: var(--s-4);
   margin-top: var(--s-5);
   text-align: left;
+  /*
+   * width: 100% 是必须的：父级 .head-inner 是 `align-items: flex-start` 的 flex 列，
+   * 作为 flex 子项的网格会被「收缩到内容宽度」—— 那样 auto-fit 只排得出一列，
+   * 三张卡就竖着堆起来了。撑满之后三列并排。
+   */
+  width: 100%;
 }
 
 .dl-platform {
@@ -618,3 +623,4 @@ const requirements: Array<{ label: string; value: string }> = [
   color: var(--paper-2);
   overflow-wrap: anywhere;
 }
+</style>
