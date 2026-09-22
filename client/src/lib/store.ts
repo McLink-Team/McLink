@@ -122,6 +122,8 @@ let wsReconnect: number | null = null;
 let wsClosedByUs = false;
 /** 新版本复查的定时器（bootstrap 里起，退出时清掉） */
 let updateTimer: number | null = null;
+/** 房间详情刷新定时器（心跳期内的 30 秒轮询） */
+let sessionTimer: number | null = null;
 
 /* ------------------------------------------------------------ 生命周期 */
 
@@ -608,12 +610,28 @@ function startHeartbeat(): void {
   stopHeartbeat();
   void sendHeartbeat();
   heartbeatTimer = window.setInterval(() => void sendHeartbeat(), 10_000);
+  /**
+   * 每 30 秒拉一次房间详情（成员列表 / 在线人数 / 策略）。
+   *
+   * 心跳只上报自己的状态；**别人的** `lastSeenAt`、在线人数要靠这个刷新。
+   * 之前只在收到 WebSocket 事件时才刷 —— 而"某人心跳超时掉线"恰恰不会产生事件，
+   * 于是房主看到的成员列表里，一个早就掉线的人还挂着「直连 1 ms」，
+   * 而右上角在线数已经把他减掉了（用户实测截图就是这个矛盾）。
+   */
+  sessionTimer = window.setInterval(() => {
+    if (!state.session) return;
+    void refreshRoom().catch(() => {});
+  }, 30_000);
 }
 
 function stopHeartbeat(): void {
   if (heartbeatTimer !== null) {
     window.clearInterval(heartbeatTimer);
     heartbeatTimer = null;
+  }
+  if (sessionTimer !== null) {
+    window.clearInterval(sessionTimer);
+    sessionTimer = null;
   }
 }
 
