@@ -665,7 +665,7 @@ configure_firewall() {
     log "未安装 ufw，跳过防火墙配置"
     return 0
   fi
-  if ! ufw status 2>/dev/null | grep -q "Status: active"; then
+  if ! grep -q "Status: active" <(ufw status 2>/dev/null); then
     log "ufw 未启用，跳过防火墙配置"
     return 0
   fi
