@@ -63,7 +63,7 @@ function openDataDir(): void {
 </script>
 
 <template>
-  <div class="view">
+  <div class="view settings-view">
     <div v-if="saved" class="alert alert-ok">设置已保存。</div>
 
     <!-- 权限状态：Windows 上创建虚拟网卡必须提权 -->

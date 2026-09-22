@@ -244,7 +244,8 @@ async function doClose(): Promise<void> {
 </script>
 
 <template>
-  <div v-if="session && room" class="view">
+  <!-- room-view 让样式能按窗口宽度给这一页单独排版（见 styles.css 的响应式段） -->
+  <div v-if="session && room" class="view room-view">
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
 
     <!-- 房间头：名字 + 一行关键信息 + 一排方形动作按钮 -->

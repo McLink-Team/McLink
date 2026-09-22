@@ -848,6 +848,46 @@ textarea {
   border-bottom: 1px solid var(--rule-faint);
   min-width: 0;
 }
+/*
+ * 诊断视图的节点列表（取代原来的 7 列宽表）。
+ * 两行一条：第一行名字 + 链路徽标，第二行指标用间距分隔并允许换行 ——
+ * 任何窗口宽度都读得全，不需要横向滚动。
+ */
+.app-shell .peer-list {
+  display: flex;
+  flex-direction: column;
+}
+.app-shell .peer-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--rule-faint);
+  min-width: 0;
+}
+.app-shell .peer-row:last-child {
+  border-bottom: 0;
+}
+.app-shell .peer-row-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-width: 0;
+}
+.app-shell .peer-name {
+  font-weight: 600;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.app-shell .peer-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: var(--fs-xs);
+  color: var(--paper-faint);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .app-shell .roster-row:last-child {
   border-bottom: 0;
 }
@@ -1055,3 +1095,53 @@ textarea {
   gap: var(--s-2);
 }
 
+
+/* ============================================================================
+ * 自适应：窗口可以拉宽（默认 460、最小 400、最大 1100，还能最大化）
+ *
+ * 之前一个断点都没有，于是：
+ *   · 拉宽后内容仍挤在一条 588px 的窄列里（那是 p/.hint 的 --measure 上限），
+ *     右边一大片空白，页面高度也不会降；
+ *   · 房间页在 400×640 下有 3600px 高 —— 要滚五屏才看得到「房主操作」，
+ *     玩家自然会觉得"很多东西看不见"。
+ * 这里做两件事：宽窗把房间页排成两栏（页面高度直接砍掉近一半），
+ * 并在宽窗放宽正文的 --measure，让文字真正用上可用宽度。
+ * ========================================================================= */
+@media (min-width: 740px) {
+  /* 房间页：头部与联机地址通栏，其余面板两栏并排 */
+  .app-shell .room-view {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: var(--s-4);
+    align-items: start;
+  }
+  .app-shell .room-view > .alert,
+  .app-shell .room-view > .room-head,
+  .app-shell .room-view > .addr {
+    grid-column: 1 / -1;
+  }
+  /* 宽窗下正文不必再被 60ch 卡住（窄窗不生效，仍按上限走） */
+  .app-shell .room-view p,
+  .app-shell .room-view .hint {
+    max-width: 84ch;
+  }
+
+  /* 设置页同样是一堆独立卡片，宽窗两栏更省滚动 */
+  .app-shell .settings-view {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: var(--s-4);
+    align-items: start;
+  }
+}
+
+@media (max-width: 460px) {
+  /* 极窄窗（Windows 缩放到 125% 时，400 物理像素的窗口 ≈ 320 CSS px）：
+     联机地址那块是 flex 行（信息片 + 复制按钮），再窄也要让按钮留在视野里 */
+  .app-shell .addr {
+    flex-wrap: wrap;
+  }
+  .app-shell .stat-row {
+    gap: var(--s-3);
+  }
+}
