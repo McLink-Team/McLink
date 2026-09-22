@@ -333,7 +333,7 @@ install_agent() {
   warn "本机没有找到 agent.mjs（${AGENT_SRC}），尝试从主控下载：${url}"
   if curl -fsSL -o "${target}.tmp" "$url" && [[ -s "${target}.tmp" ]]; then
     # 必须校验内容：前端 SPA 回退会把 index.html 以 200 返回，直接装上去会得到一个"HTML 版 agent"
-    if head -n1 "${target}.tmp" | grep -q '#!/usr/bin/env node'; then
+    if grep -q '#!/usr/bin/env node' <(head -n1 "${target}.tmp"); then
       mv "${target}.tmp" "$target"
       chmod 0755 "$target"
       ok "已从主控下载 agent.mjs"
@@ -540,7 +540,7 @@ configure_firewall() {
     log "未安装 ufw，跳过防火墙配置（请确认安全组已放行运行端口 ${LISTEN_PORT} TCP+UDP）"
     return 0
   fi
-  if ! ufw status 2>/dev/null | grep -q "Status: active"; then
+  if ! grep -q "Status: active" <(ufw status 2>/dev/null); then
     log "ufw 未启用，跳过防火墙配置（请确认安全组已放行运行端口 ${LISTEN_PORT} TCP+UDP）"
     return 0
   fi

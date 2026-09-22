@@ -70,16 +70,44 @@ for APP in "$RELEASE_DIR"/mac*/McLink.app; do
   codesign --force --deep --sign - "$APP"
   codesign --verify --deep --strict "$APP" && echo "  ✓ 签名校验通过（ad-hoc）"
 
-  echo "▸ 重新打包 zip（zip -y 保留符号链接）"
+  echo "▸ 重新打包 zip（保留符号链接）"
   rm -f "$ZIP"
-  ( cd "$(dirname "$APP")" && zip -y -r -q "$ZIP" McLink.app )
-  echo "  $ZIP  $(du -h "$ZIP" | cut -f1)"
-  if unzip -l "$ZIP" | grep -q 'Versions/Current$'; then
-    echo "  ✓ 符号链接已保留（Versions/Current）"
+  # 优先用 ditto：Apple 官方推荐的 .app 归档方式（-c 创建、-k PKZip、--keepParent 保留顶层目录），
+  # 符号链接与扩展属性都能保留 —— 这正是公证/Gatekeeper 关心的东西。
+  # 没有 ditto 时退回 `zip -y`（-y = 把符号链接按链接存，而不是存它指向的文件）。
+  if command -v ditto >/dev/null; then
+    ( cd "$(dirname "$APP")" && ditto -c -k --sequesterRsrc --keepParent McLink.app "$ZIP" )
+    echo "  （用 ditto 归档）"
   else
-    echo "  ✗ 压缩包里没有符号链接，玩家解压后起不来" >&2
+    ( cd "$(dirname "$APP")" && zip -y -r -q "$ZIP" McLink.app )
+    echo "  （用 zip -y 归档）"
+  fi
+  echo "  $ZIP  $(du -h "$ZIP" | cut -f1)"
+
+  # 符号链接检查分两步，且**不要把 unzip 和 grep -q 放进同一条管道**：
+  # `set -o pipefail` 下 grep -q 一命中就退出，unzip 收到 SIGPIPE 返回 141，
+  # 整条管道因此算失败 —— 明明有链接也会被判成"没有"（CI 上就是这么误报的）。
+  FRAMEWORK_LINK="$APP/Contents/Frameworks/Electron Framework.framework/Versions/Current"
+  if [[ -L "$FRAMEWORK_LINK" ]]; then
+    echo "  ✓ 磁盘上的 framework 符号链接正常（zip -y 以它为准）"
+  else
+    echo "  ✗ 磁盘上就没有 $FRAMEWORK_LINK —— 打包链本身有问题" >&2
     exit 1
   fi
+
+  LIST="$(mktemp)"
+  unzip -l "$ZIP" > "$LIST" 2>&1 || true
+  LINK_COUNT="$(grep -c 'Versions/Current$' "$LIST" || true)"
+  if [[ "${LINK_COUNT:-0}" -gt 0 ]]; then
+    echo "  ✓ 压缩包内保留 ${LINK_COUNT} 个符号链接条目"
+  else
+    echo "  ✗ 压缩包里没有符号链接（条目总数 $(grep -c 'McLink.app' "$LIST" || true)）" >&2
+    echo "    压缩包内前几行：" >&2
+    sed -n '1,6p' "$LIST" >&2
+    rm -f "$LIST"
+    exit 1
+  fi
+  rm -f "$LIST"
 
   # dmg 在签名**之后**生成，里面装的才是已签名副本；附 /Applications 软链方便拖动安装
   if command -v hdiutil >/dev/null; then
