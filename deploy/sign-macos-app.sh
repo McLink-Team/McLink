@@ -48,13 +48,13 @@ for APP in "$RELEASE_DIR"/mac*/McLink.app; do
   case "$ARCH" in
     arm64) SUBDIR=macos-arm64 ;;
     x86_64|x86_64h) ARCH=x64; SUBDIR=macos-x64 ;;
-    *) echo "⚠ 无法识别的架构 '$ARCH'（$MAIN_BIN），跳过 $APP" >&2; continue ;;
+    *) echo "⚠ 无法识别的架构 '${ARCH}'（${MAIN_BIN}），跳过 ${APP}" >&2; continue ;;
   esac
 
   ZIP="$RELEASE_DIR/McLink-${VERSION}-macos-${ARCH}.zip"
   DMG="$RELEASE_DIR/McLink-${VERSION}-macos-${ARCH}.dmg"
 
-  echo "▸ $APP  （架构 $ARCH）"
+  echo "▸ ${APP}  （架构 ${ARCH}）"
 
   # 核心二进制必须是目标架构那一份：放错架构 = 玩家一进房就崩（根目录那份是 Linux 版）
   CORE="$APP/Contents/Resources/vendor/easytier/$SUBDIR/easytier-core"
