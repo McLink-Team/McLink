@@ -131,8 +131,14 @@ export interface RelaySample {
   ts: string;
   foreignNetworks: ForeignNetworkInfo[];
   peers: PeerSnapshot[];
+  /** 自己网络的流量 + 替其它网络转发的流量 */
   totalRxBytes: number;
   totalTxBytes: number;
+  /** 拆开看：own 是自身网络的对等流量，forwarded 是转发房间的流量（主控中继的大头） */
+  ownRxBytes: number;
+  ownTxBytes: number;
+  forwardedRxBytes: number;
+  forwardedTxBytes: number;
   rxBps: number;
   txBps: number;
   peerCount: number;
@@ -315,9 +321,14 @@ export class RelayManager extends EventEmitter<RelayEvents> {
       running: core?.state === 'running',
       listen: `0.0.0.0:${et.relayPort}`,
       networkName: et.relayNetworkName,
-      peerId: sample ? String(sample.peerCount) : null,
+      /**
+       * 主控中继没有"自己的 peer id"这个概念上的对外标识（它是转发者，不是网络成员），
+       * 之前这里错填成了 peerCount —— 谁读这个字段都会以为中继的 peer id 是「1」。
+       */
+      peerId: null,
       peerCount: sample?.peerCount ?? 0,
       foreignNetworks: sample?.foreignNetworks ?? [],
+      /** 已包含替房间转发的部分（见 sample() 的说明） */
       rxBytes: sample?.totalRxBytes ?? 0,
       txBytes: sample?.totalTxBytes ?? 0,
       startedAt: core?.startedAt ?? null,
@@ -336,8 +347,20 @@ export class RelayManager extends EventEmitter<RelayEvents> {
       const now = Date.now();
       const ts = new Date(now).toISOString();
 
-      const totalRx = peers.reduce((acc, p) => acc + p.rxBytes, 0);
-      const totalTx = peers.reduce((acc, p) => acc + p.txBytes, 0);
+      /**
+       * 中继的总流量 = 自己网络里的对等流量 + **替其它网络转发的流量**。
+       *
+       * 只统计 peer list 是错的：主控中继是 no_tun 的公共中继，它的主要工作就是转发
+       * foreign network（也就是各个房间）的流量，而那部分**不在它自己的 peer list 里** ——
+       * 它在 foreign network 统计里。结果就是中继的收发恒为 0、平台曲线是一条零线，
+       * 而子节点（走 agent 上报）看着一切正常 —— 线上实测过这个现象。
+       */
+      const ownRx = peers.reduce((acc, p) => acc + p.rxBytes, 0);
+      const ownTx = peers.reduce((acc, p) => acc + p.txBytes, 0);
+      const forwardedRx = foreign.reduce((acc, fn) => acc + fn.rxBytes, 0);
+      const forwardedTx = foreign.reduce((acc, fn) => acc + fn.txBytes, 0);
+      const totalRx = ownRx + forwardedRx;
+      const totalTx = ownTx + forwardedTx;
       let rxBps = 0;
       let txBps = 0;
       if (this.#lastTotals) {
@@ -385,6 +408,12 @@ export class RelayManager extends EventEmitter<RelayEvents> {
         peers,
         totalRxBytes: totalRx,
         totalTxBytes: totalTx,
+        /** 自己网络里的对等流量（中继实例自身） */
+        ownRxBytes: ownRx,
+        ownTxBytes: ownTx,
+        /** 替其它网络（房间）转发的流量 —— 主控中继的主要工作 */
+        forwardedRxBytes: forwardedRx,
+        forwardedTxBytes: forwardedTx,
         rxBps,
         txBps,
         peerCount: peers.length,

@@ -565,6 +565,21 @@ export function registerAdminRoutes(router: Router, app: App): void {
         warnings: app.warnings.filter((w) => /easytier|中继|relay|core|cli/i.test(w)),
       },
       peers: sample?.peers ?? [],
+      /**
+       * 中继流量：这里的 total 已经包含「替房间转发」的那部分（见 RelayManager.sample 的注释）。
+       * 拆开给前端是为了能回答"这些流量里有多少是转发别人的房间"。
+       */
+      traffic: {
+        rxBps: sample?.rxBps ?? 0,
+        txBps: sample?.txBps ?? 0,
+        totalRxBytes: sample?.totalRxBytes ?? 0,
+        totalTxBytes: sample?.totalTxBytes ?? 0,
+        ownRxBytes: sample?.ownRxBytes ?? 0,
+        ownTxBytes: sample?.ownTxBytes ?? 0,
+        forwardedRxBytes: sample?.forwardedRxBytes ?? 0,
+        forwardedTxBytes: sample?.forwardedTxBytes ?? 0,
+        sampledAt: sample?.ts ?? null,
+      },
       logs: app.relay.recentLogs(150),
       whitelist: et.relayNetworkWhitelist,
       whitelistPatterns: splitPatterns(et.relayNetworkWhitelist),

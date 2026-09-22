@@ -25,6 +25,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -276,10 +277,22 @@ async function main() {
   const admin = await api('/auth/login', { method: 'POST', body: { username: ADMIN_USER, password: ADMIN_PASS } });
   const mkUser = async (prefix) => {
     const username = `${prefix}${RUN_ID}`;
+    /**
+     * 平台现在要求验证邮箱（默认开），实验脚本收不到邮件 —— 带上邮箱注册，
+     * 再把库里那一行直接标成已验证（与 scripts/lab.mjs 的绕过方式一致）。
+     */
     const reg = await api('/auth/register', {
       method: 'POST',
-      body: { username, password: 'Lab-Test-123', displayName: username },
+      body: {
+        username,
+        password: 'Lab-Test-123',
+        displayName: username,
+        email: `${username}@example.com`,
+      },
     });
+    const db = new DatabaseSync(path.join(REPO_ROOT, 'server', 'data', 'mclink.sqlite'));
+    db.prepare('update users set email_verified = 1 where username = ?').run(username);
+    db.close();
     return { username, token: reg.token, userId: reg.user.id };
   };
   const host = await mkUser('dphost');
