@@ -39,7 +39,7 @@ $ node scripts/dist.mjs --mac zip          # 在 Windows 上执行
 
 ```bash
 pnpm install
-node scripts/fetch-easytier.mjs --all    # 会下 vendor/easytier/macos-{arm64,x64}/
+node scripts/fetch-easytier.mjs --macos  # 会下 vendor/easytier/macos-{arm64,x64}/
 pnpm icons                               # 生成含 1024 的图标（.icns 需要 ≥512）
 cd client
 VITE_MCLINK_MASTER=https://cnnic.link node scripts/dist.mjs --mac dmg zip --arm64 --x64
