@@ -344,6 +344,23 @@ textarea {
   margin: 2px 0 0;
   accent-color: var(--signal);
 }
+
+/* 连接路径的分组（房间成员 / 中继节点）——层级只靠留白与字号，不加盒子 */
+.path-group + .path-group {
+  margin-top: var(--s-4);
+}
+.path-group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin-bottom: 2px;
+  font-size: var(--fs-xs);
+  color: var(--paper-faint);
+  letter-spacing: var(--track-wide);
+}
+.path-group-title {
+  color: var(--paper-dim);
+}
 .input,
 .select {
   width: 100%;
