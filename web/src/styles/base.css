@@ -29,6 +29,8 @@ body {
   line-height: var(--lh-base);
   font-feature-settings: 'ss01' 1, 'cv05' 1;
   -webkit-font-smoothing: antialiased;
+  /* 正文避免孤行；标题在 h1-h4 里另有 text-wrap: balance */
+  text-wrap: pretty;
   text-rendering: optimizeLegibility;
 }
 

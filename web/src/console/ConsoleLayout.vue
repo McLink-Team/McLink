@@ -13,6 +13,7 @@ import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router';
 import { currentUser, logout } from '../lib/session.ts';
 import { notifyError, notifyOk } from '../lib/toast.ts';
 import { friendlyError } from '../lib/api.ts';
+import ThemeSwitch from '../components/ThemeSwitch.vue';
 
 interface NavItem {
   to: string;
@@ -135,6 +136,7 @@ async function handleLogout(): Promise<void> {
         </p>
 
         <div class="topbar-right">
+          <ThemeSwitch />
           <div v-if="user" class="who">
             <span class="who-name">{{ user.displayName }}</span>
             <span class="badge" :class="user.role === 'admin' ? 'badge-brand' : 'badge-neutral'">{{ roleLabel }}</span>
