@@ -12,6 +12,8 @@ export interface AppInfo {
   coreBin: string;
   cliBin: string;
   elevated: boolean;
+  /** 启动时是否自动请求管理员权限（默认 true） */
+  autoElevate: boolean;
   hostname: string;
 }
 
@@ -21,6 +23,7 @@ export interface MclinkBridge {
   openPath(target: string): Promise<string>;
   openExternal(url: string): Promise<void>;
   relaunchElevated(): Promise<{ ok: boolean; error?: string }>;
+  setAutoElevate(enabled: boolean): Promise<{ ok: boolean; autoElevate: boolean }>;
   confirm(payload: { title?: string; message?: string; detail?: string }): Promise<boolean>;
   /**
    * 自绘标题栏的窗口控制。

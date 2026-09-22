@@ -15,6 +15,13 @@ const info = ref<AppInfo | null>(null);
 const device = ref(clientState.deviceName);
 const listenPort = ref(clientState.listenPort);
 const saved = ref(false);
+/** 启动时自动请求管理员权限（默认开；关掉后不再自动弹 UAC） */
+const autoElevate = ref(true);
+
+async function saveAutoElevate(): Promise<void> {
+  const res = await window.mclink.setAutoElevate(autoElevate.value);
+  autoElevate.value = res.autoElevate;
+}
 
 /* ------------------------------------------------------------------ 外观 */
 const THEME_OPTIONS: ReadonlyArray<{ value: ThemeChoice; label: string }> = [
@@ -34,6 +41,7 @@ function pickTheme(choice: ThemeChoice): void {
 
 onMounted(async () => {
   info.value = await window.mclink.info();
+  autoElevate.value = info.value.autoElevate !== false;
 });
 
 function save(): void {
@@ -69,6 +77,22 @@ function openDataDir(): void {
       <button class="btn btn-primary btn-sm" @click="relaunchElevated()">以管理员身份重启</button>
     </div>
     <div v-else-if="info" class="alert alert-ok">已以管理员身份运行，虚拟网卡可用。</div>
+
+    <div v-if="info" class="card stack">
+      <div class="section-head">
+        <span class="title">权限</span>
+      </div>
+      <label class="check-row">
+        <input v-model="autoElevate" type="checkbox" @change="saveAutoElevate()" />
+        <span>
+          启动时自动请求管理员权限
+          <span class="hint" style="display: block">
+            开始联机需要管理员权限创建虚拟网卡。关掉后不再自动弹 UAC，可以手动点上面的按钮。
+            在 UAC 上点了「否」的话，7 天内也不会再自动弹。
+          </span>
+        </span>
+      </label>
+    </div>
 
     <div class="card stack">
       <div class="section-head">
