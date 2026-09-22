@@ -52,14 +52,14 @@ desktop.ini
 .tmp/
 tmp/
 
-# ¿Í»§¶Ë´ò°üÊ±µÄ»·¾³±äÁ¿£¨º¬ÕæÊµÓòÃû£¬²»Èë¿â£©
+# ï¿½Í»ï¿½ï¿½Ë´ï¿½ï¿½Ê±ï¿½Ä»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Êµï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½â£©
 client/.env
 client/.env.local
 web/.env
 web/.env.local
 
 # impeccable-ignore-start
-# Éè¼Æ¼¼ÄÜ£¨Impeccable£©²úÉúµÄÁÙÊ±Êä³öÓëÔËĞĞÌ¬£»¹²Ïí²úÎïÈÔ»á±»¸ú×Ù
+# ï¿½ï¿½Æ¼ï¿½ï¿½Ü£ï¿½Impeccableï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê±ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ì¬ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ô»á±»ï¿½ï¿½ï¿½ï¿½
 .impeccable/config.local.json
 .impeccable/hook.cache.json
 .impeccable/hook.pending.json
@@ -73,3 +73,7 @@ web/.env.local
 .impeccable/live/cache/
 .impeccable/live/*.png
 # impeccable-ignore-end
+
+# æœ¬æœº agent å·¥ä½œäº§ç‰©ï¼ˆskill å®‰è£…è®°å½•ä¸å¯å¤ç°è„šæœ¬ï¼Œä¸å±äºäº§å“ä»£ç ï¼‰
+_skillwork/
+skills-install-report.md

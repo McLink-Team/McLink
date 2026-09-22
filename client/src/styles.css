@@ -329,6 +329,21 @@ textarea {
   font-size: var(--fs-sm);
   color: var(--paper-dim);
 }
+/* 复选行：整行可点，说明文字跟在标题下面（设置页「启动时自动请求管理员权限」在用） */
+.check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-2);
+  cursor: pointer;
+  font-size: var(--fs-sm);
+}
+.check-row input[type='checkbox'] {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin: 2px 0 0;
+  accent-color: var(--signal);
+}
 .input,
 .select {
   width: 100%;

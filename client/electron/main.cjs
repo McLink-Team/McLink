@@ -181,6 +181,87 @@ function isElevated() {
   return elevatedCache;
 }
 
+/* ------------------------------------------------- 提权偏好（自动请求 UAC） */
+
+/**
+ * 提权偏好存在 userData 下的一个小 JSON 里。
+ *
+ * 为什么要记状态：Windows 上创建虚拟网卡必须要管理员，玩家不该自己去翻
+ * 「右键 → 以管理员身份运行」。所以默认在启动时**自动请求一次 UAC**；
+ * 但如果玩家点了「否」，我们就不能每次开客户端都再弹一次（那就成了骚扰），
+ * 于是记下上次请求时间，几天内不再自动弹，手动按钮仍然可用。
+ */
+const PREFS_FILE = path.join(app.getPath('userData'), 'client-prefs.json');
+/** 玩家拒绝过之后，多久内不再自动请求 */
+const ELEVATION_RETRY_MS = 7 * 24 * 60 * 60 * 1000;
+
+function readPrefs() {
+  try {
+    return JSON.parse(fs.readFileSync(PREFS_FILE, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function writePrefs(patch) {
+  try {
+    fs.mkdirSync(path.dirname(PREFS_FILE), { recursive: true });
+    fs.writeFileSync(PREFS_FILE, JSON.stringify({ ...readPrefs(), ...patch }, null, 2), 'utf8');
+  } catch {
+    /* 存不下就只在本次会话生效 */
+  }
+}
+
+/** 是否该在启动时自动请求提权 */
+function shouldAutoElevate() {
+  if (process.platform !== 'win32' || isElevated()) return false;
+  // 开发模式（electron .）不自动提权：否则每次改代码重启都要点一次 UAC
+  if (!app.isPackaged && process.env.MCLINK_AUTO_ELEVATE !== '1') return false;
+  const prefs = readPrefs();
+  if (prefs.autoElevate === false) return false;
+  const last = Number(prefs.elevationAskedAt ?? 0);
+  return Date.now() - last > ELEVATION_RETRY_MS;
+}
+
+/**
+ * 以管理员身份重新启动自己（会弹 UAC）。
+ *
+ * 两个容易踩的点：
+ *   1. 必须**先释放单实例锁再退出**。提权出来的新进程要拿同一把锁，
+ *      如果老进程还握着，新进程会立刻 `app.quit()` —— 结果就是"点了提权，窗口全没了，
+ *      却什么都没起来"。（手点按钮那条路径也是同样的竞态，这里一并修掉。）
+ *   2. 玩家在 UAC 上点「否」时 `Start-Process -Verb RunAs` 退出码非 0，
+ *      这不是错误：照常以普通权限继续跑（能登录、能建房，只是虚拟网卡建不起来）。
+ */
+function requestElevation() {
+  if (process.platform !== 'win32') return Promise.resolve({ ok: false, error: '仅 Windows 需要提权' });
+  const exe = process.execPath;
+  const args = app.isPackaged ? [] : [path.join(__dirname, '..')];
+  const command = `Start-Process -FilePath '${exe}' -ArgumentList ${args
+    .map((a) => `'${a}'`)
+    .join(',')} -Verb RunAs`;
+  // 记下这次请求的时间：玩家点了「否」也不会每次都再弹
+  writePrefs({ elevationAskedAt: Date.now() });
+
+  return new Promise((resolve) => {
+    try {
+      const child = spawn('powershell.exe', ['-NoProfile', '-Command', command], { windowsHide: true });
+      child.on('close', (code) => {
+        if (code === 0) {
+          quitting = true;
+          app.releaseSingleInstanceLock();
+          app.quit();
+          resolve({ ok: true });
+        } else {
+          resolve({ ok: false, error: `提权启动被取消或失败（退出码 ${code}）` });
+        }
+      });
+    } catch (err) {
+      resolve({ ok: false, error: err.message });
+    }
+  });
+}
+
 /* ------------------------------------------------------------ 核心进程 */
 
 /**
@@ -668,7 +749,11 @@ function showMainWindow() {
   mainWindow?.focus();
 }
 
-function appIconPath() {  const candidates = [
+function appIconPath() {
+  const candidates = [
+    // 打包后/开发时都能命中：electron/assets 会被打进 asar
+    path.join(__dirname, 'assets', 'icon.ico'),
+    // 开发模式下直接跑仓库里的 build/（打包时这个目录会被 electron-builder 排除，别依赖它）
     path.join(__dirname, '..', 'build', 'icon.ico'),
     path.join(__dirname, '..', '..', 'client', 'build', 'icon.ico'),
   ];
@@ -763,6 +848,8 @@ function registerIpc() {
     coreBin: CORE_BIN,
     cliBin: CLI_BIN,
     elevated: isElevated(),
+    /** 启动时是否会自动请求管理员权限（设置页的开关读它） */
+    autoElevate: readPrefs().autoElevate !== false,
     hostname: os.hostname(),
   }));
 
@@ -770,31 +857,12 @@ function registerIpc() {
   ipcMain.handle('app:openPath', (_e, target) => shell.openPath(String(target)));
   ipcMain.handle('app:openExternal', (_e, url) => shell.openExternal(String(url)));
 
-  ipcMain.handle('app:relaunchElevated', async () => {
-    if (process.platform !== 'win32') return { ok: false, error: '仅 Windows 需要提权' };
-    return new Promise((resolve) => {
-      const exe = process.execPath;
-      const args = app.isPackaged ? [] : [path.join(__dirname, '..')];
-      const psArgs = [`-FilePath`, `"${exe}"`].join(' ');
-      const command = `Start-Process -FilePath '${exe}' -ArgumentList ${args
-        .map((a) => `'${a}'`)
-        .join(',')} -Verb RunAs`;
-      void psArgs;
-      try {
-        const child = spawn('powershell.exe', ['-NoProfile', '-Command', command], { windowsHide: true });
-        child.on('close', (code) => {
-          if (code === 0) {
-            quitting = true;
-            app.quit();
-            resolve({ ok: true });
-          } else {
-            resolve({ ok: false, error: `提权启动失败（退出码 ${code}）` });
-          }
-        });
-      } catch (err) {
-        resolve({ ok: false, error: err.message });
-      }
-    });
+  ipcMain.handle('app:relaunchElevated', () => requestElevation());
+
+  ipcMain.handle('app:setAutoElevate', (_e, enabled) => {
+    const value = enabled !== false;
+    writePrefs({ autoElevate: value });
+    return { ok: true, autoElevate: value };
   });
 
   ipcMain.handle('core:start', async (_e, payload) => {
@@ -889,6 +957,26 @@ if (!singleInstance) {
       const orphans = cleanupOrphanCores();
       if (orphans > 0) logLine(`已清理上一次残留的 easytier-core 进程 ${orphans} 个`, 'stderr');
     }, 1200);
+
+    /**
+     * 自动请求管理员权限。
+     *
+     * Windows 上创建虚拟网卡（wintun）必须要管理员，而玩家不该自己去翻
+     * 「右键 → 以管理员身份运行」。所以默认在启动时自动弹一次 UAC：
+     *   · 点「是」→ 提权后的新实例接管（老实例会先释放单实例锁再退出）；
+     *   · 点「否」→ 照常以普通权限运行，7 天内不再自动弹（设置页可以彻底关掉，手动按钮仍在）。
+     * 开发模式不自动弹，免得每次改代码重启都要点 UAC（要测就设 MCLINK_AUTO_ELEVATE=1）。
+     */
+    if (shouldAutoElevate()) {
+      logLine('未以管理员身份运行：正在请求提权（创建虚拟网卡需要）…', 'info');
+      setTimeout(() => {
+        void requestElevation().then((res) => {
+          if (!res.ok) {
+            logLine(`未提权：${res.error}。仍可登录与建房，但虚拟网卡建不起来；可在设置页手动重试。`, 'stderr');
+          }
+        });
+      }, 800);
+    }
   });
 
   app.on('window-all-closed', () => {

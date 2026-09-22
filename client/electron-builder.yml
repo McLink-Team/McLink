@@ -21,6 +21,9 @@ files:
   - package.json
   - '!**/*.map'
   - '!**/node_modules/**/{test,tests,__tests__,example,examples,docs}/**'
+# 注意：运行时用的图标在 client/electron/assets/icon.ico（随 electron/ 一起进 asar）。
+# 不要写 `- build/icon.ico`：build/ 是 buildResources，electron-builder 会**自动排除**它，
+# 写了也不生效 —— 现象是打包后 appIconPath() 找不到图标，托盘变成一个看不见的空图标。
 
 # EasyTier 核心以「额外资源」形式随包分发（保持其原始二进制，不做修改）
 # 清单与 client/scripts/build.mjs 的 WANTED_VENDOR_FILES 必须一致：
@@ -41,8 +44,15 @@ win:
     - target: nsis
       arch:
         - x64
-  # 未配置代码签名证书时保持 false，避免打包失败；有证书后改为 true 并填入证书
-  signAndEditExecutable: false
+  # 图标：client/build/icon.ico 由 `pnpm icons` 生成（多尺寸 16/24/32/48/64/128/256）
+  icon: build/icon.ico
+  #
+  # signAndEditExecutable 必须是 true。
+  # 之前这里是 false（注释写着"没有证书时避免打包失败"），代价是 electron-builder
+  # **跳过 rcedit** —— 于是 exe 保留 Electron 自带的图标与元数据：
+  # 任务栏/开始菜单显示的是 Electron 那个原子球，而不是 McLink 的标志。
+  # 没有证书时 electron-builder 本来就会自动跳过签名，但 rcedit 该跑还是要跑。
+  signAndEditExecutable: true
 
 nsis:
   oneClick: false
@@ -51,6 +61,10 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: McLink 联机
+  # 安装器、卸载器与安装向导弹出窗口都用品牌图标（默认也是 build/icon.ico，写明更直观）
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  installerHeaderIcon: build/icon.ico
   installerLanguages:
     - zh_CN
   language: '2052'

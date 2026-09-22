@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('mclink', {
   openPath: (target) => ipcRenderer.invoke('app:openPath', target),
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
   relaunchElevated: () => ipcRenderer.invoke('app:relaunchElevated'),
+  setAutoElevate: (enabled) => ipcRenderer.invoke('app:setAutoElevate', enabled),
   confirm: (payload) => ipcRenderer.invoke('dialog:confirm', payload),
 
   /**
