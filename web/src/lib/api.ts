@@ -73,17 +73,20 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   const token = getToken();
   if (token) headers.authorization = `Bearer ${token}`;
   if (options.body !== undefined) headers['content-type'] = 'application/json';
+  const method = options.method ?? 'GET';
+  /** 报错里带上接口名：否则页面上只有一句"主控没响应"，谁也说不清是哪个请求 */
+  const where = `${method} ${API_PREFIX}${path}`;
 
   let res: Response;
   try {
     res = await fetch(buildUrl(path, options.query), {
-      method: options.method ?? 'GET',
+      method,
       headers,
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
       signal: options.signal,
     });
   } catch (err) {
-    throw new ApiError(0, 'network_error', `无法连接主控服务：${(err as Error).message}`);
+    throw new ApiError(0, 'network_error', `无法连接主控服务（${where}）：${(err as Error).message}`);
   }
 
   const text = await res.text();
@@ -97,11 +100,12 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
         throw new ApiError(
           res.status,
           'proxy_error',
-          `主控暂时没有响应（HTTP ${res.status}）。这是反向代理给出的错误页，通常意味着主控正在重启，` +
-            '或这个请求处理得太久、超过了代理的等待时间。请稍后重试；若反复出现，查主控日志里的「慢请求」记录。',
+          `主控暂时没有响应（HTTP ${res.status}，${where}）。这是反向代理给出的错误页：` +
+            '要么主控正在重启，要么这个请求处理得太久、超过了代理的等待时间。请稍后重试；' +
+            '若反复出现，把括号里的接口名交给管理员，到主控日志里搜「慢请求 / 请求仍未返回」即可定位。',
         );
       }
-      throw new ApiError(res.status, 'bad_response', `主控返回了非 JSON 响应（HTTP ${res.status}）`);
+      throw new ApiError(res.status, 'bad_response', `主控返回了非 JSON 响应（HTTP ${res.status}，${where}）`);
     }
   }
 

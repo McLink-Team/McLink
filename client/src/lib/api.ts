@@ -97,17 +97,20 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   const token = getToken();
   if (token) headers.authorization = `Bearer ${token}`;
   if (options.body !== undefined) headers['content-type'] = 'application/json';
+  const method = options.method ?? 'GET';
+  /** 报错时带上请求本身，否则界面上只有一句"主控没响应"，谁也说不清是哪个接口 */
+  const where = `${method} ${API_PREFIX}${path}`;
 
   let res: Response;
   try {
     res = await fetch(buildUrl(path, options.query), {
-      method: options.method ?? 'GET',
+      method,
       headers,
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
       signal: options.signal,
     });
   } catch (err) {
-    throw new ApiRequestError(0, 'network_error', `无法连接服务器：${(err as Error).message}`);
+    throw new ApiRequestError(0, 'network_error', `无法连接服务器（${where}）：${(err as Error).message}`);
   }
 
   const text = await res.text();
@@ -119,17 +122,22 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
       /**
        * 响应不是 JSON —— 十有八九根本没到主控，而是**反向代理**回的 HTML 错误页：
        * 502（后端起不来）、503（后端不可用）、504（等待超时）。
-       * 只说「非 JSON 响应」玩家看不懂也做不了什么，这里直接给出判断与下一步。
+       * 只说「非 JSON 响应」玩家看不懂也做不了什么，这里给出判断、**接口名**与下一步。
        */
       if (res.status === 502 || res.status === 503 || res.status === 504) {
         throw new ApiRequestError(
           res.status,
           'proxy_error',
-          `主控暂时没有响应（HTTP ${res.status}）。这是反向代理给出的错误页，通常意味着主控正在重启，` +
-            '或这个请求处理得太久、超过了代理的等待时间。请稍后重试；若反复出现，让管理员查主控日志里的「慢请求」记录。',
+          `主控暂时没有响应（HTTP ${res.status}，${where}）。这是反向代理给出的错误页：` +
+            '要么主控正在重启，要么这个请求处理得太久、超过了代理的等待时间。请稍后重试；' +
+            '若反复出现，把括号里的接口名交给管理员，到主控日志里搜「慢请求 / 请求仍未返回」即可定位。',
         );
       }
-      throw new ApiRequestError(res.status, 'bad_response', `主控返回了非 JSON 响应（HTTP ${res.status}）`);
+      throw new ApiRequestError(
+        res.status,
+        'bad_response',
+        `主控返回了非 JSON 响应（HTTP ${res.status}，${where}）`,
+      );
     }
   }
 
