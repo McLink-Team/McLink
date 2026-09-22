@@ -78,6 +78,20 @@ const state = reactive({
   },
   session: null as ActiveSession | null,
   peers: [] as PeerView[],
+  /** 本机客户端版本（来自 Electron 的 app.getVersion()） */
+  localVersion: '',
+  /**
+   * 新版本信息；null = 已是最新（或还没查到）。
+   *
+   * 数据全部来自主控的公开接口：`/meta` 给版本号与下载地址，`/downloads` 给体积与 sha256。
+   * 客户端**不自己访问 GitHub**：玩家机器未必连得上，而主控是它本来就要连的那台。
+   */
+  update: null as null | {
+    latest: string;
+    url: string;
+    sizeBytes: number | null;
+    sha256: string | null;
+  },
   /**
    * 每次成功进入房间 +1。
    * 用于让房间内的面板察觉「又拿到了一张新票据」（轮换密钥、被踢后重进等），
@@ -106,6 +120,8 @@ let heartbeatTimer: number | null = null;
 let ws: WebSocket | null = null;
 let wsReconnect: number | null = null;
 let wsClosedByUs = false;
+/** 新版本复查的定时器（bootstrap 里起，退出时清掉） */
+let updateTimer: number | null = null;
 
 /* ------------------------------------------------------------ 生命周期 */
 
@@ -137,6 +153,13 @@ export async function bootstrap(): Promise<void> {
       state.coreLogs = [...state.coreLogs.slice(-500), entry];
     });
     state.coreLogs = await window.mclink.core.logs(300);
+    state.localVersion = info.version;
+    /**
+     * 新版本发现：登不登录都要查（玩家可能在登录页就卡在一个旧版本上）。
+     * 之后每 6 小时复查一次 —— 客户端常年开着不关的场景很常见。
+     */
+    void checkForUpdate();
+    updateTimer = window.setInterval(() => void checkForUpdate(), 6 * 60 * 60 * 1000);
     state.ready = true;
   } catch (err) {
     state.lastError = `初始化失败：${friendlyError(err)}`;
@@ -167,6 +190,7 @@ export async function loadPlatformInfo(): Promise<void> {
       api.get<Array<RegionDef & { onlineNodes: number; peers: number; capacity: number }>>(Routes.regions),
       api.get<{
         clientVersion: string;
+        clientDownloadUrl: string;
         relayPort: number;
         registrationOpen: boolean;
         requireEmailVerification: boolean;
@@ -179,6 +203,8 @@ export async function loadPlatformInfo(): Promise<void> {
       emailServiceAvailable: meta.emailServiceAvailable === true,
       registrationOpen: meta.registrationOpen !== false,
     };
+    // 顺手复查一次新版本：登录前后都该能发现
+    void checkForUpdate(meta);
     state.settings = await api
       .get<{ settings: PlatformSettings }>('/admin/settings', {})
       .then((r) => r.settings)
@@ -186,6 +212,99 @@ export async function loadPlatformInfo(): Promise<void> {
   } catch {
     state.regions = REGIONS.map((r) => ({ ...r, onlineNodes: 0, peers: 0, capacity: 0 }));
   }
+}
+
+/* ------------------------------------------------------------ 新版本发现 */
+
+/**
+ * 版本号比较（只认 `x.y.z` 数字段）。
+ * 返回 >0 表示 a 比 b 新。`v` 前缀、`-beta` 之类后缀都不参与比较 ——
+ * 我们不靠预发布版本号，简单可预测比"完整 semver 语义"更重要。
+ */
+export function compareVersions(a: string, b: string): number {
+  const parse = (v: string): number[] =>
+    v
+      .trim()
+      .replace(/^v/i, '')
+      .split(/[.\-+]/)
+      .slice(0, 3)
+      .map((x) => Number.parseInt(x, 10) || 0);
+  const [x, y] = [parse(a), parse(b)];
+  for (let i = 0; i < 3; i += 1) {
+    if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) - (y[i] ?? 0);
+  }
+  return 0;
+}
+
+/** 下载地址可能是相对路径（主控默认给 `/downloads/xxx.exe`），补上主控前缀 */
+function absoluteDownloadUrl(url: string): string {
+  if (/^https?:\/\//i.test(url)) return url;
+  return `${getMasterUrl()}${url.startsWith('/') ? '' : '/'}${url}`;
+}
+
+interface MetaForUpdate {
+  clientVersion?: string;
+  clientDownloadUrl?: string;
+}
+
+/**
+ * 检查有没有新版本。任何一步失败都静默（拿不到更新信息不该影响玩家联机）。
+ *
+ * 只比版本号，不比对 sha256 —— 校验值的作用是玩家下载后自己核对，
+ * 客户端不该因为主控还没登记校验值就假装"没有新版本"。
+ */
+export async function checkForUpdate(meta?: MetaForUpdate): Promise<void> {
+  try {
+    if (!state.localVersion) {
+      const info = await window.mclink.info();
+      state.localVersion = info.version;
+    }
+    const m = meta ?? (await api.get<MetaForUpdate>(Routes.meta));
+    const latest = (m.clientVersion ?? '').trim();
+    if (!latest || compareVersions(latest, state.localVersion) <= 0) {
+      state.update = null;
+      return;
+    }
+    let sizeBytes: number | null = null;
+    let sha256: string | null = null;
+    let url = absoluteDownloadUrl((m.clientDownloadUrl ?? '').trim());
+    if (!url || url.endsWith('/')) {
+      // 设置里没填下载地址时，退回下载目录里排第一的产物
+      const list = await api
+        .get<{ artifacts: Array<{ filename: string; url: string; size: number; sha256: string | null }> }>(
+          Routes.downloads,
+        )
+        .catch(() => null);
+      const first = list?.artifacts?.[0];
+      if (!first) return;
+      url = absoluteDownloadUrl(first.url);
+      sizeBytes = first.size;
+      sha256 = first.sha256;
+    } else {
+      const list = await api
+        .get<{ artifacts: Array<{ filename: string; size: number; sha256: string | null }> }>(Routes.downloads)
+        .catch(() => null);
+      const name = url.split('/').pop() ?? '';
+      const hit = list?.artifacts?.find((a) => a.filename === name);
+      sizeBytes = hit?.size ?? null;
+      sha256 = hit?.sha256 ?? null;
+    }
+    state.update = { latest, url, sizeBytes, sha256 };
+  } catch {
+    /* 静默：查更新失败不是错误 */
+  }
+}
+
+/** 打开新版本下载页（用系统浏览器，不在客户端里下 87MB 的文件） */
+export async function openUpdatePage(): Promise<void> {
+  const target = state.update?.url;
+  if (!target) return;
+  // 只允许打开主控域名下的地址：主控被劫持也不至于把玩家送去任意站点
+  if (!target.startsWith(getMasterUrl())) {
+    state.lastError = '下载地址不在主控域名下，已阻止打开。';
+    return;
+  }
+  await window.mclink.openExternal(target);
 }
 
 /* ---------------------------------------------------------- 邮箱验证 */

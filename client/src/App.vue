@@ -148,6 +148,12 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown));
               class="foot-dot"
               :class="isOnline ? 'dot-ok' : 'dot-warn'"
             />
+            <!-- 有新版本时在「设置」上点一个小点：不打扰，但看一眼就知道有更新 -->
+            <span
+              v-else-if="item.key === 'settings' && clientState.update"
+              class="foot-dot dot-signal"
+              title="有新版本"
+            />
           </button>
         </nav>
         <div class="foot-meta faint">

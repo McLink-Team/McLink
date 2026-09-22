@@ -7,7 +7,7 @@
  */
 import { onMounted, ref } from 'vue';
 import { currentTheme, setThemeChoice, themeChoice, type ThemeChoice } from '@mclink/shared';
-import { clientState, relaunchElevated, setDevice, logout } from '../lib/store.ts';
+import { clientState, openUpdatePage, relaunchElevated, setDevice, logout } from '../lib/store.ts';
 import { reopenOnboarding } from '../lib/onboarding.ts';
 import type { AppInfo } from '../lib/bridge.ts';
 
@@ -149,7 +149,32 @@ function openDataDir(): void {
       </div>
       <div v-if="info" class="stack">
         <div class="row-between">
-          <span class="faint">客户端版本</span><span class="mono">McLink {{ info.version }}</span>
+          <span class="faint">客户端版本</span>
+          <span class="row" style="gap: var(--s-2)">
+            <span class="mono">McLink {{ info.version }}</span>
+            <!-- 有新版本时直接给出对比与下载入口，不用玩家自己去下载页翻 -->
+            <span v-if="clientState.update" class="badge badge-brand">
+              新版 {{ clientState.update.latest }}
+            </span>
+          </span>
+        </div>
+        <div v-if="clientState.update" class="stack" style="gap: var(--s-2)">
+          <div class="hint">
+            主控上有更新的客户端
+            <span class="mono">v{{ clientState.update.latest }}</span>
+            <template v-if="clientState.update.sizeBytes">
+              ，约 {{ Math.round(clientState.update.sizeBytes / 1024 / 1024) }} MB
+            </template>
+            。下载后在旧版上直接覆盖安装即可，登录状态与设置都会保留。
+          </div>
+          <div class="mono faint path" style="overflow-wrap: anywhere">
+            sha256 {{ clientState.update.sha256 ?? '（主控尚未登记校验值）' }}
+          </div>
+          <div class="ops">
+            <button class="btn btn-primary btn-sm" type="button" @click="openUpdatePage()">
+              打开下载页
+            </button>
+          </div>
         </div>
         <div class="row-between">
           <span class="faint">平台</span><span class="mono">{{ info.platform }}/{{ info.arch }}</span>
