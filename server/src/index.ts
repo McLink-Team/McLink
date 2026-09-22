@@ -280,15 +280,42 @@ async function main(): Promise<void> {
   );
 
   // 4) 会话清理与流量/聊天数据保留
+  /**
+   * 分批清理，每批之间让出事件循环。
+   *
+   * 原来是一条同步 `delete ... where ts < ?` 删完所有过期采样：库里几十万行时
+   * 这条语句会把事件循环按住几秒到几十秒，期间主控连 TCP 都不应答 ——
+   * nginx 报 `upstream timed out (110) while connecting to upstream`，
+   * 心跳和静态资源一起挂（线上就是这么表现的）。现在每批 5000 行、批间 setImmediate，
+   * 单次阻塞降到毫秒级，清理进度也不会因为一次跑不完而丢掉（下一小时继续）。
+   */
+  const purgeOldData = async (): Promise<void> => {
+    const sessions = app.users.purgeExpiredSessions();
+    let samples = 0;
+    // 上限 400 批（200 万行）纯粹是防御：正常每小时只会有几千行过期
+    for (let i = 0; i < 400; i += 1) {
+      const removed = app.traffic.pruneBatch(72, 5000);
+      samples += removed;
+      if (removed < 5000) break;
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    // 聊天记录只保留 7 天：房间早就关了的话，留着也没有意义（同样分批）
+    let chat = 0;
+    for (let i = 0; i < 100; i += 1) {
+      const removed = app.messages.pruneOlderThan(24 * 7, 2000);
+      chat += removed;
+      if (removed < 2000) break;
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    if (sessions > 0 || samples > 0 || chat > 0) {
+      log.debug('定期清理完成', { sessions, samples, chat });
+    }
+  };
   timers.push(
     setInterval(() => {
-      const sessions = app.users.purgeExpiredSessions();
-      const samples = app.traffic.prune(72);
-      // 聊天记录只保留 7 天：房间早就关了的话，留着也没有意义
-      const chat = app.messages.pruneOlderThan(24 * 7);
-      if (sessions > 0 || samples > 0 || chat > 0) {
-        log.debug('定期清理完成', { sessions, samples, chat });
-      }
+      void purgeOldData().catch((err: unknown) => {
+        log.warn('定期清理失败', { error: err instanceof Error ? err.message : String(err) });
+      });
     }, 3600_000),
   );
 

@@ -137,9 +137,18 @@ export class MessageRepo {
   }
 
   /** 定期清理：删除最后一个活跃房间也没有消息的房间记录 + 过期消息 */
-  pruneOlderThan(hours: number): number {
+  /**
+   * 清理过期聊天记录。同样是同步 SQLite，所以按批删（调用方循环 + 让出事件循环）。
+   * 聊天量比流量采样小得多，但长期跑的库、房间开开关关也可能攒出几万条。
+   */
+  pruneOlderThan(hours: number, limit = 2000): number {
     const cutoff = new Date(Date.now() - hours * 3600 * 1000).toISOString();
-    const res = this.db.run('delete from room_messages where created_at < ?', cutoff);
+    const res = this.db.run(
+      `delete from room_messages
+        where rowid in (select rowid from room_messages where created_at < ? limit ?)`,
+      cutoff,
+      limit,
+    );
     return Number(res.changes ?? 0);
   }
 
