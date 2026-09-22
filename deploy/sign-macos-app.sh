@@ -113,8 +113,27 @@ for APP in "$RELEASE_DIR"/mac*/McLink.app; do
   if command -v hdiutil >/dev/null; then
     echo "▸ 生成 dmg（含已签名副本）"
     STAGE="$(mktemp -d)"
-    cp -R "$APP" "$STAGE/McLink.app"
+    # 用 ditto 复制（不是 cp -R）：macOS 的 .app 里有 framework 符号链接
+    # （Versions/Current → A 等），一旦被"解开成实体文件"，framework 会被整套复制一遍，
+    # 打出来的 dmg 会凭空胖到几百 MB。ditto 保留链接，是 Apple 推荐的 .app 复制方式。
+    # 没有 ditto 时用 `cp -R -P`（-P = 不跟随符号链接）。
+    if command -v ditto >/dev/null; then
+      ditto "$APP" "$STAGE/McLink.app"
+    else
+      cp -R -P "$APP" "$STAGE/McLink.app"
+    fi
     ln -s /Applications "$STAGE/Applications"
+
+    # 自检：复制后体积不该明显变大（变大 = 符号链接被展开了）
+    APP_MB="$(du -sm "$APP" | cut -f1)"
+    STAGE_MB="$(du -sm "$STAGE/McLink.app" | cut -f1)"
+    echo "  .app ${APP_MB}MB → 暂存副本 ${STAGE_MB}MB"
+    if [[ "$STAGE_MB" -gt $((APP_MB * 3 / 2)) ]]; then
+      echo "  ✗ 暂存副本比原 .app 大太多（符号链接被展开），dmg 会虚胖 —— 中止" >&2
+      rm -rf "$STAGE"
+      exit 1
+    fi
+
     rm -f "$DMG"
     hdiutil create -volname "McLink ${VERSION}" -srcfolder "$STAGE" -ov -format UDZO -quiet "$DMG"
     rm -rf "$STAGE"
