@@ -10,7 +10,7 @@
  * 成员与节点用发丝线分隔的名册，而不是卡片套卡片：窄窗里每多一层盒子，
  * 就少一行能看的信息。
  */
-import { computed, ref } from 'vue';
+import { computed, onUnmounted, ref } from 'vue';
 import { formatBitrate, formatBytes, regionLabel } from '@mclink/shared';
 import {
   applyHostAclIfNeeded,
@@ -56,6 +56,46 @@ const session = computed(() => clientState.session);
 const room = computed(() => session.value?.room ?? null);
 const members = computed(() => session.value?.members ?? []);
 const pending = computed(() => members.value.filter((m) => m.status === 'pending'));
+
+/* ------------------------------------------------------- 成员"在线"判定 */
+
+/**
+ * 心跳新鲜度窗口 —— 与服务端算「在线 x/y」用的是同一个数（90 秒）。
+ *
+ * 服务端 `online_members` 只统计 `last_seen_at > now-90s` 的成员，
+ * 而成员列表返回的是所有 active/pending 行 —— 两边口径不同，
+ * 所以"成员列表 2 人、在线 1/8"是可以同时成立的：那个人 90 秒没心跳了。
+ * 界面上必须把这件事画出来，否则玩家只会觉得数字坏了。
+ */
+const STALE_MS = 90_000;
+
+/**
+ * 只为了让"离线"自己出现而走的时间。
+ * 对方的掉线**不会**产生 WebSocket 事件（没有事件可推），
+ * 所以不能只靠数据变化触发重算 —— 需要一个本地时钟。
+ */
+const nowMs = ref(Date.now());
+const clockTimer = window.setInterval(() => {
+  nowMs.value = Date.now();
+}, 15_000);
+onUnmounted(() => window.clearInterval(clockTimer));
+
+const isStale = (m: { lastSeenAt: string | null }): boolean => {
+  if (!m.lastSeenAt) return true;
+  const at = Date.parse(m.lastSeenAt);
+  return !Number.isFinite(at) ? true : nowMs.value - at > STALE_MS;
+};
+
+const lastSeenText = (m: { lastSeenAt: string | null }): string => {
+  if (!m.lastSeenAt) return '未知';
+  const at = Date.parse(m.lastSeenAt);
+  if (!Number.isFinite(at)) return '未知';
+  const seconds = Math.max(0, Math.round((nowMs.value - at) / 1000));
+  if (seconds < 60) return `${seconds} 秒前`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} 分钟前`;
+  return `${Math.round(minutes / 60)} 小时前`;
+};
 
 /**
  * 「连接路径」的清洗与分组。
@@ -443,13 +483,22 @@ async function doClose(): Promise<void> {
           <span class="avatar">{{ initial(m.displayName) }}</span>
           <span class="grow roster-main">
             <span class="roster-name">{{ m.displayName }}</span>
-            <span class="roster-sub">{{ m.virtualIp ?? '尚未分配地址' }}</span>
+            <span class="roster-sub">
+              {{ m.virtualIp ?? '尚未分配地址' }}
+              <!-- 掉线的人要说明"多久没心跳了"，否则玩家只看到在线数和人数对不上 -->
+              <template v-if="m.lastSeenAt && isStale(m)"> · 最后心跳 {{ lastSeenText(m) }}</template>
+            </span>
           </span>
           <span v-if="m.status === 'pending'" class="badge badge-warn">待审批</span>
           <span v-else-if="m.role === 'host'" class="badge badge-brand">房主</span>
+          <!--
+            离线判定优先于「直连/成员」：`p2p` 与 `latencyMs` 都是成员**上次心跳时**上报的值，
+            心跳断了之后这些数字就不再代表当下（实测：掉线的人还挂着"直连 1 ms"）。
+          -->
+          <span v-else-if="isStale(m)" class="badge badge-warn">离线</span>
           <span v-else-if="m.p2p" class="badge badge-ok">直连</span>
           <span v-else class="badge badge-neutral">成员</span>
-          <span v-if="m.latencyMs !== null" class="mono faint roster-sub nowrap">
+          <span v-if="!isStale(m) && m.latencyMs !== null" class="mono faint roster-sub nowrap">
             {{ `${m.latencyMs.toFixed(0)} ms` }}
           </span>
           <template v-if="isHost">
