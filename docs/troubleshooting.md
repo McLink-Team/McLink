@@ -664,6 +664,64 @@ Get-NetTCPConnection -LocalPort 12411 -ErrorAction SilentlyContinue |
 | 503 | 反代认为后端不可用 | 上游被摘除、连接数打满 |
 | 504 | 反代**等到了主控，但主控没在超时内回** | 请求处理过慢，或反代超时设得太小 |
 
+### 18.1 先看 nginx 错误日志里那句话的主语——`connecting` 还是 `reading`
+
+这两类是完全不同的问题，**反代配置要调的地方也不同**：
+
+| 日志原文 | 卡在哪个阶段 | 该调的指令 |
+| --- | --- | --- |
+| `while **connecting** to upstream` | TCP 握手就没成 → 主控那一瞬间没在 accept | `proxy_connect_timeout`（默认 60s） |
+| `while **reading** response header` | 连上了但主控迟迟不回 | `proxy_read_timeout` |
+
+线上真实案例：日志里全是 `while connecting to upstream`，而且**连 `/assets/*.css`、`/favicon.ico`
+都超时**（不是某个接口慢，是整站不可达）。这类问题在主控侧有两个已知来源：
+
+1. **主控自己按住了事件循环**（同步 SQLite）。已修：流量采样的定期清理原来是
+   一条 `delete from traffic_samples where ts < ?` 删光 72 小时前的数据 ——
+   稳定约 30 万行、30 万行一条 DELETE 实测阻塞事件循环 749ms（慢盘上更久），
+   期间内核 accept 队列塞满、SYN 被丢，外部看到的就是 connect 超时。
+   现在按 rowid 每批 5000 行删、批间让出事件循环（实测最坏阻塞 53ms）。
+   **升级到含此修复的版本后这类才不会再出现。**
+2. **反代到主控那一跳的网络**（尤其 nginx 与主控不在同一台机器、且走公网 IP）。
+
+### 18.2 三步定位
+
+```bash
+# ① 主控这段有没有重启/崩溃（重启能解释"整站不可达"），以及跑的是不是带看门狗的版本
+journalctl -u mclink-server --since '6 hours ago' | grep -E '已就绪|收到 SIGTERM|已安全退出' | tail
+grep -c '请求仍未返回' /opt/mclink/app/server/src/server.ts    # 0 = 旧代码，日志当然抓不到慢请求
+
+# ② 连接层面的现场（在跑主控的机器上）
+ss -s | head -3
+cat /proc/sys/net/netfilter/nf_conntrack_count /proc/sys/net/netfilter/nf_conntrack_max
+dmesg -T | grep -iE 'conntrack|drop|SYN' | tail
+systemctl status mclink-server --no-pager | head -12          # 看有没有 OOM / Restart 计数
+
+# ③ 从 nginx 那台机器持续探测这一跳（这是最直接的判据）
+for i in $(seq 1 120); do
+  curl -s -o /dev/null -w '%{http_code} connect=%{time_connect}s total=%{time_total}s\n' \
+    --max-time 3 http://<主控IP>:8787/api/v1/meta
+  sleep 1
+done | tee /tmp/probe.log | sort | uniq -c | sort -rn | head
+```
+
+判读：出现 `000`（连不上）或 `connect=` 偶发跳到数秒 → **是那一跳的网络**，不是主控；
+若全是 `200 connect=0.00x` → 主控侧问题（回到 ②③ 与 §18.1 的第 1 条）。
+
+### 18.3 反代侧的两条硬要求
+
+```nginx
+proxy_connect_timeout 5s;    # 别用默认 60s：上游卡住时快速失败（访问日志里变成 502，失败率看得见）
+proxy_read_timeout  3600s;   # 要大于主控的 MCLINK_REQUEST_DEADLINE_MS（默认 110s）
+```
+
+**nginx 与主控能走内网就别走公网**：`proxy_pass` 指向 `127.0.0.1:8787` 或内网地址，
+少一跳跨网链路，这类超时会大幅减少。
+
+> 附带一条与故障无关但很吵的：`sudo: unable to resolve host <主机名>` 是 hostname 没进
+> `/etc/hosts`，每次 sudo 都在等 DNS。`echo "127.0.1.1 $(hostname)" >> /etc/hosts` 即可。
+
+
 **先分清是谁的问题**：
 
 ```bash
