@@ -30,6 +30,8 @@ body {
   font-size: var(--fs-base);
   line-height: var(--lh-base);
   -webkit-font-smoothing: antialiased;
+  /* 正文避免最后一行只剩一两个字的孤字（标题另有 balance，见 h1-h4） */
+  text-wrap: pretty;
   overflow: hidden;
 }
 
@@ -42,6 +44,8 @@ h4 {
   font-weight: 600;
   line-height: var(--lh-tight);
   letter-spacing: var(--track-display);
+  /* 标题折行按语义密度分配，别出现"最后一行只剩一个字" */
+  text-wrap: balance;
 }
 h1 {
   font-size: var(--fs-3xl);

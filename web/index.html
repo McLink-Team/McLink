@@ -16,16 +16,29 @@
        * 亮/暗主题：必须在首屏绘制前跑，否则会闪一下。
        * 逻辑与 packages/shared/src/design/theme.ts 一致，这里内联一份（模块化加载太晚）。
        * 改了这里记得同步那个文件。
+       *
+       * 优先级：?theme=light|dark（检测器与本地核对用） > localStorage['mclink.theme']（用户选的）
+       *         > 系统偏好。
+       * 中间那层不能省：玩家选了「亮色」之后刷新，如果这里只按系统画，
+       * 会先出现一帧暗色再跳到亮色 —— 那就是闪烁。
        */
       (function () {
         try {
           var forced = new URLSearchParams(location.search).get('theme');
+          var saved = null;
+          try {
+            saved = window.localStorage.getItem('mclink.theme');
+          } catch (e) {
+            /* 隐私模式读不到 localStorage，只能跟随系统 */
+          }
           var theme =
             forced === 'light' || forced === 'dark'
               ? forced
-              : window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
-                ? 'light'
-                : 'dark';
+              : saved === 'light' || saved === 'dark'
+                ? saved
+                : window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
+                  ? 'light'
+                  : 'dark';
           document.documentElement.dataset.theme = theme;
           document.documentElement.style.colorScheme = theme;
         } catch (e) {

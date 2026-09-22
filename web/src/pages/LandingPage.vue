@@ -14,6 +14,7 @@ import { RouterLink } from 'vue-router';
 import { Routes, Topics, formatBitrate, type ServerEvent } from '@mclink/shared';
 import { api } from '../lib/api.ts';
 import { RealtimeClient } from '../lib/realtime.ts';
+import ThemeSwitch from '../components/ThemeSwitch.vue';
 
 interface MetaInfo {
   siteName: string;
@@ -179,6 +180,7 @@ const steps = [
         </nav>
 
         <div class="row" style="gap: var(--s-2)">
+          <ThemeSwitch />
           <RouterLink to="/login" class="btn btn-ghost btn-sm">管理控制台</RouterLink>
           <a v-if="primaryDownload" :href="primaryDownload.url" class="btn btn-primary btn-sm">下载客户端</a>
         </div>
