@@ -61,7 +61,22 @@ const res = spawnSync(builderBin, finalTargets, {
   },
 });
 if (res.status !== 0) {
-  console.error('[dist] 打包失败。若卡在下载 NSIS/winCodeSign，请检查网络或镜像设置。');
+  /**
+   * 报错要指向真正的原因。
+   * 之前只有一句"若卡在下载 NSIS/winCodeSign 请检查网络"，于是
+   * "在 Windows 上构建 macOS 包"这种**根本不支持**的用法会被误读成网络问题
+   * （实测：日志里其实明写着 Build for macOS is supported only on macOS）。
+   */
+  const wantsMac = finalTargets.some((t) => t === '--mac' || t === 'mac');
+  if (wantsMac && process.platform !== 'darwin') {
+    console.error(
+      '[dist] 打包失败：electron-builder 不支持在非 macOS 上构建 macOS 包。\n' +
+        '       请改用托管的 macOS runner（.github/workflows/build-clients.yml）或一台 Mac，\n' +
+        '       详见 docs/build-clients.md。',
+    );
+  } else {
+    console.error('[dist] 打包失败。若卡在下载 NSIS/winCodeSign，请检查网络或镜像设置。');
+  }
   process.exit(res.status ?? 1);
 }
 console.log('[dist] 完成，产物在 client/release');

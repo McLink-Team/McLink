@@ -11,8 +11,9 @@ import type { Router } from '../http/kit.ts';
 
 export interface DownloadArtifact {
   id: string;
-  platform: string;
-  arch: string;
+  /** 平台与架构都是**推断出来的**（见 platformOf / archOf），用于官网按平台分组 */
+  platform: 'windows' | 'macos' | 'linux' | 'android';
+  arch: 'x64' | 'arm64';
   label: string;
   filename: string;
   size: number;
@@ -46,6 +47,8 @@ export function registerPublicRoutes(router: Router, app: App): void {
       easytierVersion: app.relay.cliVersion,
       clientVersion: s.clientVersion,
       clientDownloadUrl: resolveClientDownloadUrl(app),
+      /** 双端下载：官网的 Windows / macOS 两个按钮各自该指向哪个文件 */
+      clientDownloads: buildClientDownloads(app),
       stats: {
         onlineNodes: online,
         totalNodes: app.nodes.count(),
@@ -199,6 +202,27 @@ export function resolveClientDownloadUrl(app: App): string {
   return windows[0]?.url ?? artifacts[0]?.url ?? s.clientDownloadUrl;
 }
 
+/**
+ * 从文件名判断产物属于哪个平台与架构。
+ *
+ * 之前这里只认 linux/android 两个关键字，其余一律算 windows —— 于是 `.dmg`
+ * 会被标成 Windows 产物，官网的"按平台下载"就会把 mac 包挂在 Windows 按钮上。
+ */
+function platformOf(name: string): DownloadArtifact['platform'] {
+  const n = name.toLowerCase();
+  if (n.includes('macos') || n.includes('darwin') || n.endsWith('.dmg') || n.includes('mac-')) return 'macos';
+  if (n.includes('linux') || n.endsWith('.deb') || n.endsWith('.appimage')) return 'linux';
+  if (n.includes('android') || n.endsWith('.apk')) return 'android';
+  return 'windows';
+}
+
+function archOf(name: string): DownloadArtifact['arch'] {
+  const n = name.toLowerCase();
+  if (n.includes('arm64') || n.includes('aarch64') || n.includes('apple')) return 'arm64';
+  if (n.includes('x86_64') || n.includes('amd64') || n.includes('x64') || n.includes('intel')) return 'x64';
+  return 'x64';
+}
+
 /** 扫描下载目录，列出可下载的客户端产物 */
 export function listDownloads(app: App): DownloadArtifact[] {
   const root = app.downloads.root;
@@ -215,8 +239,8 @@ export function listDownloads(app: App): DownloadArtifact[] {
     const stat = fs.statSync(full);
     out.push({
       id: entry.name,
-      platform: entry.name.includes('linux') ? 'linux' : entry.name.includes('android') ? 'android' : 'windows',
-      arch: entry.name.includes('arm64') ? 'arm64' : entry.name.includes('x86_64') ? 'x86_64' : 'x64',
+      platform: platformOf(entry.name),
+      arch: archOf(entry.name),
       label: labelFor(entry.name),
       filename: entry.name,
       size: stat.size,
@@ -230,6 +254,36 @@ export function listDownloads(app: App): DownloadArtifact[] {
     if (b.filename === primaryFile) return 1;
     return a.filename.localeCompare(b.filename);
   });
+}
+
+/**
+ * 双端下载入口：官网按平台给按钮用。
+ *
+ * Windows 走设置里的主产物（管理员可覆盖）；macOS 直接在下载目录里找
+ * —— EasyTier 的核心与 electron-builder 的产物名都带 macos/arm64/x64，能认出来。
+ * `macos` 优先 Apple 芯片（现在绝大多数 Mac），`macosIntel` 单独给，
+ * 两者都存在时前端会让玩家二选一。
+ */
+export function buildClientDownloads(app: App): {
+  version: string;
+  windows: DownloadArtifact | null;
+  macos: DownloadArtifact | null;
+  macosIntel: DownloadArtifact | null;
+  all: DownloadArtifact[];
+} {
+  const artifacts = listDownloads(app);
+  const macs = artifacts.filter((a) => a.platform === 'macos');
+  const macArm = macs.find((a) => a.arch === 'arm64') ?? null;
+  const macIntel = macs.find((a) => a.arch === 'x64') ?? null;
+  // 只有 Intel 包时也让它出现在主按钮上，别让 Intel Mac 用户找不到入口
+  const macPrimary = macArm ?? macIntel;
+  return {
+    version: app.settings.current.clientVersion,
+    windows: artifacts.find((a) => a.platform === 'windows') ?? null,
+    macos: macPrimary,
+    macosIntel: macArm ? macIntel : null,
+    all: artifacts,
+  };
 }
 
 function labelFor(name: string): string {

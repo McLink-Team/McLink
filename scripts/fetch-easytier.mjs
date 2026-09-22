@@ -24,14 +24,27 @@ const all = args.includes('--all');
 const versionArg = args.find((a) => a.startsWith('--version=')) ?? args[args.indexOf('--version') + 1];
 const VERSION = versionArg && /^v?\d/.test(versionArg) ? versionArg.replace(/^v?/, 'v') : 'v2.6.4';
 
-function assetNames() {
-  const names = [];
-  const platformWanted = all ? ['windows', 'linux'] : [process.platform === 'win32' ? 'windows' : 'linux'];
-  for (const p of platformWanted) {
+/**
+ * 要下载哪些平台的包。
+ *
+ * macOS 的命名规则与其它平台**不同**：官方是 `easytier-macos-aarch64-…` /
+ * `easytier-macos-x86_64-…`（用 aarch64 而不是 arm64），而且它的二进制**不能**铺平
+ * 到 vendor/easytier/ 根目录 —— 那里放的是 Windows(.exe) 与 Linux(无扩展名) 版，
+ * mac 版必须落在 `macos-arm64/` 与 `macos-x64/` 子目录里，
+ * 运行时由 main.cjs 的 platformVendorSubdir() 按 process.arch 选。
+ */
+function targets() {
+  const wanted = all
+    ? ['windows', 'linux', 'macos-arm64', 'macos-x64']
+    : process.platform === 'darwin'
+      ? [process.arch === 'arm64' ? 'macos-arm64' : 'macos-x64']
+      : [process.platform === 'win32' ? 'windows' : 'linux'];
+  return wanted.map((p) => {
+    if (p === 'macos-arm64') return { target: p, asset: `easytier-macos-aarch64-${VERSION}.zip`, subdir: 'macos-arm64' };
+    if (p === 'macos-x64') return { target: p, asset: `easytier-macos-x86_64-${VERSION}.zip`, subdir: 'macos-x64' };
     const arch = process.arch === 'arm64' ? 'arm64' : 'x86_64';
-    names.push(`easytier-${p}-${arch}-${VERSION}.zip`);
-  }
-  return names;
+    return { target: p, asset: `easytier-${p}-${arch}-${VERSION}.zip`, subdir: null };
+  });
 }
 
 async function download(url, out) {
@@ -72,16 +85,31 @@ function extract(zipFile, destDir) {
   }
 }
 
-/** 把解压出来的文件铺平到 vendor/easytier/，方便服务端用固定路径引用 */
-function flatten(dir) {
+/** 把解压出来的文件铺平到 vendor/easytier/（macOS 走 subdir，不铺平） */
+function flatten(dir, subdir = null) {
+  const dest = subdir ? path.join(dir, subdir) : dir;
+  fs.mkdirSync(dest, { recursive: true });
   const entries = fs.readdirSync(dir, { withFileTypes: true });
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const nested = path.join(dir, entry.name);
+    // macOS 包解出来是 easytier-macos-<arch>/ 一层目录，整目录搬进子目录
+    if (subdir) {
+      for (const file of fs.readdirSync(nested)) {
+        const from = path.join(nested, file);
+        if (!fs.statSync(from).isFile()) continue;
+        // 只搬运行时要用的两个二进制（web 版对客户端没用，白白多占 40MB）
+        if (!/^easytier-(core|cli)$/.test(file)) continue;
+        fs.copyFileSync(from, path.join(dest, file));
+        fs.chmodSync(path.join(dest, file), 0o755);
+      }
+      fs.rmSync(nested, { recursive: true, force: true });
+      continue;
+    }
     for (const file of fs.readdirSync(nested)) {
       const from = path.join(nested, file);
       if (!fs.statSync(from).isFile()) continue;
-      fs.copyFileSync(from, path.join(VENDOR, file));
+      fs.copyFileSync(from, path.join(dest, file));
     }
     fs.rmSync(nested, { recursive: true, force: true });
   }
@@ -89,16 +117,17 @@ function flatten(dir) {
 
 async function main() {
   fs.mkdirSync(VENDOR, { recursive: true });
-  for (const name of assetNames()) {
-    const url = `https://github.com/EasyTier/EasyTier/releases/download/${VERSION}/${name}`;
-    const zip = path.join(CACHE, name);
+  for (const { asset, subdir } of targets()) {
+    const url = `https://github.com/EasyTier/EasyTier/releases/download/${VERSION}/${asset}`;
+    const zip = path.join(CACHE, asset);
     try {
       await download(url, zip);
-      extract(zip, VENDOR);
-      flatten(VENDOR);
-      console.log(`已安装 ${name} -> ${VENDOR}`);
+      // macOS 解到临时目录再筛，避免把 web 版塞进子目录
+      extract(zip, subdir ? path.join(CACHE, 'extract-mac') : VENDOR);
+      flatten(subdir ? path.join(CACHE, 'extract-mac') : VENDOR, subdir);
+      console.log(`已安装 ${asset} -> ${subdir ? path.join(VENDOR, subdir) : VENDOR}`);
     } catch (err) {
-      console.error(`处理 ${name} 失败: ${err.message}`);
+      console.error(`处理 ${asset} 失败: ${err.message}`);
       if (/fetch failed|ENOTFOUND|timeout/i.test(err.message)) {
         console.error('提示：若处于受限网络，请设置 HTTPS_PROXY 与 NODE_USE_ENV_PROXY=1 后重试。');
       }
@@ -109,6 +138,14 @@ async function main() {
   console.log('\nvendor/easytier 内容:');
   for (const f of files) {
     console.log(`  ${f}  ${(fs.statSync(path.join(VENDOR, f)).size / 1048576).toFixed(1)}MB`);
+  }
+  for (const sub of ['macos-arm64', 'macos-x64']) {
+    const dir = path.join(VENDOR, sub);
+    if (!fs.existsSync(dir)) continue;
+    console.log(`  ${sub}/`);
+    for (const f of fs.readdirSync(dir)) {
+      console.log(`    ${f}  ${(fs.statSync(path.join(dir, f)).size / 1048576).toFixed(1)}MB`);
+    }
   }
 }
 

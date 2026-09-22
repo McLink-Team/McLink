@@ -61,17 +61,36 @@ const migratedDataDirs = migrateLegacyDataDir();
 
 /* ------------------------------------------------------------------ 路径 */
 
+/**
+ * 平台专属的 vendor 子目录名。
+ *
+ * 为什么需要它：`vendor/easytier` 里那批**无扩展名**的二进制是 **Linux** 版
+ * （主控服务端在用），macOS 上按老逻辑会去执行这个 Linux ELF —— 必然失败。
+ * 所以 macOS 的二进制单独放在 `macos-arm64/`、`macos-x64/` 子目录里，
+ * 运行时按当前架构选；Windows/Linux 继续用平铺的那份。
+ */
+function platformVendorSubdir() {
+  if (process.platform !== 'darwin') return null;
+  return process.arch === 'arm64' ? 'macos-arm64' : 'macos-x64';
+}
+
 function resolveVendorDir() {
-  const candidates = app.isPackaged
+  const bases = app.isPackaged
     ? [path.join(process.resourcesPath, 'vendor', 'easytier')]
     : [
         path.join(__dirname, '..', '..', 'vendor', 'easytier'),
         path.join(__dirname, '..', 'vendor', 'easytier'),
       ];
-  for (const dir of candidates) {
-    if (fs.existsSync(dir)) return dir;
+  const sub = platformVendorSubdir();
+  for (const base of bases) {
+    // macOS 优先用架构专属子目录；找不到再退回平铺目录（便于本机开发时复用一份）
+    if (sub) {
+      const scoped = path.join(base, sub);
+      if (fs.existsSync(scoped)) return scoped;
+    }
+    if (fs.existsSync(base)) return base;
   }
-  return candidates[0];
+  return bases[0];
 }
 
 const VENDOR_DIR = resolveVendorDir();
@@ -169,7 +188,16 @@ function coreStatus() {
 let elevatedCache = null;
 
 function isElevated() {
-  if (process.platform !== 'win32') return true;
+  /**
+   * macOS/Linux：判断"当前是不是 root"。
+   * 原来是 `return true`（当作"非 Windows 不需要提权"），但 macOS 上创建 utun
+   * 虚拟网卡同样需要 root —— 一律返回 true 会让界面显示"已管理员运行"，
+   * 实际却没权限，玩家看到的是核心起不来又没有任何提示。
+   */
+  if (process.platform !== 'win32') {
+    if (typeof process.getuid === 'function') return process.getuid() === 0;
+    return true;
+  }
   if (elevatedCache !== null) return elevatedCache;
   try {
     // whoami /groups 里出现 High Mandatory Level 即视为已提权
@@ -214,7 +242,9 @@ function writePrefs(patch) {
 
 /** 是否该在启动时自动请求提权 */
 function shouldAutoElevate() {
-  if (process.platform !== 'win32' || isElevated()) return false;
+  // Windows 与 macOS 都需要管理员才能建虚拟网卡（wintun / utun）；Linux 一般由用户态处理
+  if (process.platform !== 'win32' && process.platform !== 'darwin') return false;
+  if (isElevated()) return false;
   // 开发模式（electron .）不自动提权：否则每次改代码重启都要点一次 UAC
   if (!app.isPackaged && process.env.MCLINK_AUTO_ELEVATE !== '1') return false;
   const prefs = readPrefs();
@@ -234,7 +264,39 @@ function shouldAutoElevate() {
  *      这不是错误：照常以普通权限继续跑（能登录、能建房，只是虚拟网卡建不起来）。
  */
 function requestElevation() {
-  if (process.platform !== 'win32') return Promise.resolve({ ok: false, error: '仅 Windows 需要提权' });
+  /**
+   * macOS：用 osascript 的 `with administrator privileges` 重新拉起自己。
+   * 和 Windows 一样，macOS 建 utun 也需要 root；没有这一步，mac 用户会卡在
+   * "核心起不来"且完全不知道要做什么。
+   * 打包版直接执行 .app 内的可执行文件；开发版带上入口参数。
+   */
+  if (process.platform === 'darwin') {
+    writePrefs({ elevationAskedAt: Date.now() });
+    return new Promise((resolve) => {
+      try {
+        const exe = process.execPath;
+        const args = app.isPackaged ? [] : [path.join(__dirname, '..')];
+        // osascript 里所有路径都要转义成 AppleScript 字符串
+        const quoted = [`"${exe.replace(/"/g, '\\"')}"`, ...args.map((a) => `"${a.replace(/"/g, '\\"')}"`)].join(' ');
+        const script = `do shell script "${quoted} > /dev/null 2>&1 &" with administrator privileges`;
+        const child = spawn('osascript', ['-e', script], { stdio: 'ignore' });
+        child.on('close', (code) => {
+          if (code === 0) {
+            quitting = true;
+            app.releaseSingleInstanceLock();
+            app.quit();
+            resolve({ ok: true });
+          } else {
+            resolve({ ok: false, error: `提权启动被取消或失败（osascript 退出码 ${code}）` });
+          }
+        });
+        child.on('error', (err) => resolve({ ok: false, error: err.message }));
+      } catch (err) {
+        resolve({ ok: false, error: err.message });
+      }
+    });
+  }
+  if (process.platform !== 'win32') return Promise.resolve({ ok: false, error: '该平台不需要提权' });
   const exe = process.execPath;
   const args = app.isPackaged ? [] : [path.join(__dirname, '..')];
   const command = `Start-Process -FilePath '${exe}' -ArgumentList ${args
