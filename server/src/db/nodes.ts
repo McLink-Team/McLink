@@ -299,6 +299,25 @@ export class NodeRepo {
     return Number(this.db.scalar<number>('select count(*) as c from relay_nodes') ?? 0);
   }
 
+  /**
+   * 所有**在线**子节点的速率与承载之和。
+   *
+   * 为什么只算 online/degraded：离线节点表里还留着最后上报的 bps，
+   * 算进"全网实时收发"会让读数永远回不到 0（节点掉线了数字还是热的）。
+   *
+   * 平台维度的读数（落地页「中继收发」、仪表盘、流量页）拿它加上主控中继自身的量 ——
+   * 玩家按区域就近接入，流量大头其实在子节点上，只报主控会长期是 0。
+   */
+  totalBps(): { rxBps: number; txBps: number; peers: number; nodes: number } {
+    const online = this.list().filter((n) => n.status === 'online' || n.status === 'degraded');
+    return {
+      rxBps: online.reduce((acc, n) => acc + n.rx_bps, 0),
+      txBps: online.reduce((acc, n) => acc + n.tx_bps, 0),
+      peers: online.reduce((acc, n) => acc + n.peers, 0),
+      nodes: online.length,
+    };
+  }
+
   /** 把超时未心跳的在线节点标记为离线 */
   markStaleOffline(timeoutSeconds: number): string[] {
     const cutoff = new Date(Date.now() - timeoutSeconds * 1000).toISOString();

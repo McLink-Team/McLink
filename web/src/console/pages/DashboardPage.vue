@@ -74,7 +74,18 @@ interface AdminOverview {
   nodes: NodeCounts;
   rooms: RoomCounts;
   users: { total: number; online: number };
-  traffic: { rxBps: number; txBps: number; rxBytesToday: number; txBytesToday: number };
+  /** rxBps/txBps 是全网聚合（主控 + 在线子节点），其余是拆分明细 */
+  traffic: {
+    rxBps: number;
+    txBps: number;
+    rxBytesToday: number;
+    txBytesToday: number;
+    masterRxBps: number;
+    masterTxBps: number;
+    nodesRxBps: number;
+    nodesTxBps: number;
+    onlineRelayNodes: number;
+  };
   relay: AdminRelayRuntime | null;
   system: {
     nodeVersion: string;
@@ -167,15 +178,16 @@ const cards = computed(() => {
       accent: 'accent' as const,
     },
     {
-      label: '实时接收',
+      // 全网口径：主控中继 + 所有在线子节点（玩家按区域接入，大头在子节点上）
+      label: '全网接收',
       value: formatBitrate(traffic.rxBps),
-      hint: `今日 ${formatBytes(traffic.rxBytesToday)}`,
+      hint: `主控 ${formatBitrate(traffic.masterRxBps)} + ${traffic.onlineRelayNodes} 节点 ${formatBitrate(traffic.nodesRxBps)}`,
       accent: 'violet' as const,
     },
     {
-      label: '实时发送',
+      label: '全网发送',
       value: formatBitrate(traffic.txBps),
-      hint: `今日 ${formatBytes(traffic.txBytesToday)}`,
+      hint: `主控 ${formatBitrate(traffic.masterTxBps)} + ${traffic.onlineRelayNodes} 节点 ${formatBitrate(traffic.nodesTxBps)}`,
       accent: 'violet' as const,
     },
   ];

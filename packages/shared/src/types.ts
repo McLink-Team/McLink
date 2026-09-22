@@ -266,7 +266,14 @@ export interface RoomTicket {
 
 /* ------------------------------------------------------------ 流量统计 */
 
-export type TrafficScope = 'relay' | 'room' | 'node';
+/**
+ * 流量账本的维度：
+ *   relay    —— 主控中继自身（含它替房间转发的部分）
+ *   node     —— 单个子节点（agent 心跳上报）
+ *   platform —— **全网聚合**（主控 + 所有在线子节点），平台维度的读数与曲线用它
+ *   room     —— 按房间归因（中继侧的 foreign network 统计）
+ */
+export type TrafficScope = 'platform' | 'relay' | 'room' | 'node';
 
 export interface TrafficPoint {
   ts: Iso;
@@ -307,7 +314,22 @@ export interface PlatformOverview {
   nodes: { total: number; online: number; degraded: number; offline: number; pending: number };
   rooms: { open: number; total: number; onlinePlayers: number };
   users: { total: number; online: number };
-  traffic: { rxBps: number; txBps: number; rxBytesToday: number; txBytesToday: number };
+  /**
+   * 平台流量。rxBps/txBps 是**全网聚合**（主控中继 + 所有在线子节点）——
+   * 玩家按区域就近接入，只统计主控会长期显示 0。
+   * masterRxBps / masterTxBps 是主控那一台，nodesRxBps / nodesTxBps 是子节点之和。
+   */
+  traffic: {
+    rxBps: number;
+    txBps: number;
+    rxBytesToday: number;
+    txBytesToday: number;
+    masterRxBps: number;
+    masterTxBps: number;
+    nodesRxBps: number;
+    nodesTxBps: number;
+    onlineRelayNodes: number;
+  };
   relay: RelayRuntime | null;
 }
 

@@ -134,6 +134,14 @@ async function main(): Promise<void> {
       return { ...fn, roomId: room?.id ?? null };
     });
 
+    /**
+     * 全网聚合：主控中继 + 所有在线子节点。
+     *
+     * 只统计主控那一台是错的 —— 玩家按区域就近接入，绝大多数流量其实走在子节点上，
+     * 于是"中继收发"长期显示 0（线上实测）。平台维度的读数与曲线都该用这个聚合值。
+     */
+    const nodeBps = app.nodes.totalBps();
+
     app.traffic.record({
       scope: 'relay',
       scopeId: 'master',
@@ -142,6 +150,17 @@ async function main(): Promise<void> {
       rxBps: sample.rxBps,
       txBps: sample.txBps,
       peers: sample.peerCount,
+    });
+
+    // 平台维度单独记一条，供流量页的「平台总收发趋势」使用（含子节点）
+    app.traffic.record({
+      scope: 'platform',
+      scopeId: 'all',
+      rxBytes: sample.totalRxBytes,
+      txBytes: sample.totalTxBytes,
+      rxBps: sample.rxBps + nodeBps.rxBps,
+      txBps: sample.txBps + nodeBps.txBps,
+      peers: sample.peerCount + nodeBps.peers,
     });
 
     let attributed = 0;
@@ -175,11 +194,17 @@ async function main(): Promise<void> {
         type: 'traffic.tick',
         report: {
           ts: sample.ts,
-          totalRxBps: sample.rxBps,
-          totalTxBps: sample.txBps,
+          // 全网聚合（主控 + 在线子节点）：只报主控的话落地页那块读数会长期是 0
+          totalRxBps: sample.rxBps + nodeBps.rxBps,
+          totalTxBps: sample.txBps + nodeBps.txBps,
+          masterRxBps: sample.rxBps,
+          masterTxBps: sample.txBps,
+          nodesRxBps: nodeBps.rxBps,
+          nodesTxBps: nodeBps.txBps,
+          onlineRelayNodes: nodeBps.nodes,
           totalRxBytes: sample.totalRxBytes,
           totalTxBytes: sample.totalTxBytes,
-          relayPeers: sample.peerCount,
+          relayPeers: sample.peerCount + nodeBps.peers,
           roomCount: foreignWithRooms.length,
         },
       });
@@ -187,8 +212,13 @@ async function main(): Promise<void> {
         type: 'traffic.tick',
         report: {
           ts: sample.ts,
-          totalRxBps: sample.rxBps,
-          totalTxBps: sample.txBps,
+          totalRxBps: sample.rxBps + nodeBps.rxBps,
+          totalTxBps: sample.txBps + nodeBps.txBps,
+          masterRxBps: sample.rxBps,
+          masterTxBps: sample.txBps,
+          nodesRxBps: nodeBps.rxBps,
+          nodesTxBps: nodeBps.txBps,
+          onlineRelayNodes: nodeBps.nodes,
           totalRxBytes: sample.totalRxBytes,
           totalTxBytes: sample.totalTxBytes,
           byRoom: foreignWithRooms.map((f) => ({
