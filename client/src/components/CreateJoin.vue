@@ -12,7 +12,7 @@
  */
 import { computed, onMounted, ref } from 'vue';
 import { REGIONS, regionLabel, type Room } from '@mclink/shared';
-import { clientState, createRoom, joinRoom, loadRooms, reenterRoom } from '../lib/store.ts';
+import { clientState, createRoom, joinRoom, loadRooms, openUpdatePage, reenterRoom } from '../lib/store.ts';
 import { friendlyError } from '../lib/api.ts';
 import BrandLockup from './BrandLockup.vue';
 import PublicPlaza from './PublicPlaza.vue';
@@ -146,6 +146,18 @@ async function resume(room: Room): Promise<void> {
             <li>把房间页上的联机地址发出去。</li>
             <li>朋友在游戏里「多人游戏 → 直接连接」粘贴即可。</li>
           </ol>
+
+          <!--
+            新版本提示：安静地放在动作下方，不抢「创建房间」。
+            只说两件事 —— 有新版本、从哪拿 —— 不给玩家第三个决定。
+          -->
+          <div v-if="clientState.update" class="update-note">
+            <span class="grow">
+              有新版本 <span class="mono">v{{ clientState.update.latest }}</span>
+              （当前 <span class="mono">v{{ clientState.localVersion }}</span>）
+            </span>
+            <button class="btn btn-sm" type="button" @click="openUpdatePage()">下载新版</button>
+          </div>
         </template>
 
         <!-- ------------------------------------------------------- 创建房间 -->

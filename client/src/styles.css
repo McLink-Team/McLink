@@ -520,6 +520,10 @@ textarea {
   background: var(--link);
   box-shadow: 0 0 0 2px var(--link-wash);
 }
+/* 小点＝"有更新可用"：用强调色，但不加光晕（设计规则禁止发光） */
+.dot-signal {
+  background: var(--signal);
+}
 .dot-warn {
   background: var(--warn);
   box-shadow: 0 0 0 2px var(--warn-wash);
@@ -758,6 +762,24 @@ textarea {
   font-size: var(--fs-xs);
   line-height: var(--lh-snug);
   color: var(--paper-dim);
+}
+/*
+ * 新版本提示：一条发丝线 + 一行字，不做卡片、不用告警色。
+ * 它是个「顺带告诉你」的信息，抢眼程度必须低于上面的主操作；
+ * 但「下载新版」是个真按钮，命中区按交互规则留足。
+ */
+.app-shell .update-note {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin-top: var(--s-3);
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--rule-faint);
+  font-size: var(--fs-sm);
+  color: var(--paper-dim);
+}
+.app-shell .update-note .grow {
+  min-width: 0;
 }
 .app-shell .home-note li {
   position: relative;
