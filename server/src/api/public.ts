@@ -273,8 +273,18 @@ export function buildClientDownloads(app: App): {
 } {
   const artifacts = listDownloads(app);
   const macs = artifacts.filter((a) => a.platform === 'macos');
-  const macArm = macs.find((a) => a.arch === 'arm64') ?? null;
-  const macIntel = macs.find((a) => a.arch === 'x64') ?? null;
+  /**
+   * 同一架构可能同时存在 .dmg 与 .zip（构建会出两份）。**显式优先 dmg**：
+   * Mac 玩家的习惯是拖进「应用程序」，而 zip 只是备选。
+   * 之前靠 `find` 拿排序里的第一个 —— 而排序是按文件名，`.dmg` 恰好排在 `.zip` 前，
+   * 属于运气；文件名一改（比如以后加上 `-app.zip`）就会挑错，所以这里写死优先级。
+   */
+  const preferDmg = (arch: 'arm64' | 'x64'): DownloadArtifact | null => {
+    const same = macs.filter((a) => a.arch === arch);
+    return same.find((a) => a.filename.toLowerCase().endsWith('.dmg')) ?? same[0] ?? null;
+  };
+  const macArm = preferDmg('arm64');
+  const macIntel = preferDmg('x64');
   // 只有 Intel 包时也让它出现在主按钮上，别让 Intel Mac 用户找不到入口
   const macPrimary = macArm ?? macIntel;
   return {
