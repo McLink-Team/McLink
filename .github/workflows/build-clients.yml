@@ -1,0 +1,109 @@
+name: 构建客户端（Windows / macOS）
+
+# 为什么要有这个工作流
+# --------------------
+# electron-builder **不允许在 Windows/Linux 上构建 macOS 包**，会直接报：
+#   ⨯ Build for macOS is supported only on macOS
+# 所以 macOS 产物必须在 macOS 机器上出。这个工作流用 GitHub 托管的 macOS runner
+# 来干这件事 —— 你不需要自己买 Mac。
+#
+# 用它需要把仓库镜像到 GitHub（公开仓库的 macOS runner 免费）：
+#   git remote add github git@github.com:<你的账号>/<仓库>.git
+#   git push github main --tags
+# 然后在 GitHub 上 Actions → 「构建客户端」→ Run workflow，跑完在 Artifacts 里下载。
+#
+# 产物说明：
+#   · Windows：McLink-Setup-<版本>-x64.exe（NSIS 安装包）
+#   · macOS  ：McLink-<版本>-arm64.dmg/.zip（Apple 芯片）、McLink-<版本>-x64.dmg/.zip（Intel）
+#   · macOS 包是**未签名**的（没有 Apple 开发者证书）：electron-builder 会做 ad-hoc 签名，
+#     玩家首次打开需要绕过 Gatekeeper —— 见 docs/build-clients.md。
+
+on:
+  workflow_dispatch:
+    inputs:
+      master:
+        description: 内嵌进客户端的主控地址
+        required: false
+        default: https://cnnic.link
+  push:
+    tags:
+      - 'v*'
+
+env:
+  # 没有证书时让 electron-builder 跳过签名发现（macOS 上仍会做 ad-hoc 签名，否则 arm64 起不来）
+  CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+jobs:
+  windows:
+    name: Windows x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: 启用 pnpm
+        run: corepack enable
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 取 EasyTier 核心（Windows）
+        run: node scripts/fetch-easytier.mjs
+
+      - name: 生成图标
+        run: pnpm icons
+
+      - name: 打包
+        env:
+          VITE_MCLINK_MASTER: ${{ inputs.master || 'https://cnnic.link' }}
+        run: pnpm --filter @mclink/client exec node scripts/dist.mjs --win nsis
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mclink-windows-x64
+          path: client/release/*.exe
+          if-no-files-found: error
+          retention-days: 30
+
+  macos:
+    name: macOS arm64 + x64
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: 启用 pnpm
+        run: corepack enable
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      # --all 会额外把两个架构的 macOS 核心下到 vendor/easytier/macos-{arm64,x64}/
+      - name: 取 EasyTier 核心（含 macOS 两个架构）
+        run: node scripts/fetch-easytier.mjs --all
+
+      - name: 生成图标（含 macOS 需要的 1024 尺寸）
+        run: pnpm icons
+
+      - name: 打包 dmg + zip（两个架构）
+        env:
+          VITE_MCLINK_MASTER: ${{ inputs.master || 'https://cnnic.link' }}
+        run: pnpm --filter @mclink/client exec node scripts/dist.mjs --mac dmg zip --arm64 --x64
+
+      - name: 列出产物（体积核对）
+        run: ls -lh client/release/ | grep -Ei '\.(dmg|zip)$' || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mclink-macos
+          path: |
+            client/release/*.dmg
+            client/release/*.zip
+          if-no-files-found: error
+          retention-days: 30

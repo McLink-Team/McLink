@@ -268,6 +268,13 @@ const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"
 /** Windows 需要的尺寸：任务栏 16/24/32，Alt-Tab 48，资源管理器大图标 256 */
 const SIZES = [16, 24, 32, 48, 64, 128, 256];
 
+/**
+ * macOS 用的尺寸。electron-builder 从一张 PNG 生成 .icns 时要求**至少 512×512**
+ * （256 会被直接拒绝），而 .icns 内部还需要 1024 的 retina 档，所以这两个尺寸单独出，
+ * 不进 Windows 的 ICO（ICO 最大值就是 256，塞 512 进去是无效条目）。
+ */
+const MAC_SIZES = [512, 1024];
+
 function main() {
   const clientBuild = path.join(REPO_ROOT, 'client', 'build');
   const clientElectronAssets = path.join(REPO_ROOT, 'client', 'electron', 'assets');
@@ -279,6 +286,7 @@ function main() {
   const entries = SIZES.map((size) => ({ size, png: encodePng(size, size, drawIcon(size)) }));
   const ico = packIco(entries);
   const png256 = entries[entries.length - 1].png;
+  const macPngs = MAC_SIZES.map((size) => ({ size, png: encodePng(size, size, drawIcon(size)) }));
 
   // 两处都要写：
   //   · client/build/icon.ico  → electron-builder 用它写进 exe/安装器，也用作安装向导图标
@@ -288,6 +296,8 @@ function main() {
   fs.writeFileSync(path.join(clientBuild, 'icon.ico'), ico);
   fs.writeFileSync(path.join(clientBuild, 'icon.png'), png256);
   fs.writeFileSync(path.join(clientElectronAssets, 'icon.ico'), ico);
+  // macOS：electron-builder 认 `icon.png` 并自己转 icns，取目录里最大的那张
+  fs.writeFileSync(path.join(clientBuild, 'icon-1024.png'), macPngs[macPngs.length - 1].png);
   fs.writeFileSync(path.join(webPublic, 'favicon.svg'), FAVICON_SVG);
   fs.writeFileSync(path.join(webPublic, 'icon-256.png'), png256);
 

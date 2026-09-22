@@ -56,6 +56,33 @@ const windowsArtifacts = computed(() => artifacts.value.filter((a) => a.platform
 const otherArtifacts = computed(() => artifacts.value.filter((a) => a.platform !== 'windows'));
 
 /**
+ * 双端下载：Windows 与 macOS 各一张卡。
+ *
+ * macOS 分两种芯片（Apple 芯片 / Intel），而**浏览器判断不出来** ——
+ * Safari 在 M 系列机器上也会把 UA 报成 "Intel Mac OS X"。所以不猜：
+ * 两个按钮都给出来，并附一句"怎么查自己的芯片"。
+ * macOS 产物还没上传时（刚部署、mac 包还在构建），卡片如实说明，
+ * 而不是留一个点了 404 的按钮 —— 产物一进下载目录，这里会自动出现。
+ */
+const detectedPlatform = computed<'windows' | 'macos' | 'other'>(() => {
+  const ua = typeof navigator === 'undefined' ? '' : navigator.userAgent;
+  if (/Mac OS X|Macintosh|iPhone|iPad/i.test(ua)) return 'macos';
+  if (/Windows/i.test(ua)) return 'windows';
+  return 'other';
+});
+
+const windowsArtifact = computed<DownloadArtifact | null>(() => windowsArtifacts.value[0] ?? null);
+const macArmArtifact = computed<DownloadArtifact | null>(
+  () => artifacts.value.find((a) => a.platform === 'macos' && a.arch === 'arm64') ?? null,
+);
+const macIntelArtifact = computed<DownloadArtifact | null>(
+  () => artifacts.value.find((a) => a.platform === 'macos' && a.arch === 'x64') ?? null,
+);
+const macMissing = computed(() => !macArmArtifact.value && !macIntelArtifact.value);
+
+const mb = (size: number): string => `${(size / 1048576).toFixed(0)} MB`;
+
+/**
  * 主按钮目标：服务端已把与设置里 `clientDownloadUrl` 同名的主产物排在最前，
  * 所以直接用 `artifacts[0]`；没有产物时才退回平台登记的下载地址。
  */
@@ -97,39 +124,71 @@ const requirements: Array<{ label: string; value: string }> = [
     <section class="head aurora">
       <div class="container head-inner">
         <span class="badge badge-brand">客户端 v{{ clientVersion }}</span>
-        <h1>下载 Windows 客户端</h1>
+        <h1>下载客户端</h1>
         <p class="muted">
           安装后登录 → 选择区域 → 输入加入码即可联机。客户端会向主控申请一张短时效票据，
           自动拉起本机 EasyTier 实例，无需手动配置网络名、密钥或中继地址。
         </p>
+
+        <!-- 双端：Windows 与 macOS 各一张卡；访客自己的系统会被标出来 -->
+        <div class="dl-platforms">
+          <article class="dl-platform" :class="{ 'is-current': detectedPlatform === 'windows' }">
+            <div class="dl-platform-head">
+              <span class="dl-platform-name">Windows</span>
+              <span v-if="detectedPlatform === 'windows'" class="badge badge-brand">你正在用它</span>
+            </div>
+            <p class="dl-platform-meta">Windows 10 1809+ / 11（64 位）· 首次启动会请求管理员权限</p>
+            <a v-if="windowsArtifact" class="btn btn-primary" :href="windowsArtifact.url" download>
+              下载安装包 · {{ mb(windowsArtifact.size) }}
+            </a>
+            <p v-else class="hint">下载目录里还没有 Windows 产物。</p>
+            <template v-if="windowsArtifact">
+              <p class="dl-platform-file mono">{{ windowsArtifact.filename }}</p>
+              <div v-if="windowsArtifact.sha256" class="dl-platform-hash">
+                <span class="dl-platform-hash-key">SHA-256</span>
+                <code class="dl-platform-hash-value">{{ windowsArtifact.sha256 }}</code>
+                <button
+                  class="btn btn-sm btn-ghost"
+                  type="button"
+                  @click="copyText(windowsArtifact.sha256 ?? '', 'SHA-256')"
+                >
+                  复制
+                </button>
+              </div>
+            </template>
+          </article>
+
+          <article class="dl-platform" :class="{ 'is-current': detectedPlatform === 'macos' }">
+            <div class="dl-platform-head">
+              <span class="dl-platform-name">macOS</span>
+              <span v-if="detectedPlatform === 'macos'" class="badge badge-brand">你正在用它</span>
+            </div>
+            <p class="dl-platform-meta">macOS 12+ · 按芯片分两种，选错会提示"无法打开"</p>
+            <div class="dl-platform-actions">
+              <a v-if="macArmArtifact" class="btn btn-primary" :href="macArmArtifact.url" download>
+                Apple 芯片 · {{ mb(macArmArtifact.size) }}
+              </a>
+              <a v-if="macIntelArtifact" class="btn" :href="macIntelArtifact.url" download>
+                Intel · {{ mb(macIntelArtifact.size) }}
+              </a>
+              <p v-if="macMissing" class="hint">
+                macOS 版还在构建中，产物上传到下载目录后这里会自动出现。
+              </p>
+            </div>
+            <p class="hint">
+              怎么查芯片：左上角  → 「关于本机」，写着 Apple M… 选 Apple 芯片，写着 Intel 选 Intel。
+            </p>
+            <p class="hint">
+              未签名的包首次打开会被 Gatekeeper 拦下 —— 右键点图标选「打开」，或执行
+              <code class="mono">xattr -dr com.apple.quarantine /Applications/McLink.app</code>。
+            </p>
+          </article>
+        </div>
+
         <div class="cta-row">
-          <a class="btn btn-primary btn-lg" :href="primaryUrl" download>
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-              <path d="M12 4v10m0 0-4-4m4 4 4-4M5 19h14" />
-            </svg>
-            {{ primaryArtifact ? `下载 ${primaryArtifact.filename}` : '前往下载' }}
-          </a>
           <a class="btn btn-lg" :href="EASYTier_RELEASES" target="_blank" rel="noreferrer noopener">
             EasyTier 官方发布页
           </a>
-        </div>
-        <p v-if="primaryArtifact" class="hint hero-hint">
-          文件大小 {{ formatBytes(primaryArtifact.size) }} · {{ primaryArtifact.arch }}
-        </p>
-        <p v-else-if="!loading" class="hint">
-          下载目录中还没有任何产物，主按钮指向平台配置的地址：{{ data?.primary }}
-        </p>
-        <div v-if="primaryArtifact" class="hero-hash">
-          <span class="hero-hash-key">SHA-256</span>
-          <code class="hero-hash-value">{{ primaryArtifact.sha256 || '未登记校验值' }}</code>
-          <button
-            v-if="primaryArtifact.sha256"
-            class="btn btn-sm btn-ghost"
-            type="button"
-            @click="copyText(primaryArtifact.sha256, 'SHA-256')"
-          >
-            复制校验值
-          </button>
         </div>
       </div>
     </section>
@@ -464,3 +523,84 @@ const requirements: Array<{ label: string; value: string }> = [
   }
 }
 </style>
+
+/* ------------------------------------------------------------ 双端下载卡片 */
+.dl-platforms {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--s-4);
+  margin-top: var(--s-5);
+  text-align: left;
+}
+
+.dl-platform {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding: var(--s-4);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md);
+  background: var(--ink-800);
+}
+
+/* 访客自己的系统：琥珀描边，不用阴影/发光（设计规则） */
+.dl-platform.is-current {
+  border-color: var(--signal-line);
+  background: var(--signal-wash);
+}
+
+.dl-platform-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+}
+
+.dl-platform-name {
+  font-family: var(--font-display);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+
+.dl-platform-meta {
+  margin: 0;
+  color: var(--paper-dim);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+}
+
+.dl-platform-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+
+.dl-platform-file {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--paper-faint);
+  overflow-wrap: anywhere;
+}
+
+.dl-platform-hash {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+  padding-top: var(--s-2);
+  border-top: 1px solid var(--rule-faint);
+}
+
+.dl-platform-hash-key {
+  font-size: var(--fs-xs);
+  letter-spacing: var(--track-caps);
+  text-transform: uppercase;
+  color: var(--paper-faint);
+}
+
+.dl-platform-hash-value {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--paper-2);
+  overflow-wrap: anywhere;
+}

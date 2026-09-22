@@ -54,6 +54,41 @@ win:
   # 没有证书时 electron-builder 本来就会自动跳过签名，但 rcedit 该跑还是要跑。
   signAndEditExecutable: true
 
+# ---------------------------------------------------------------------------
+# macOS
+#
+# 与 Windows 的三点不同，都写在下面：
+#   1. **核心二进制不同**：vendor/easytier 里那批无扩展名的是 Linux 版（主控在用），
+#      macOS 要用单独的 macos-arm64/ 与 macos-x64/ 子目录（来自 EasyTier 官方
+#      easytier-macos-{aarch64,x86_64}-vX.Y.Z.zip）。
+#   2. **没有签名证书**：不设 identity，产物是未签名包，玩家首次打开要绕过 Gatekeeper
+#      （文档里给了 `xattr -dr com.apple.quarantine` 与右键打开的说明）。
+#   3. **图标来源是 PNG**：icon-1024.png（由 `pnpm icons` 生成），electron-builder 自己转 icns。
+#      .icns 要求 ≥512，256 会被直接拒绝。
+# ---------------------------------------------------------------------------
+mac:
+  category: public.app-category.games
+  icon: build/icon-1024.png
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+    - target: zip
+      arch:
+        - arm64
+        - x64
+  extraResources:
+    # 两个架构各自的 EasyTier 核心都带上；运行时按 process.arch 选子目录
+    - from: ../vendor/easytier/macos-arm64
+      to: vendor/easytier/macos-arm64
+    - from: ../vendor/easytier/macos-x64
+      to: vendor/easytier/macos-x64
+
+dmg:
+  # 未签名包：不写 volume 图标，避免在没有证书的机器上找 icns
+  writeUpdateInfo: false
+
 nsis:
   oneClick: false
   perMachine: false
