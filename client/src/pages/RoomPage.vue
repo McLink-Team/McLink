@@ -58,18 +58,21 @@ const members = computed(() => session.value?.members ?? []);
 const pending = computed(() => members.value.filter((m) => m.status === 'pending'));
 
 /**
- * 「连接路径」的清洗。
+ * 「连接路径」的清洗与分组。
  *
  * `easytier-cli peer list` 是**按路径**列的，不是按节点：同一个成员可能同时出现一条
  * P2P 直连和一条经中继的记录，本机自己也会出现在列表里。原样铺出来就是
  * 「我自己出现两次、其中一条还标着 1000 ms」——玩家会以为网络坏了（实测截图就是这样）。
  *
- * 这里做两件事：剔除本机（按虚拟地址比对），并按虚拟地址归并同一节点的多条路径，
- * 优先保留 P2P、其次延迟更低的。信息量不减：真正需要看的「谁和我是直连」还在。
+ * 清洗分三步：
+ *   1. 剔除本机（注意本机 virtualIp 带 /24 掩码，peer list 里是裸地址，不剥掩码比不中）；
+ *   2. 按虚拟地址归并同一节点的多条路径，优先保留 P2P、其次延迟更低的；
+ *   3. **按「房间成员 / 中继节点」分组** —— 这是玩家最容易误解的地方：平台会下发多个中继
+ *      （主控 + 各区域子节点），它们各占一行，看起来像"我同时连了两台服务器"。
+ *      实际只有一个承载业务流量，其余是冗余与打洞协助。分组 + 「备用」标注把这个事实
+ *      直接讲清楚，而不是让玩家自己猜。
  */
 const visiblePeers = computed<PeerView[]>(() => {
-  // 注意：本机的 virtualIp 带掩码（10.200.14.1/24），而 peer list 里是裸地址。
-  // 不剥掉掩码就比不中，实测本机会以「经中继 1000.0 ms」的样子留在列表里。
   const selfIp = (session.value?.virtualIp ?? '').split('/')[0];
   const routeScore = (p: PeerView): number => (p.cost.startsWith('p2p') ? 0 : 10_000) + (p.latencyMs ?? 5_000);
   const best = new Map<string, PeerView>();
@@ -81,6 +84,16 @@ const visiblePeers = computed<PeerView[]>(() => {
   }
   return [...best.values()].sort((a, b) => routeScore(a) - routeScore(b));
 });
+
+/** 成员虚拟地址集合（裸地址）：用来把 peer 分成「成员」与「中继」两组 */
+const memberIps = computed(
+  () => new Set(members.value.map((m) => (m.virtualIp ?? '').split('/')[0]).filter(Boolean)),
+);
+const isMemberPeer = (p: PeerView): boolean => memberIps.value.has((p.ipv4 ?? '').split('/')[0]);
+const memberPeers = computed(() => visiblePeers.value.filter(isMemberPeer));
+const relayPeers = computed(() => visiblePeers.value.filter((p) => !isMemberPeer(p)));
+/** 走过流量的路径才算"在用"：只有字节数能说明哪条真的承载了业务流量 */
+const carriesTraffic = (p: PeerView): boolean => p.rxBytes + p.txBytes > 0;
 
 const favorite = computed(() => {
   void shortcutsRevision.value;
@@ -338,7 +351,7 @@ async function doClose(): Promise<void> {
       </div>
     </section>
 
-    <!-- 连接路径：easytier-cli 的输出是按路径列的，必须清洗后再铺（见 visiblePeers） -->
+    <!-- 连接路径：easytier-cli 的输出是按路径列的，必须清洗 + 分组后再铺（见 visiblePeers） -->
     <section class="panel">
       <div class="section-head">
         <span class="title">连接路径</span>
@@ -348,21 +361,70 @@ async function doClose(): Promise<void> {
         </span>
       </div>
 
-      <div v-if="visiblePeers.length > 0" class="roster">
-        <div v-for="p in visiblePeers" :key="p.ipv4 + p.hostname" class="roster-row">
-          <span class="grow roster-main">
-            <span class="roster-name">{{ p.hostname || '未命名节点' }}</span>
-            <span class="roster-sub">{{ p.ipv4 || '—' }}</span>
-          </span>
-          <span class="badge" :class="p.cost.startsWith('p2p') ? 'badge-ok' : 'badge-neutral'">
-            {{ p.cost.startsWith('p2p') ? 'P2P 直连' : '经中继' }}
-          </span>
-          <span class="mono faint roster-sub nowrap">
-            {{ p.latencyMs === null ? '—' : `${p.latencyMs.toFixed(1)} ms` }}
-          </span>
-          <span class="mono faint roster-sub nowrap">{{ formatBytes(p.rxBytes + p.txBytes) }}</span>
+      <template v-if="visiblePeers.length > 0">
+        <!-- 房间成员：这里才是"我和谁连上了、是直连还是绕路" -->
+        <div v-if="memberPeers.length > 0" class="path-group">
+          <div class="path-group-head">
+            <span class="path-group-title">房间成员</span>
+            <span class="faint">{{ memberPeers.length }}</span>
+          </div>
+          <div class="roster">
+            <div v-for="p in memberPeers" :key="`m-${p.ipv4}${p.hostname}`" class="roster-row">
+              <span class="grow roster-main">
+                <span class="roster-name">{{ p.hostname || '未命名节点' }}</span>
+                <span class="roster-sub">{{ p.ipv4 || '—' }}</span>
+              </span>
+              <span class="badge" :class="p.cost.startsWith('p2p') ? 'badge-ok' : 'badge-neutral'">
+                {{ p.cost.startsWith('p2p') ? 'P2P 直连' : '经中继' }}
+              </span>
+              <span class="mono faint roster-sub nowrap">
+                {{ p.latencyMs === null ? '—' : `${p.latencyMs.toFixed(1)} ms` }}
+              </span>
+              <span class="mono faint roster-sub nowrap">{{ formatBytes(p.rxBytes + p.txBytes) }}</span>
+            </div>
+          </div>
         </div>
-      </div>
+
+        <!-- 中继节点：平台下发的兜底入口。多个是刻意的冗余，不是"你连了两台服务器" -->
+        <div v-if="relayPeers.length > 0" class="path-group">
+          <div class="path-group-head">
+            <span class="path-group-title">中继节点</span>
+            <span class="faint">{{ relayPeers.length }}</span>
+          </div>
+          <div class="roster">
+            <div v-for="p in relayPeers" :key="`r-${p.ipv4}${p.hostname}`" class="roster-row">
+              <span class="grow roster-main">
+                <span class="roster-name">{{ p.hostname || '未命名中继' }}</span>
+                <span class="roster-sub">{{ p.ipv4 || '平台下发的中继入口' }}</span>
+              </span>
+              <!-- 只有走过字节数的那条才是在用的；其余显示"备用"，省得玩家以为流量走了两条 -->
+              <span
+                v-if="carriesTraffic(p)"
+                class="badge badge-ok"
+                title="这条路径承载了业务流量"
+              >
+                承载流量
+              </span>
+              <span v-else class="badge badge-neutral" title="冗余入口：只在主路径不可用时才转发">备用</span>
+              <span class="mono faint roster-sub nowrap">
+                {{ p.latencyMs === null ? '—' : `${p.latencyMs.toFixed(1)} ms` }}
+              </span>
+              <span class="mono faint roster-sub nowrap">{{ formatBytes(p.rxBytes + p.txBytes) }}</span>
+            </div>
+          </div>
+          <p class="hint" style="margin-top: var(--s-2)">
+            <template v-if="relayPeers.length > 1">
+              这里有 {{ relayPeers.length }} 个中继，是刻意留的<strong>冗余</strong>：它们同时连着，用于协助打洞、
+              以及某个中继不可用时顶上，但同一时刻只有一个在转发你的流量，所以不会叠加延迟 ——
+              其余几条只有心跳流量（行尾的字节数就是证据）。
+            </template>
+            <template v-else>
+              这是平台下发的中继入口：负责协助打洞，并在直连失败时转发你的流量。
+              等两个玩家之间打通直连，数据会改走直连，它退成兜底。
+            </template>
+          </p>
+        </div>
+      </template>
       <p v-else class="hint">还没有发现其它节点。等成员进来后这里会显示他们。</p>
     </section>
 
