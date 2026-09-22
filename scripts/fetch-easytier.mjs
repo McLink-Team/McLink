@@ -25,26 +25,38 @@ const versionArg = args.find((a) => a.startsWith('--version=')) ?? args[args.ind
 const VERSION = versionArg && /^v?\d/.test(versionArg) ? versionArg.replace(/^v?/, 'v') : 'v2.6.4';
 
 /**
- * 要下载哪些平台的包。
+ * EasyTier 官方资产的**真实命名**（对齐 v2.6.4 的 release 资产列表）。
  *
- * macOS 的命名规则与其它平台**不同**：官方是 `easytier-macos-aarch64-…` /
- * `easytier-macos-x86_64-…`（用 aarch64 而不是 arm64），而且它的二进制**不能**铺平
- * 到 vendor/easytier/ 根目录 —— 那里放的是 Windows(.exe) 与 Linux(无扩展名) 版，
- * mac 版必须落在 `macos-arm64/` 与 `macos-x64/` 子目录里，
- * 运行时由 main.cjs 的 platformVendorSubdir() 按 process.arch 选。
+ * 这里必须逐个写死，不能按"平台 + 宿主架构"拼字符串 —— 官方命名并不统一：
+ *   Windows arm64 → `easytier-windows-arm64-…`      （说 arm64）
+ *   Linux   arm64 → `easytier-linux-aarch64-…`      （说 aarch64）
+ *   macOS   arm64 → `easytier-macos-aarch64-…`      （说 aarch64）
+ * 曾经就是按宿主架构统一拼的：在 arm64 的 macOS runner 上跑 --all，
+ * 会去要 `easytier-linux-arm64-…zip` → 404 → 整个 CI job 失败。
  */
+const ASSETS = {
+  'windows-x64': { asset: (v) => `easytier-windows-x86_64-${v}.zip`, subdir: null },
+  'windows-arm64': { asset: (v) => `easytier-windows-arm64-${v}.zip`, subdir: null },
+  'linux-x64': { asset: (v) => `easytier-linux-x86_64-${v}.zip`, subdir: null },
+  'linux-arm64': { asset: (v) => `easytier-linux-aarch64-${v}.zip`, subdir: null },
+  'macos-arm64': { asset: (v) => `easytier-macos-aarch64-${v}.zip`, subdir: 'macos-arm64' },
+  'macos-x64': { asset: (v) => `easytier-macos-x86_64-${v}.zip`, subdir: 'macos-x64' },
+};
+
+/** 根据命令行参数或宿主平台决定要取哪些目标 */
 function targets() {
-  const wanted = all
-    ? ['windows', 'linux', 'macos-arm64', 'macos-x64']
-    : process.platform === 'darwin'
-      ? [process.arch === 'arm64' ? 'macos-arm64' : 'macos-x64']
-      : [process.platform === 'win32' ? 'windows' : 'linux'];
-  return wanted.map((p) => {
-    if (p === 'macos-arm64') return { target: p, asset: `easytier-macos-aarch64-${VERSION}.zip`, subdir: 'macos-arm64' };
-    if (p === 'macos-x64') return { target: p, asset: `easytier-macos-x86_64-${VERSION}.zip`, subdir: 'macos-x64' };
-    const arch = process.arch === 'arm64' ? 'arm64' : 'x86_64';
-    return { target: p, asset: `easytier-${p}-${arch}-${VERSION}.zip`, subdir: null };
-  });
+  const args = process.argv.slice(2);
+  const pick = (...keys) => keys.map((k) => ({ key: k, ...ASSETS[k], name: ASSETS[k].asset(VERSION) }));
+
+  if (all) return pick('windows-x64', 'linux-x64', 'macos-arm64', 'macos-x64');
+  if (args.includes('--macos')) return pick('macos-arm64', 'macos-x64');
+  if (args.includes('--windows')) return pick(process.arch === 'arm64' ? 'windows-arm64' : 'windows-x64');
+  if (args.includes('--linux')) return pick(process.arch === 'arm64' ? 'linux-arm64' : 'linux-x64');
+
+  // 不给参数：按宿主平台取"这台机器上真正要用的那一份"
+  if (process.platform === 'darwin') return pick(process.arch === 'arm64' ? 'macos-arm64' : 'macos-x64');
+  if (process.platform === 'win32') return pick(process.arch === 'arm64' ? 'windows-arm64' : 'windows-x64');
+  return pick(process.arch === 'arm64' ? 'linux-arm64' : 'linux-x64');
 }
 
 async function download(url, out) {
@@ -117,17 +129,17 @@ function flatten(dir, subdir = null) {
 
 async function main() {
   fs.mkdirSync(VENDOR, { recursive: true });
-  for (const { asset, subdir } of targets()) {
-    const url = `https://github.com/EasyTier/EasyTier/releases/download/${VERSION}/${asset}`;
-    const zip = path.join(CACHE, asset);
+  for (const { key, name, subdir } of targets()) {
+    const url = `https://github.com/EasyTier/EasyTier/releases/download/${VERSION}/${name}`;
+    const zip = path.join(CACHE, name);
     try {
       await download(url, zip);
       // macOS 解到临时目录再筛，避免把 web 版塞进子目录
       extract(zip, subdir ? path.join(CACHE, 'extract-mac') : VENDOR);
       flatten(subdir ? path.join(CACHE, 'extract-mac') : VENDOR, subdir);
-      console.log(`已安装 ${asset} -> ${subdir ? path.join(VENDOR, subdir) : VENDOR}`);
+      console.log(`已安装 ${name}（${key}）-> ${subdir ? path.join(VENDOR, subdir) : VENDOR}`);
     } catch (err) {
-      console.error(`处理 ${asset} 失败: ${err.message}`);
+      console.error(`处理 ${name} 失败: ${err.message}`);
       if (/fetch failed|ENOTFOUND|timeout/i.test(err.message)) {
         console.error('提示：若处于受限网络，请设置 HTTPS_PROXY 与 NODE_USE_ENV_PROXY=1 后重试。');
       }

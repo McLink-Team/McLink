@@ -69,6 +69,12 @@ win:
 mac:
   category: public.app-category.games
   icon: build/icon-1024.png
+  #
+  # **产物名必须带 macos**：官网/下载页是按文件名判断平台与架构的
+  # （server/src/api/public.ts 的 platformOf / archOf），沿用全局的
+  # `McLink-Setup-${version}-${arch}.${ext}` 会让 mac 包被当成 Windows 产物、
+  # 挂到 Windows 按钮上。所以 mac 侧单独覆盖成带 macos 的名字。
+  artifactName: McLink-${version}-macos-${arch}.${ext}
   target:
     - target: dmg
       arch:

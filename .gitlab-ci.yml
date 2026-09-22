@@ -1,40 +1,41 @@
 # GitLab CI：出 Windows 与 macOS 客户端安装包
 #
-# ⚠️ 能不能跑，取决于你的 GitLab 档位（这一点必须先确认，别白等）：
+# 前提（已确认可用）：本项目在 example/legacy-backup 上有 **macOS runner**
+# （构建日志路径 /Users/gitlab/builds/... 就是它），所以 macOS job 直接自动跑。
+# 如果哪天 runner 不可用，把 build:macos 的 `when` 改回 manual 即可。
 #
-#   · GitLab.com **免费档不含 macOS runner**。macOS 属于托管 runner 里的付费能力，
-#     需要 Premium/Ultimate 档位，且 macOS 任务消耗的 compute minutes 有**倍数**
-#     （比 Linux 贵好几倍），额度要留够。
-#   · 自建 GitLab（自托管）就更没有托管 macOS runner 了 —— 只能自己注册一台 Mac
-#     上的 runner（executor 用 shell），把标签写成 macos，下面的 job 就能跑。
-#   · 所以本文件里 macOS 的 job 是 `when: manual`：**不会**因为推代码就自动失败，
-#     你有对应 runner 时手动点一下即可。
-#
-# 如果档位不够又不想花钱：把仓库镜像到 GitHub，用 .github/workflows/build-clients.yml
-# （公开仓库的 macOS runner 免费）。见 docs/build-clients.md。
-#
-# 为什么必须 macOS：electron-builder 明确拒绝跨平台构建 macOS 包 ——
+# 为什么必须 macOS：electron-builder 明确拒绝在 Windows 上构建 macOS 包 ——
 #   ⨯ Build for macOS is supported only on macOS
+# （源码里只拦 Windows：packager.js 的 `platform === MAC && process.platform === 'win32'`）
 
 stages:
   - build
+
+variables:
+  VITE_MCLINK_MASTER: 'https://cnnic.link'
+  # 没有 Apple 证书：不做真实签名（ad-hoc 签名由 deploy/sign-macos-app.sh 补）
+  CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
 # ---------------------------------------------------------------- Windows
 build:windows:
   stage: build
   tags:
-    - saas-windows-medium-amd64    # GitLab.com 托管 Windows runner（免费档也有）
+    - saas-windows-medium-amd64
   rules:
     - if: $CI_COMMIT_TAG
     - if: $CI_PIPELINE_SOURCE == 'web'
-  variables:
-    VITE_MCLINK_MASTER: 'https://cnnic.link'
-    CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    - if: $CI_PIPELINE_SOURCE == 'push'
+      changes:
+        - client/**/*
+        - scripts/**/*
+        - packages/**/*
+        - .gitlab-ci.yml
   script:
     - node --version
     - corepack enable
     - pnpm install --frozen-lockfile
-    - node scripts/fetch-easytier.mjs
+    # 显式指定平台，不再依赖宿主架构推断（上一版就是在这里取错资产名导致 404）
+    - node scripts/fetch-easytier.mjs --windows
     - pnpm icons
     - cd client && node scripts/dist.mjs --win nsis
   artifacts:
@@ -44,32 +45,39 @@ build:windows:
     expire_in: 30 days
 
 # ---------------------------------------------------------------- macOS
-# 需要付费档位的 macOS runner（或你自己注册的 Mac runner，标签改成 macos）
 build:macos:
   stage: build
-  when: manual
-  allow_failure: true
   tags:
-    - saas-macos-medium-m1         # Apple 芯片 runner；Intel 用 saas-macos-large-m2pro 之类按档位选
+    - saas-macos-medium-m1
   rules:
     - if: $CI_COMMIT_TAG
-      when: manual
     - if: $CI_PIPELINE_SOURCE == 'web'
-      when: manual
-  variables:
-    VITE_MCLINK_MASTER: 'https://cnnic.link'
-    # 没有 Apple 证书时关闭签名发现；**不要**因此跳过 ad-hoc 签名 ——
-    # Apple 芯片要求二进制至少有 ad-hoc 签名，否则内核直接拒绝执行。
-    CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    - if: $CI_PIPELINE_SOURCE == 'push'
+      changes:
+        - client/**/*
+        - scripts/**/*
+        - packages/**/*
+        - deploy/sign-macos-app.sh
+        - .gitlab-ci.yml
   script:
     - node --version
     - corepack enable
     - pnpm install --frozen-lockfile
-    # --all 会额外把两个架构的 macOS 核心下到 vendor/easytier/macos-{arm64,x64}/
-    - node scripts/fetch-easytier.mjs --all
+    # --macos = 两个架构的 mac 核心（arm64 用 aarch64 命名，别再按宿主架构拼）
+    - node scripts/fetch-easytier.mjs --macos
     - pnpm icons
-    - cd client && node scripts/dist.mjs --mac dmg zip --arm64 --x64
-    - ls -lh release/ | grep -Ei '\.(dmg|zip)$' || true
+    - cd client && node scripts/dist.mjs --mac dmg zip --arm64 --x64 && cd ..
+    # 未签名包在 Apple 芯片上会被内核拒绝执行 —— 这里补 ad-hoc 签名并用 zip -y 重打包
+    - bash deploy/sign-macos-app.sh
+    # 证据：核心架构、asar 是否在、签名结果
+    - |
+      for A in client/release/mac-*/McLink.app; do
+        echo "== $A"
+        file "$A/Contents/Resources/vendor/easytier/"*/easytier-core || true
+        ls -l "$A/Contents/Resources/app.asar" || true
+        codesign -dv --verbose=2 "$A" 2>&1 | head -5 || true
+      done
+    - ls -lh client/release/*.dmg client/release/*.zip || true
   artifacts:
     name: 'mclink-macos-$CI_COMMIT_SHORT_SHA'
     paths:
