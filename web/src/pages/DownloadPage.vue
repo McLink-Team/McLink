@@ -66,8 +66,32 @@ const otherArtifacts = computed(() => artifacts.value.filter((a) => a.platform !
  * 而不是留一个点了 404 的按钮 —— 产物一进下载目录，这里会自动出现。
  */
 const detectedPlatform = computed<'windows' | 'macos' | 'other'>(() => {
-  const ua = typeof navigator === 'undefined' ? '' : navigator.userAgent;
-  if (/Mac OS X|Macintosh|iPhone|iPad/i.test(ua)) return 'macos';
+  if (typeof navigator === 'undefined') return 'other';
+
+  /**
+   * 优先用 UA-CH 的 platform（Chromium 系）：它是结构化字段，
+   * 不受 UA 字符串精简的影响，也不会被"UA 里塞一堆浏览器名"搞混。
+   */
+  const uaChPlatform = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform;
+  if (uaChPlatform) {
+    if (/windows/i.test(uaChPlatform)) return 'windows';
+    if (/macos|mac os/i.test(uaChPlatform)) return 'macos';
+    if (/ios|android|linux|chrome os/i.test(uaChPlatform)) return 'other';
+  }
+
+  const ua = navigator.userAgent;
+
+  /**
+   * iPhone / iPad 要判成 other，**不能算 macOS**。
+   * 这里有两个坑：
+   *   1. 旧写法把 `iPhone|iPad` 直接归到 macos —— iOS 用户会看到"macOS"徽标；
+   *   2. iPadOS 的"请求桌面网站"会让 Safari 报出和 Mac 一模一样的 UA，
+   *      唯一可靠的区别是**触摸点数**（Mac 上 maxTouchPoints 为 0，iPad ≥ 1）。
+   */
+  const looksLikeMac = /Mac OS X|Macintosh/i.test(ua);
+  const isIPadInDesktopMode = looksLikeMac && (navigator.maxTouchPoints ?? 0) > 1;
+  if (looksLikeMac && !isIPadInDesktopMode) return 'macos';
+  if (/iPhone|iPad|iPod|Android/i.test(ua)) return 'other';
   if (/Windows/i.test(ua)) return 'windows';
   return 'other';
 });
