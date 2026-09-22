@@ -52,6 +52,21 @@ interface RelayResponse {
     relayPort: number;
     warnings: string[];
   };
+  /**
+   * 中继流量。total 里**包含替房间转发的那部分**；own 是它自身网络的流量，
+   * forwarded 才是它作为公共中继干的活（旧版主控没有这个字段）。
+   */
+  traffic?: {
+    rxBps: number;
+    txBps: number;
+    totalRxBytes: number;
+    totalTxBytes: number;
+    ownRxBytes: number;
+    ownTxBytes: number;
+    forwardedRxBytes: number;
+    forwardedTxBytes: number;
+    sampledAt: string | null;
+  };
   peers: RelayPeer[];
   logs: string[];
   /** 旧版主控给空格分隔字符串，新版可能额外给 whitelistPatterns */
@@ -262,9 +277,21 @@ async function applyAcl(): Promise<void> {
           <span class="kv-k">网络名</span><span class="kv-v mono">{{ runtime.networkName }}</span>
           <span class="kv-k">peer 数</span><span class="kv-v mono">{{ runtime.peerCount }}</span>
           <span class="kv-k">累计流量</span>
-          <span class="kv-v">收 {{ formatBytes(runtime.rxBytes) }} / 发 {{ formatBytes(runtime.txBytes) }}</span>
+          <span class="kv-v">
+            收 {{ formatBytes(runtime.rxBytes) }} / 发 {{ formatBytes(runtime.txBytes) }}
+            <!-- 主控中继的大头是"替房间转发"，拆出来说清楚，否则这个数字看不出含义 -->
+            <template v-if="data.traffic">
+              <span class="faint">
+                （其中转发房间 收 {{ formatBytes(data.traffic.forwardedRxBytes) }} / 发
+                {{ formatBytes(data.traffic.forwardedTxBytes) }}）
+              </span>
+            </template>
+          </span>
           <span class="kv-k">实时速率</span>
-          <span class="kv-v mono">{{ formatBitrate(foreignRxBps) }} / {{ formatBitrate(foreignTxBps) }}</span>
+          <span class="kv-v mono">
+            {{ formatBitrate(data.traffic?.rxBps ?? foreignRxBps) }} /
+            {{ formatBitrate(data.traffic?.txBps ?? foreignTxBps) }}
+          </span>
           <span class="kv-k">启动时间</span>
           <span class="kv-v">{{ runtime.startedAt ? formatDateTime(runtime.startedAt) : '未记录' }}</span>
           <span class="kv-k">白名单</span>
