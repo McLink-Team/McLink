@@ -340,6 +340,8 @@ export function registerAdminRoutes(router: Router, app: App): void {
 
     const platformPoints = app.traffic.platformSeries(since, 480);
     const sample = app.relay.latest();
+    /** 全网聚合要用：所有在线子节点的速率之和（离线节点表里还留着最后上报的数，不算） */
+    const nodeBps = app.nodes.totalBps();
 
     const rooms = scope === 'room' && scopeId
       ? [{ id: scopeId, label: scopeId, points: app.traffic.series('room', scopeId, since, 480) }]
@@ -383,10 +385,16 @@ export function registerAdminRoutes(router: Router, app: App): void {
       since,
       platform: {
         points: platformPoints,
-        rxBps: sample?.rxBps ?? 0,
-        txBps: sample?.txBps ?? 0,
+        /** 全网聚合：主控中继 + 所有在线子节点 */
+        rxBps: (sample?.rxBps ?? 0) + nodeBps.rxBps,
+        txBps: (sample?.txBps ?? 0) + nodeBps.txBps,
         rxBytes: sample?.totalRxBytes ?? 0,
         txBytes: sample?.totalTxBytes ?? 0,
+        masterRxBps: sample?.rxBps ?? 0,
+        masterTxBps: sample?.txBps ?? 0,
+        nodesRxBps: nodeBps.rxBps,
+        nodesTxBps: nodeBps.txBps,
+        onlineRelayNodes: nodeBps.nodes,
       },
       foreignNetworks,
       rooms,

@@ -26,6 +26,7 @@ export function registerPublicRoutes(router: Router, app: App): void {
     const nodeCounts = app.nodes.countByStatus();
     const online = (nodeCounts.online ?? 0) + (nodeCounts.degraded ?? 0);
     const relaySample = app.relay.latest();
+    const nodeBps = app.nodes.totalBps();
     return {
       siteName: s.siteName,
       siteTagline: s.siteTagline,
@@ -51,9 +52,19 @@ export function registerPublicRoutes(router: Router, app: App): void {
         openRooms: app.rooms.countOpen(),
         onlinePlayers: app.rooms.onlinePlayers(),
         users: app.users.count(),
-        relayPeers: relaySample?.peerCount ?? 0,
-        relayRxBps: relaySample?.rxBps ?? 0,
-        relayTxBps: relaySample?.txBps ?? 0,
+        /**
+         * 中继收发 = **主控中继 + 所有在线子节点**（全网聚合）。
+         * 只报主控那一台的话，玩家按区域接入时这个数字会长期是 0（线上实测）。
+         * master* 单独留着，方便前端在悬浮说明里拆开讲。
+         */
+        relayPeers: (relaySample?.peerCount ?? 0) + nodeBps.peers,
+        relayRxBps: (relaySample?.rxBps ?? 0) + nodeBps.rxBps,
+        relayTxBps: (relaySample?.txBps ?? 0) + nodeBps.txBps,
+        masterRxBps: relaySample?.rxBps ?? 0,
+        masterTxBps: relaySample?.txBps ?? 0,
+        nodesRxBps: nodeBps.rxBps,
+        nodesTxBps: nodeBps.txBps,
+        onlineRelayNodes: nodeBps.nodes,
         foreignNetworks: relaySample?.foreignNetworks.length ?? 0,
       },
     };
@@ -125,6 +136,7 @@ export function buildOverview(app: App): PlatformOverview {
   const s = app.settings.current;
   const nodeCounts = app.nodes.countByStatus();
   const sample = app.relay.latest();
+  const nodeBps = app.nodes.totalBps();
   const today = app.traffic.todayTotals();
   const relay = app.relay.status();
   return {
@@ -149,10 +161,17 @@ export function buildOverview(app: App): PlatformOverview {
       online: 0,
     },
     traffic: {
-      rxBps: sample?.rxBps ?? 0,
-      txBps: sample?.txBps ?? 0,
+      /** 全网聚合：主控中继 + 所有在线子节点 */
+      rxBps: (sample?.rxBps ?? 0) + nodeBps.rxBps,
+      txBps: (sample?.txBps ?? 0) + nodeBps.txBps,
       rxBytesToday: today.rxBytes,
       txBytesToday: today.txBytes,
+      /** 拆开，界面上要能说清"这些量里主控多少、子节点多少" */
+      masterRxBps: sample?.rxBps ?? 0,
+      masterTxBps: sample?.txBps ?? 0,
+      nodesRxBps: nodeBps.rxBps,
+      nodesTxBps: nodeBps.txBps,
+      onlineRelayNodes: nodeBps.nodes,
     },
     relay: {
       ...relay,

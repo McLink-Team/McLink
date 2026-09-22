@@ -49,7 +49,19 @@ interface NodeSeries {
 
 interface TrafficResponse {
   since: string;
-  platform: { points: TrafficPoint[]; rxBps: number; txBps: number; rxBytes: number; txBytes: number };
+  /** rxBps/txBps 为全网聚合；masterRxBps 是主控那一台，nodesRxBps 是子节点之和 */
+  platform: {
+    points: TrafficPoint[];
+    rxBps: number;
+    txBps: number;
+    rxBytes: number;
+    txBytes: number;
+    masterRxBps: number;
+    masterTxBps: number;
+    nodesRxBps: number;
+    nodesTxBps: number;
+    onlineRelayNodes: number;
+  };
   foreignNetworks: ForeignNetworkMapped[];
   rooms: RoomSeries[];
   nodes: NodeSeries[];
@@ -123,8 +135,19 @@ const cards = computed(() => {
   const p = data.value?.platform;
   // 读数用纸白（数据本身不是状态）；只有"外来网络"是值得被注意的信号，用告警色。
   return [
-    { label: '实时接收', value: p ? formatBitrate(p.rxBps) : '未采样', hint: `区间累计 ${formatBytes(p?.rxBytes ?? 0)}`, accent: 'accent' as const },
-    { label: '实时发送', value: p ? formatBitrate(p.txBps) : '未采样', hint: `区间累计 ${formatBytes(p?.txBytes ?? 0)}`, accent: 'accent' as const },
+    {
+      // 全网口径：主控中继 + 所有在线子节点（只算主控会长期是 0）
+      label: '全网实时接收',
+      value: p ? formatBitrate(p.rxBps) : '未采样',
+      hint: p ? `主控 ${formatBitrate(p.masterRxBps)} + ${p.onlineRelayNodes} 节点 ${formatBitrate(p.nodesRxBps)}` : '未采样',
+      accent: 'accent' as const,
+    },
+    {
+      label: '全网实时发送',
+      value: p ? formatBitrate(p.txBps) : '未采样',
+      hint: p ? `主控 ${formatBitrate(p.masterTxBps)} + ${p.onlineRelayNodes} 节点 ${formatBitrate(p.nodesTxBps)}` : '未采样',
+      accent: 'accent' as const,
+    },
     { label: '今日累计接收', value: formatBytes(totals.value.rxBytes), hint: '自然日 00:00 起', accent: 'accent' as const },
     { label: '今日累计发送', value: formatBytes(totals.value.txBytes), hint: '自然日 00:00 起', accent: 'accent' as const },
     { label: '外来网络', value: foreignNetworks.value.length, hint: '正在经由主控中继的房间网络', accent: 'warn' as const },

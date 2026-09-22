@@ -69,17 +69,28 @@ export class TrafficRepo {
       .map((r) => ({ ts: r.ts, rxBps: r.rx_bps, txBps: r.tx_bps }));
   }
 
-  /** 全平台时间序列：把同一时刻各 scope 的速率相加 */
+  /**
+   * 平台总收发曲线。
+   *
+   * 优先取 scope='platform'（**全网聚合**：主控中继 + 所有在线子节点）——
+   * 玩家按区域就近接入，流量大头在子节点上，只画主控那条线会长期是 0（线上实测）。
+   * 升级前的库里只有 scope='relay'，此时退回它，免得曲线突然空掉（代价是那一段只有主控的数）。
+   */
   platformSeries(sinceIso: string, limit = 240): TrafficPoint[] {
-    const rows = this.db.all<{ ts: string; rx: number; tx: number }>(
-      `select ts, sum(rx_bps) as rx, sum(tx_bps) as tx
-       from traffic_samples
-       where scope = 'relay' and ts >= ?
-       group by ts order by ts desc limit ?`,
-      sinceIso,
-      limit,
-    );
-    return rows.reverse().map((r) => ({ ts: r.ts, rxBps: Number(r.rx), txBps: Number(r.tx) }));
+    const query = (scope: string): Array<{ ts: string; rx: number; tx: number }> =>
+      this.db.all<{ ts: string; rx: number; tx: number }>(
+        `select ts, sum(rx_bps) as rx, sum(tx_bps) as tx
+         from traffic_samples
+         where scope = ? and ts >= ?
+         group by ts order by ts desc limit ?`,
+        scope,
+        sinceIso,
+        limit,
+      );
+
+    const rows = query('platform');
+    const effective = rows.length > 0 ? rows : query('relay');
+    return effective.reverse().map((r) => ({ ts: r.ts, rxBps: Number(r.rx), txBps: Number(r.tx) }));
   }
 
   /** 区间累加字节数（按 scope） */

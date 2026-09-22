@@ -32,9 +32,16 @@ interface MetaInfo {
     openRooms: number;
     onlinePlayers: number;
     users: number;
+    /** 全网中继（主控 + 在线子节点）聚合值 */
     relayPeers: number;
     relayRxBps: number;
     relayTxBps: number;
+    /** 拆分明细：主控那一台 vs 所有在线子节点之和 */
+    masterRxBps?: number;
+    masterTxBps?: number;
+    nodesRxBps?: number;
+    nodesTxBps?: number;
+    onlineRelayNodes?: number;
     foreignNetworks: number;
   };
 }
@@ -266,7 +273,22 @@ const steps = [
               <span class="readout-u">人</span>
             </div>
             <div class="readout-row">
-              <span class="readout-k">中继收发</span>
+              <!--
+                「中继收发」= 全网聚合（主控 + 在线子节点）。玩家按区域就近接入，
+                流量大头在子节点上，只显示主控那一台会长期是 0（线上实测）。
+                悬浮说明里拆开，方便一眼看出量落在哪。
+              -->
+              <span
+                class="readout-k"
+                :title="
+                  stats
+                    ? `主控 ${formatBitrate(stats.masterRxBps ?? 0)} / ${formatBitrate(stats.masterTxBps ?? 0)}，` +
+                      `${stats.onlineRelayNodes ?? 0} 个在线子节点 ${formatBitrate(stats.nodesRxBps ?? 0)} / ${formatBitrate(stats.nodesTxBps ?? 0)}`
+                    : ''
+                "
+              >
+                中继收发
+              </span>
               <span class="readout-v small">
                 {{ stats ? formatBitrate(stats.relayRxBps) : '—' }}
                 <span class="faint">/</span>
