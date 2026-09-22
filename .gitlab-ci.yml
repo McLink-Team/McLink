@@ -78,7 +78,11 @@ build:macos:
         ls -l "$A/Contents/Resources/app.asar" || true
         codesign -dv --verbose=2 "$A" 2>&1 | head -5 || true
       done
-    - ls -lh client/release/*.dmg client/release/*.zip || true
+    # 逐项列出产物体积与总计：artifact 里是所有产物之和（两个架构 × zip+dmg），
+    # 单个包 ~130MB 是 Electron 的正常体量，总计 ~500MB 也正常 —— 但要把账算给看日志的人
+    - ls -lh client/release/*.dmg client/release/*.zip 2>/dev/null || true
+    - du -ch client/release/*.dmg client/release/*.zip 2>/dev/null | tail -1 || true
+    - du -sh client/release/*.app 2>/dev/null || true
   artifacts:
     name: 'mclink-macos-$CI_COMMIT_SHORT_SHA'
     paths:

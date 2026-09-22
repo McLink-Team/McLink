@@ -70,6 +70,13 @@ mac:
   category: public.app-category.games
   icon: build/icon-1024.png
   #
+  # 只保留中文与英文界面资源。
+  # Electron 默认带 50 多种 locale 的 .pak（每种 ~200KB，加起来 20-30MB），
+  # 我们的界面只有中文和英文，其余全是白送给玩家的下载量。
+  electronLanguages:
+    - zh-CN
+    - en-US
+  #
   # **产物名必须带 macos**：官网/下载页是按文件名判断平台与架构的
   # （server/src/api/public.ts 的 platformOf / archOf），沿用全局的
   # `McLink-Setup-${version}-${arch}.${ext}` 会让 mac 包被当成 Windows 产物、
