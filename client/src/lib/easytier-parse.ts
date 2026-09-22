@@ -115,6 +115,25 @@ export function linkKind(cost: string): 'p2p' | 'relay' | 'local' | 'other' {
   return 'other';
 }
 
+/**
+ * 链路类型的展示文案。
+ *
+ * 原来这段逻辑写在模板里（三层嵌套三元），既难读，`other` 分支还会把 EasyTier 的
+ * 原始 cost 字符串直接丢给玩家。抽成函数后每种类型都有一句人话，未知类型也有兜底。
+ */
+export function linkLabel(cost: string): string {
+  switch (linkKind(cost)) {
+    case 'p2p':
+      return 'P2P 直连';
+    case 'relay':
+      return '经中继';
+    case 'local':
+      return '本机';
+    default:
+      return cost ? `其它（${cost}）` : '未知';
+  }
+}
+
 /* --------------------------------------------------- node info 提取 */
 
 export interface NodeFacts {

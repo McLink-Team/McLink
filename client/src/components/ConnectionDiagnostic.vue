@@ -20,6 +20,7 @@ import {
   linkKind,
   listenPortsOf,
   parseLocalNatType,
+  linkLabel,
   parsePeers,
   type NodeFacts,
   type PeerView,
@@ -231,34 +232,32 @@ onMounted(async () => {
       <div v-if="peers.length === 0" class="empty">
         还没发现任何节点。等房间里的其它成员连上后，这里会显示他们的链路类型与延迟。
       </div>
-      <table v-else class="table">
-        <thead>
-          <tr>
-            <th>节点</th>
-            <th>虚拟地址</th>
-            <th>链路</th>
-            <th>隧道协议</th>
-            <th>NAT 类型</th>
-            <th class="table-num">延迟</th>
-            <th class="table-num">流量</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="p in peers" :key="`${p.ipv4}-${p.hostname}-${p.cost}`">
-            <td class="truncate" style="max-width: 150px">{{ p.hostname || '-' }}</td>
-            <td class="mono">{{ p.ipv4 || '-' }}</td>
-            <td>
-              <span class="badge" :class="linkKind(p.cost) === 'p2p' ? 'badge-ok' : 'badge-neutral'">
-                {{ linkKind(p.cost) === 'p2p' ? 'P2P 直连' : linkKind(p.cost) === 'local' ? '本机' : linkKind(p.cost) === 'relay' ? '经中继' : p.cost || '未知' }}
-              </span>
-            </td>
-            <td class="mono truncate" style="max-width: 120px">{{ p.tunnelProto || '-' }}</td>
-            <td class="mono truncate" style="max-width: 130px">{{ p.natType || '-' }}</td>
-            <td class="table-num">{{ p.latencyMs === null ? '-' : `${p.latencyMs.toFixed(1)} ms` }}</td>
-            <td class="table-num">{{ formatBytes(p.rxBytes + p.txBytes) }}</td>
-          </tr>
-        </tbody>
-      </table>
+      <!--
+        这里原来是一张 7 列宽表（节点/虚拟地址/链路/隧道协议/NAT/延迟/流量）。
+        客户端窗口最窄 400px（Windows 缩放到 125% 时相当于 320 CSS px），
+        7 列的固有宽度约 700px —— 表格既没有滚动容器、又不会自己换行，
+        于是**溢出到卡片外，压住旁边的文字**（实测截图：右侧文字重叠），
+        而且最右边的几列在窄窗里根本看不到。
+        改成"两行一条"的分层列表：第一行节点名 + 链路徽标，第二行指标用间距分隔。
+        这个结构任何宽度都读得全，也不需要玩家去横向滚一张表。
+      -->
+      <div v-else class="peer-list">
+        <div v-for="p in peers" :key="`${p.ipv4}-${p.hostname}-${p.cost}`" class="peer-row">
+          <div class="peer-row-head">
+            <span class="peer-name">{{ p.hostname || '未命名节点' }}</span>
+            <span class="badge" :class="linkKind(p.cost) === 'p2p' ? 'badge-ok' : 'badge-neutral'">
+              {{ linkLabel(p.cost) }}
+            </span>
+          </div>
+          <div class="peer-row-meta">
+            <span class="mono">{{ p.ipv4 || '无虚拟地址' }}</span>
+            <span v-if="p.tunnelProto">{{ p.tunnelProto }}</span>
+            <span v-if="p.natType">NAT {{ p.natType }}</span>
+            <span class="mono">{{ p.latencyMs === null ? '延迟未知' : `${p.latencyMs.toFixed(1)} ms` }}</span>
+            <span class="mono">{{ formatBytes(p.rxBytes + p.txBytes) }}</span>
+          </div>
+        </div>
+      </div>
 
       <div class="stack" style="margin-top: 12px; gap: 6px">
         <div
