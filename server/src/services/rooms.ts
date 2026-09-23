@@ -105,6 +105,16 @@ export interface JoinResult {
   member: RoomMember;
   ticket: RoomTicket | null;
   pending: boolean;
+  /**
+   * 仅建房时有：手选节点的落地结果（accepted / rejected+原因 / fallback）。
+   * 客户端据此提示"你选的节点被拒了，已降级为自动"，而不是静默换掉用户的选择。
+   */
+  nodeSelection?: {
+    requested: string[];
+    accepted: string[];
+    rejected: Array<{ id: string; reason: string }>;
+    fallback: string | null;
+  };
 }
 
 export class RoomService {
@@ -313,6 +323,13 @@ export class RoomService {
         input.rpcPort,
       ),
       pending: false,
+      /**
+       * 节点选择的实际结果（客户端建房页用）：
+       * accepted = 真的用上的手选节点，rejected = 被拒的 + 原因，
+       * fallback = 平台补的兜底节点。让界面能说清"你选的没用上、现在走哪台"，
+       * 而不是静默降级。
+       */
+      nodeSelection,
     };
   }
 

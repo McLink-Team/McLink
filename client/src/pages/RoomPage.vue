@@ -288,6 +288,21 @@ async function doClose(): Promise<void> {
   <div v-if="session && room" class="view room-view">
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
 
+    <!--
+      手选节点的落地结果：被拒的节点要说清原因，并说明当前走的是兜底 ——
+      不静默换掉用户的选择，也不让他以为"我选的生效了"。
+    -->
+    <div v-if="clientState.nodeNotice" class="alert">
+      <span>
+        你选择的中继节点未全部启用：
+        <template v-for="(r, i) in clientState.nodeNotice.rejected" :key="r.id">
+          <span class="mono">{{ r.id }}</span>（{{ r.reason }}）<template v-if="i < clientState.nodeNotice.rejected.length - 1">、</template>
+        </template>
+        <template v-if="clientState.nodeNotice.fallback">，当前改走平台兜底节点。</template>
+        <template v-else>，当前由平台自动调度。</template>
+      </span>
+    </div>
+
     <!-- 房间头：名字 + 一行关键信息 + 一排方形动作按钮 -->
     <header class="room-head">
       <div class="room-title-row">
