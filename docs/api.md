@@ -160,15 +160,15 @@
   "data": {
     "siteName": "mclink 联机",
     "siteTagline": "基于 EasyTier 的《我的世界》联机平台 —— 单端口、低延迟、开箱即用",
-    "version": "0.1.0",
+    "version": "1.0.0",
     "serverTime": "2026-01-01T08:00:00.000Z",
     "uptimeSeconds": 3600,
     "registrationOpen": true,
     "announcement": null,
     "relayPort": 11010,
     "easytierVersion": "easytier-cli 2.6.4-8428a89d",
-    "clientVersion": "0.1.0",
-    "clientDownloadUrl": "/downloads/McLink-Setup-0.1.0-x64.exe",
+    "clientVersion": "1.0.0",
+    "clientDownloadUrl": "/downloads/McLink-Setup-1.0.0-x64.exe",
     "stats": {
       "onlineNodes": 2,
       "totalNodes": 3,
@@ -595,7 +595,7 @@
   "region": "cn-east",
   "endpoint": "relay-sh.cnnic.link:11010",
   "capacityPeers": 500,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "tags": ["bgp", "cn2"]
 }
 ```
@@ -631,7 +631,7 @@
 
 ```json
 {
-  "version": "0.1.0",
+  "version": "1.0.0",
   "publicIp": "203.0.113.10",
   "peers": 37,
   "rooms": 4,
@@ -722,10 +722,10 @@ ws(s)://<host>/ws?token=<登录令牌>
 服务端 → 客户端：
 
 ```json
-{ "type": "hello", "serverTime": "2026-01-01T08:00:00.000Z", "version": "0.1.0", "topics": ["user:u_ab12cd", "platform"] }
+{ "type": "hello", "serverTime": "2026-01-01T08:00:00.000Z", "version": "1.0.0", "topics": ["user:u_ab12cd", "platform"] }
 ```
 
-说明：`hello` 里的 `version` 目前是硬编码的 `"0.1.0"`（与 `APP_VERSION` 一致）。
+说明：`hello` 里的 `version` 目前是硬编码的 `"1.0.0"`（与 `APP_VERSION` 一致）。
 
 客户端 → 服务端：
 

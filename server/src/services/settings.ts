@@ -21,8 +21,8 @@ export const DEFAULT_SETTINGS: PlatformSettings = {
   siteName: 'McLink 联机',
   siteTagline: '基于 EasyTier 的《我的世界》联机平台 —— 单端口、低延迟、开箱即用',
   // 版本号要与下一行的 clientVersion 一致，改版本时两个一起改
-  clientDownloadUrl: `/downloads/${clientArtifactName('0.1.0')}`,
-  clientVersion: '0.1.0',
+  clientDownloadUrl: `/downloads/${clientArtifactName('1.0.0')}`,
+  clientVersion: '1.0.0',
   clientSha256: null,
   defaultQuotaBytes: null,
   defaultMaxRooms: 3,

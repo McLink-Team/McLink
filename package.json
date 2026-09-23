@@ -1,6 +1,6 @@
 {
   "name": "mclink",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "基于 EasyTier 的《我的世界》联机平台：主控 + 子节点 + Windows 客户端 + 管理控制台",
   "license": "AGPL-3.0-or-later",
