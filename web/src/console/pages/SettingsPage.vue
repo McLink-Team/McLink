@@ -9,7 +9,7 @@ import { computed, onMounted, reactive, ref } from 'vue';
 import { Routes, emailProblem, formatBytes, type PublicPlatformSettings } from '@mclink/shared';
 import { api, friendlyError } from '../../lib/api.ts';
 import { asPatternList, reportError, toFloat, toInt } from '../../lib/ui.ts';
-import { notifyOk } from '../../lib/toast.ts';
+import { notifyOk, notifyWarn } from '../../lib/toast.ts';
 import Badge from '../../components/Badge.vue';
 
 interface EnvSettings {
@@ -74,6 +74,90 @@ const testTo = ref('');
 const testing = ref(false);
 const testResult = ref<MailAttempt | null>(null);
 const showTranscript = ref(false);
+
+/* ------------------------------------------------------------ 邮件公告（群发） */
+
+/**
+ * 群发公告的状态。
+ *
+ * 为什么界面要自己轮询：POST 只负责"登记任务"就返回（主控有 110 秒请求看门狗，
+ * 同步发几百封信必然超时），真正的进度只能查出来。只在运行中轮询，跑完自动停。
+ */
+const broadcast = ref<{
+  deliverable: number;
+  unverified: number;
+  banned: number;
+  withoutEmail: number;
+  running: boolean;
+  lastRun: {
+    id: string;
+    subject: string;
+    startedAt: string;
+    finishedAt: string | null;
+    total: number;
+    sent: number;
+    failed: number;
+    errors: Array<{ to: string; error: string }>;
+    aborted: boolean;
+  } | null;
+} | null>(null);
+const bcSubject = ref('');
+const bcBody = ref('');
+const bcBusy = ref(false);
+const bcError = ref<string | null>(null);
+let bcTimer: number | null = null;
+
+async function loadBroadcast(): Promise<void> {
+  try {
+    broadcast.value = await api.get(Routes.adminBroadcast);
+  } catch {
+    /* 拿不到就不显示这块，别挡住其它设置 */
+  }
+}
+
+function stopBroadcastPolling(): void {
+  if (bcTimer !== null) {
+    window.clearInterval(bcTimer);
+    bcTimer = null;
+  }
+}
+
+/** 运行中每 2 秒查一次；跑完自动停（省控制台的请求） */
+function startBroadcastPolling(): void {
+  stopBroadcastPolling();
+  bcTimer = window.setInterval(() => {
+    void loadBroadcast().then(() => {
+      if (!broadcast.value?.running) stopBroadcastPolling();
+    });
+  }, 2000);
+}
+
+async function startBroadcast(): Promise<void> {
+  if (bcBusy.value) return;
+  bcBusy.value = true;
+  bcError.value = null;
+  try {
+    await api.post(Routes.adminBroadcast, { subject: bcSubject.value, body: bcBody.value });
+    bcSubject.value = '';
+    bcBody.value = '';
+    await loadBroadcast();
+    startBroadcastPolling();
+    notifyOk('已开始群发，进度会在这里更新');
+  } catch (err) {
+    bcError.value = friendlyError(err);
+  } finally {
+    bcBusy.value = false;
+  }
+}
+
+async function stopBroadcast(): Promise<void> {
+  try {
+    await api.del(Routes.adminBroadcast);
+    notifyWarn('已请求中止 —— 已经发出去的收不回，只能停下剩下的');
+  } finally {
+    await loadBroadcast();
+  }
+}
 
 async function sendTestMail(): Promise<void> {
   const to = testTo.value.trim();
@@ -178,6 +262,8 @@ async function load(): Promise<void> {
 }
 
 onMounted(() => {
+  // 群发预览（可发送人数 / 上次结果）——与其它设置并行加载，失败不影响页面
+  void loadBroadcast();
   void load();
 });
 
@@ -523,6 +609,86 @@ const envWhitelist = computed(() => asPatternList(env.value?.relayNetworkWhiteli
       </section>
 
       <!-- 默认配额与房间 -->
+      <!-- 邮件公告：后台分批发送，这里只登记与看进度 -->
+      <section class="console-section">
+        <div class="console-section-head">
+          <div class="console-section-text">
+            <h2 class="console-section-title">邮件公告（群发）</h2>
+            <p class="console-section-note">
+              发给所有<b>已验证邮箱且未封禁</b>的用户。发送在后台分批进行（每批 5 封、批间 1.2 秒，
+              这是为了不被 SMTP 服务商限流），这里只负责登记与查看进度。
+              群发不可撤回。建议先用上面的「SMTP 测试」给自己发一封，确认能收到再群发。
+            </p>
+          </div>
+          <div class="console-toolbar">
+            <Badge :tone="broadcast?.running ? 'warn' : 'neutral'" dot :pulse="Boolean(broadcast?.running)">
+              {{ broadcast?.running ? '发送中' : '空闲' }}
+            </Badge>
+          </div>
+        </div>
+
+        <div v-if="broadcast" class="stack">
+          <div class="row-between">
+            <span class="faint">可发送</span>
+            <span class="mono">{{ broadcast.deliverable }} 人</span>
+          </div>
+          <p
+            v-if="broadcast.unverified + broadcast.withoutEmail + broadcast.banned > 0"
+            class="console-section-note"
+          >
+            不会收到：未验证邮箱 {{ broadcast.unverified }} · 没填邮箱 {{ broadcast.withoutEmail }} ·
+            已封禁 {{ broadcast.banned }}
+            （给未验证地址发信会拉高退信率，退信率一高服务商就会限制整个域名发信，所以默认跳过）
+          </p>
+
+          <div class="field">
+            <label class="label" for="bc-subject">主题</label>
+            <input
+              id="bc-subject"
+              v-model="bcSubject"
+              class="input"
+              maxlength="80"
+              placeholder="例如：McLink 1.0.1 已发布"
+            />
+          </div>
+          <div class="field">
+            <label class="label" for="bc-body">正文</label>
+            <textarea
+              id="bc-body"
+              v-model="bcBody"
+              class="input"
+              rows="6"
+              maxlength="4000"
+              placeholder="正文……（邮件末尾会自动附上站点名与站点地址）"
+            />
+          </div>
+
+          <p v-if="bcError" class="notice-body">{{ bcError }}</p>
+
+          <div class="console-toolbar">
+            <button
+              class="btn"
+              type="button"
+              :disabled="bcBusy || broadcast.running || broadcast.deliverable === 0"
+              @click="startBroadcast"
+            >
+              发送给 {{ broadcast.deliverable }} 人
+            </button>
+            <button v-if="broadcast.running" class="btn btn-ghost" type="button" @click="stopBroadcast">
+              中止
+            </button>
+          </div>
+
+          <div v-if="broadcast.lastRun" class="console-section-note">
+            上次：{{ broadcast.lastRun.subject }} · 收件 {{ broadcast.lastRun.total }} ·
+            成功 {{ broadcast.lastRun.sent }} · 失败 {{ broadcast.lastRun.failed }}
+            <template v-if="broadcast.lastRun.aborted">（已中止）</template>
+            <div v-for="e in broadcast.lastRun.errors.slice(0, 3)" :key="e.to" class="mono small">
+              {{ e.to }}：{{ e.error }}
+            </div>
+          </div>
+        </div>
+      </section>
       <section class="console-section">
         <div class="console-section-head">
           <div class="console-section-text">
