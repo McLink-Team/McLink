@@ -86,6 +86,8 @@ export const Routes = {
   adminTraffic: '/admin/traffic',
   adminAudit: '/admin/audit',
   adminSettings: '/admin/settings',
+  /** 群发邮件公告：GET 取预览/进度，POST 启动一次群发，DELETE 中止 */
+  adminBroadcast: '/admin/broadcast',
   /** 发一封测试邮件，失败时回显 SMTP 会话，便于运维定位 */
   adminMailTest: '/admin/mail/test',
   /** 查询邮件服务状态（配置是否齐全、最近一次发信结果） */

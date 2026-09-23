@@ -14,7 +14,7 @@ const log = logger('mailer');
 export interface MailAttempt {
   at: string;
   to: string;
-  kind: 'verify' | 'test';
+  kind: 'verify' | 'test' | 'announce';
   ok: boolean;
   error: string | null;
   /** 失败时才有：完整 SMTP 会话（已脱敏） */
@@ -101,7 +101,14 @@ export class MailerService {
     return this.#send('test', to, `${s.siteName} SMTP 测试邮件`, text);
   }
 
-  async #send(kind: 'verify' | 'test', to: string, subject: string, text: string): Promise<MailAttempt> {
+  /**
+   * 群发公告用：与验证码/测试邮件共用同一套投递与错误处理（含 SMTP transcript），
+   * 只是 kind 不同 —— 邮件历史里能一眼分清哪些是群发。
+   */
+  async sendAnnouncement(to: string, subject: string, text: string): Promise<MailAttempt> {
+    return this.#send('announce', to, subject, text);
+  }
+  async #send(kind: 'verify' | 'test' | 'announce', to: string, subject: string, text: string): Promise<MailAttempt> {
     const s = this.settings.current;
     const from = resolveFrom(s.smtpFrom, s.smtpUser);
     const attempt: MailAttempt = {

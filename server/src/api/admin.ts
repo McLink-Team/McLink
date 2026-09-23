@@ -403,6 +403,40 @@ export function registerAdminRoutes(router: Router, app: App): void {
     };
   }, { auth: true, admin: true });
 
+  /* ---------------------------------------------------------- 群发公告 */
+
+  /**
+   * 群发邮件公告。
+   *
+   * 三个动作分开：GET 取预览（能发给多少人、为什么有人收不到）+ 进度，
+   * POST 登记并启动（**立刻返回**，发送在后台分批跑），DELETE 中止。
+   * 之所以启动与查询分开：主控有 110 秒请求看门狗，同步发几百封信必然被掐。
+   */
+  router.get(Routes.adminBroadcast, (ctx) => {
+    requireAdmin(ctx);
+    return app.broadcast.preview();
+  }, { auth: true, admin: true });
+
+  router.post(Routes.adminBroadcast, async (ctx) => {
+    const auth = requireAdmin(ctx);
+    const body = await ctx.body();
+    try {
+      const report = app.broadcast.start({ subject: body.subject, body: body.body, actor: auth.userId });
+      if (!report) {
+        // 不排队：误点两次不该把同一封信发两遍
+        throw HttpError.conflict('已有群发任务在运行，请等它结束后再发');
+      }
+      return report;
+    } catch (err) {
+      if (err instanceof HttpError) throw err;
+      throw HttpError.badRequest(err instanceof Error ? err.message : String(err));
+    }
+  }, { auth: true, admin: true });
+
+  router.delete(Routes.adminBroadcast, (ctx) => {
+    requireAdmin(ctx);
+    return { stopped: app.broadcast.stop() };
+  }, { auth: true, admin: true });
   /* ---------------------------------------------------------- 审计 */
 
   router.get(Routes.adminAudit, (ctx) => {

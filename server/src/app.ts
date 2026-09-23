@@ -20,6 +20,7 @@ import { NodeService } from './services/nodes.ts';
 import { RoomService } from './services/rooms.ts';
 import { SettingsService } from './services/settings.ts';
 import { MailerService } from './services/mailer.ts';
+import { BroadcastService } from './services/broadcast.ts';
 import { RelayManager } from './easytier/manager.ts';
 import { hashPassword } from './util/id.ts';
 
@@ -89,6 +90,8 @@ export interface App {
   enrollKeys: EnrollKeyRepo;
   settings: SettingsService;
   mailer: MailerService;
+  /** 群发邮件公告（后台分批发送 + 进度查询） */
+  broadcast: BroadcastService;
   emailCodes: EmailCodeRepo;
   meta: MetaStore;
   auth: AuthService;
@@ -132,6 +135,17 @@ export function createApp(options: CreateAppOptions = {}): App {
   const meta = new MetaStore(db);
   const settings = new SettingsService(settingsRepo, config);
   const mailer = new MailerService(settings);
+  /**
+   * 群发公告：依赖显式传入（mailer / users / audit / settings / 公开地址）。
+   * 不传整个 App —— 它此刻还在组装中，会形成循环。
+   */
+  const broadcast = new BroadcastService({
+    mailer,
+    users,
+    audit,
+    settings,
+    publicBaseUrl: config.publicBaseUrl,
+  });
 
   const auth = new AuthService(config, users, audit, settings, emailCodes, mailer);
   const roomService = new RoomService(config, rooms, nodes, users, audit, settings, events, messages);
@@ -156,6 +170,7 @@ export function createApp(options: CreateAppOptions = {}): App {
     enrollKeys,
     settings,
     mailer,
+    broadcast,
     emailCodes,
     meta,
     auth,
