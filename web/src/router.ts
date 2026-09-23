@@ -75,6 +75,11 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '主控中继' },
       },
       {
+        path: 'broadcast',
+        name: 'console-broadcast',
+        component: () => import('./console/pages/BroadcastPage.vue'),
+        meta: { title: '邮件公告' },
+      },      {
         path: 'audit',
         name: 'console-audit',
         component: () => import('./console/pages/AuditPage.vue'),
