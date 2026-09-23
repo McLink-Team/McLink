@@ -17,7 +17,14 @@
 #
 set -euo pipefail
 
-SCRIPT_VERSION="0.1.0"          # 与根目录 package.json 的 version 保持一致
+# 版本号**从 package.json 读**，不再在脚本里写死 ——
+# 写死的那份会随发布漂移（1.0.0 发布时横幅还印着 0.1.0，被用户抓到了）。
+SCRIPT_VERSION="0.0.0"
+_PKG_JSON="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/package.json"
+if [[ -f "$_PKG_JSON" ]]; then
+  _v="$(sed -n 's/.*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$_PKG_JSON" | head -n1)"
+  [[ -n "$_v" ]] && SCRIPT_VERSION="$_v"
+fi
 DEFAULT_PNPM_VERSION="10.33.2"  # 与 package.json 的 packageManager 字段保持一致
 
 # ---------------------------------------------------------------- 默认参数
@@ -362,6 +369,30 @@ EOF
 }
 
 sync_source() {
+  # 源与目标必须是两个目录。
+  # 在安装目录里运行安装脚本时，SOURCE_DIR 会被推断成 APP_DIR 本身，
+  # 于是 tar 把目录拷到自己身上：满屏 "file changed as we read it"，
+  # tar 以退出码 1 结束、set -e 让整个安装在"同步源码"这一步静默中止
+  # （用户实测：输出停在 tar 警告就没了）。
+  local src_real dest_real
+  src_real="$(realpath "$SOURCE_DIR" 2>/dev/null || printf '%s' "$SOURCE_DIR")"
+  dest_real="$(realpath "$APP_DIR" 2>/dev/null || printf '%s' "$APP_DIR")"
+  if [[ "$src_real" == "$dest_real" ]]; then
+    cat >&2 <<EOF
+
+[错误] 源码目录和安装目录是同一个：${APP_DIR}
+       这个目录是安装脚本同步出来的**产物**（不含 .git），不能当作源码用；
+       在这里运行安装脚本会让 tar 把目录拷到自己身上并中止安装。
+
+正确做法：在**源码目录**里运行安装脚本（用 git 更新源码，而不是更新 /opt/mclink/app）
+  cd /root && git clone <仓库地址> mc       # 第一次
+  cd mc && git pull                        # 以后每次更新
+  sudo bash deploy/install-server.sh --public-url https://cnnic.link
+
+（安装目录里的代码会被这次同步覆盖，所以不需要、也没法在那边 git pull。）
+EOF
+    exit 1
+  fi
   log "同步源码到 ${APP_DIR}（排除 node_modules / .cache / 运行时数据）…"
   # 用 tar 而不是 rsync，避免额外依赖；保留权限与符号链接
   tar -C "$SOURCE_DIR" \
