@@ -1145,3 +1145,16 @@ textarea {
     gap: var(--s-3);
   }
 }
+
+/* 建房页的节点勾选行：整行可点（含文字），勾选框与名字基线对齐 */
+.app-shell .node-pick {
+  cursor: pointer;
+  gap: var(--s-2);
+}
+.app-shell .node-pick input[type='checkbox'] {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--signal);
+}

@@ -11,7 +11,8 @@
  * 和填加入码是同一件事的两种做法。
  */
 import { computed, onMounted, ref } from 'vue';
-import { REGIONS, regionLabel, type Room } from '@mclink/shared';
+import { REGIONS, Routes, regionLabel, type Room } from '@mclink/shared';
+import { api } from '../lib/api.ts';
 import { clientState, createRoom, joinRoom, loadRooms, openUpdatePage, reenterRoom } from '../lib/store.ts';
 import { friendlyError } from '../lib/api.ts';
 import BrandLockup from './BrandLockup.vue';
@@ -40,6 +41,61 @@ const form = ref({
 });
 
 const regions = computed(() => clientState.regions);
+
+/* ------------------------------------------------------------ 中继节点选择 */
+
+/**
+ * 区域与节点是**两层**：区域是默认/筛选，节点才是真正的选择对象。
+ * 「自动」= 平台按区域挑（现状不变）；「手动」= 玩家自己挑，最多 3 个，
+ * 并且平台**始终再补一个兜底** —— 玩家选的节点掉线时房间不会断。
+ */
+const nodeMode = ref<'auto' | 'manual'>('auto');
+const manualNodes = ref<string[]>([]);
+interface NodeOption { id: string; name: string; region: string; host: string; peers: number; capacity: number }
+const nodeList = ref<NodeOption[]>([]);
+/** host → 最小时延（ms）；null 表示 ping 不通（不代表节点不可用） */
+const latency = ref<Record<string, number | null>>({});
+const probing = ref(false);
+
+const latencyOf = (n: NodeOption): number | null => latency.value[n.host] ?? null;
+/** 按延迟排序；ping 不通的排在最后（但**仍然可选**） */
+const sortedNodes = computed(() =>
+  [...nodeList.value].sort((a, b) => {
+    const la = latencyOf(a);
+    const lb = latencyOf(b);
+    if (la === null && lb === null) return a.name.localeCompare(b.name);
+    if (la === null) return 1;
+    if (lb === null) return -1;
+    return la - lb;
+  }),
+);
+
+async function probeNodes(): Promise<void> {
+  if (nodeList.value.length === 0) return;
+  probing.value = true;
+  try {
+    latency.value = await window.mclink.ping(nodeList.value.map((n) => n.host));
+  } catch {
+    /* 探测失败就整体留空，界面显示 — */
+  } finally {
+    probing.value = false;
+  }
+}
+
+async function loadNodes(): Promise<void> {
+  try {
+    const res = await api.get<{ nodes: NodeOption[] }>(Routes.clientNodes);
+    nodeList.value = Array.isArray(res.nodes) ? res.nodes : [];
+    await probeNodes();
+  } catch {
+    // 取不到节点列表时静默退化为自动选择 —— 不该因为列不出节点就挡住建房
+    nodeList.value = [];
+  }
+}
+
+onMounted(() => {
+  void loadNodes();
+});
 const allRooms = computed<Room[]>(() => [...clientState.hosted, ...clientState.joined]);
 
 const PANE_TITLE: Record<Exclude<Pane, 'menu'>, string> = {
@@ -98,6 +154,8 @@ async function doCreate(): Promise<void> {
     await createRoom({
       name: form.value.name.trim(),
       zone: form.value.zone,
+      // 手动模式下把手选节点带上；自动模式传空数组，由平台按区域调度
+      nodeIds: nodeMode.value === 'manual' ? manualNodes.value : [],
       access: form.value.access,
       password: form.value.access === 'password' ? form.value.password : undefined,
       visibility: form.value.visibility,
@@ -182,6 +240,65 @@ async function resume(room: Room): Promise<void> {
                 </option>
               </select>
               <div class="hint">不确定就留「自动选择」，会挑一个延迟低的中继。</div>
+            </div>
+
+            <!-- 中继节点：区域只是筛选，这里才是真正选谁的问题 -->
+            <div class="field">
+              <label class="label">中继节点</label>
+              <div class="row" style="gap: var(--s-2)">
+                <button
+                  class="btn btn-sm"
+                  :class="nodeMode === 'auto' ? 'btn-primary' : 'btn-ghost'"
+                  type="button"
+                  @click="nodeMode = 'auto'"
+                >
+                  自动选择
+                </button>
+                <button
+                  class="btn btn-sm"
+                  :class="nodeMode === 'manual' ? 'btn-primary' : 'btn-ghost'"
+                  type="button"
+                  :disabled="nodeList.length === 0"
+                  @click="nodeMode = 'manual'"
+                >
+                  手动选择
+                </button>
+                <button
+                  v-if="nodeMode === 'manual'"
+                  class="btn btn-sm btn-ghost"
+                  type="button"
+                  :disabled="probing"
+                  @click="probeNodes()"
+                >
+                  {{ probing ? '测速中…' : '重新测速' }}
+                </button>
+              </div>
+
+              <template v-if="nodeMode === 'manual'">
+                <div v-if="nodeList.length === 0" class="hint">当前没有可用节点，只能用自动选择。</div>
+                <div v-else class="roster">
+                  <label v-for="n in sortedNodes" :key="n.id" class="roster-row node-pick">
+                    <input
+                      v-model="manualNodes"
+                      type="checkbox"
+                      :value="n.id"
+                      :disabled="manualNodes.length >= 3 && !manualNodes.includes(n.id)"
+                    />
+                    <span class="grow roster-main">
+                      <span class="roster-name">{{ n.name }}</span>
+                      <span class="roster-sub">{{ regionLabel(n.region) }} · 承载 {{ n.peers }}/{{ n.capacity }}</span>
+                    </span>
+                    <!-- ping 只用来展示与排序：超时显示 —，但仍然可选（有些节点丢 ICMP 但中继正常） -->
+                    <span class="badge" :class="latencyOf(n) === null ? 'badge-neutral' : 'badge-ok'">
+                      {{ latencyOf(n) === null ? '—' : `${latencyOf(n)} ms` }}
+                    </span>
+                  </label>
+                </div>
+                <div class="hint">
+                  最多选 3 个；平台**始终再补一个兜底节点**，所以你选的节点掉线房间也不会断。
+                </div>
+              </template>
+              <div v-else class="hint">平台按区域挑延迟低、负载轻的节点，并自动留冗余。</div>
             </div>
             <div class="pair">
               <div class="field">

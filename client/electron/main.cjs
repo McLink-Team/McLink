@@ -938,8 +938,14 @@ function registerIpc() {
             : ['-c', '2', '-W', '1', host];
         try {
           const res = await execFileAsync('ping', args, { timeout: 5000, windowsHide: true });
-          // Windows 中文系统的输出是「时间=1ms」，英文与 macOS/Linux 是「time=1.2 ms」
-          const matches = [...String(res.stdout ?? '').matchAll(/(?:time|时间)[=<]([\d.]+)\s*ms/gi)];
+          /**
+           * **不要匹配 "time"/"时间" 这类词**：Windows 的 ping 按系统代码页输出，
+           * 中文系统下 Node 按 UTF-8 解码会得到乱码（`时间` → `ʱ��`），
+           * 词匹配就全废了 —— 实测踩过：PowerShell 里看是好的，Node 里一个也匹配不上。
+           * 只认 `<数字>ms` / `=<数字>ms`：`ms` 在任何语言里都是 ASCII，
+           * 而 ping 输出里带 ms 的只有延迟（字节数后面跟的是「字节」/「bytes」）。
+           */
+          const matches = [...String(res.stdout ?? '').matchAll(/[=<]\s*([\d.]+)\s*ms/gi)];
           out[host] = matches.length > 0 ? Math.min(...matches.map((m) => Number(m[1]))) : null;
         } catch {
           out[host] = null;

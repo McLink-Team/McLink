@@ -86,6 +86,15 @@ const state = reactive({
    * 数据全部来自主控的公开接口：`/meta` 给版本号与下载地址，`/downloads` 给体积与 sha256。
    * 客户端**不自己访问 GitHub**：玩家机器未必连得上，而主控是它本来就要连的那台。
    */
+  /**
+   * 建房时手选节点的落地结果（被拒的节点 + 原因 + 兜底）。
+   * 只在"用户选了节点但没用上"时非空，房间页据此提示一次。
+   */
+  nodeNotice: null as null | {
+    rejected: Array<{ id: string; reason: string }>;
+    accepted: string[];
+    fallback: string | null;
+  },
   update: null as null | {
     latest: string;
     url: string;
@@ -409,13 +418,26 @@ export async function createRoom(input: {
   password?: string;
   visibility?: 'public' | 'hidden';
   maxPlayers?: number;
+  /** 用户手选的中继节点（空 = 自动调度）；区域 zone 只是默认/筛选 */
+  nodeIds?: string[];
 }): Promise<Room> {
   state.busy = true;
   state.lastError = null;
   try {
-    const result = await api.post<{ room: Room; ticket: RoomTicket; member: RoomMember }>(Routes.rooms, {
+    const result = await api.post<{
+      room: Room;
+      ticket: RoomTicket;
+      member: RoomMember;
+      nodeSelection?: {
+        requested: string[];
+        accepted: string[];
+        rejected: Array<{ id: string; reason: string }>;
+        fallback: string | null;
+      };
+    }>(Routes.rooms, {
       name: input.name,
       zone: input.zone,
+      nodeIds: input.nodeIds ?? [],
       access: input.access,
       password: input.password,
       visibility: input.visibility ?? 'public',
