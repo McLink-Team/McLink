@@ -12,6 +12,8 @@ export interface UserRow {
   banned: number;
   email: string | null;
   email_verified: number;
+  /** V10 加的列；旧库/测试夹具可能没有，读的时候按 undefined 处理 */
+  email_opt_out?: number;
   quota_bytes: number | null;
   used_bytes: number;
   max_rooms: number | null;
@@ -46,6 +48,7 @@ function toUserSelf(row: UserRow): UserSelf {
     ...toUser(row),
     email: row.email,
     emailVerified: toBool(row.email_verified),
+    emailOptOut: toBool(row.email_opt_out),
     quotaBytes: row.quota_bytes,
     usedBytes: row.used_bytes,
     maxRooms: row.max_rooms,
@@ -181,23 +184,30 @@ export class UserRepo {
    * **刻意不复用 list()**：那个方法有 50 条默认上限（最大 200），
    * 拿来群发会静默地只发给前 50 个人 —— 这种"看起来成功、实际漏发"最坑。
    */
-  listBroadcastRecipients(): Array<{ email: string; displayName: string }> {
-    const rows = this.db.all<{ email: string; display_name: string }>(
-      `select email, display_name from users
-        where email is not null and trim(email) <> '' and email_verified = 1 and banned = 0
+  listBroadcastRecipients(): Array<{ id: string; email: string; displayName: string }> {
+    const rows = this.db.all<{ id: string; email: string; display_name: string }>(
+      `select id, email, display_name from users
+        where email is not null and trim(email) <> ''
+          and email_verified = 1 and banned = 0 and email_opt_out = 0
         order by created_at asc`,
     );
-    return rows.map((r) => ({ email: r.email, displayName: r.display_name }));
+    return rows.map((r) => ({ id: r.id, email: r.email, displayName: r.display_name }));
   }
 
   /** 群发预览用的分组计数：让管理员明白"为什么人数对不上" */
-  broadcastCounts(): { deliverable: number; unverified: number; banned: number; withoutEmail: number } {
-    const row = this.db.get<{ deliverable: number; unverified: number; banned: number; without_email: number }>(
+  /** 邮件退订开关（0/1）。退订链接被点开时调用它。 */
+  setEmailOptOut(userId: string, value: boolean): boolean {
+    const res = this.db.run('update users set email_opt_out = ? where id = ?', value ? 1 : 0, userId);
+    return Number(res.changes ?? 0) > 0;
+  }
+  broadcastCounts(): { deliverable: number; unverified: number; banned: number; withoutEmail: number; optedOut: number } {
+    const row = this.db.get<{ deliverable: number; unverified: number; banned: number; without_email: number; opted_out: number }>(
       `select
-         sum(case when email is not null and trim(email) <> '' and email_verified = 1 and banned = 0 then 1 else 0 end) as deliverable,
+         sum(case when email is not null and trim(email) <> '' and email_verified = 1 and banned = 0 and email_opt_out = 0 then 1 else 0 end) as deliverable,
          sum(case when email is not null and trim(email) <> '' and banned = 0 and email_verified = 0 then 1 else 0 end) as unverified,
          sum(case when banned = 1 then 1 else 0 end) as banned,
-         sum(case when email is null or trim(email) = '' then 1 else 0 end) as without_email
+         sum(case when email is null or trim(email) = '' then 1 else 0 end) as without_email,
+         sum(case when email_opt_out = 1 then 1 else 0 end) as opted_out
        from users`,
     );
     return {
@@ -205,6 +215,7 @@ export class UserRepo {
       unverified: Number(row?.unverified ?? 0),
       banned: Number(row?.banned ?? 0),
       withoutEmail: Number(row?.without_email ?? 0),
+      optedOut: Number(row?.opted_out ?? 0),
     };
   }
   list(options: { search?: string; limit?: number; offset?: number } = {}): { rows: UserRow[]; total: number } {
