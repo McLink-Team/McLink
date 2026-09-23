@@ -2,6 +2,7 @@
  * 公开接口：落地页所需的元信息、区域列表、公共统计、客户端下载信息。
  * 这些接口不需要登录，落地页首屏直接调用。
  */
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { REGIONS, Routes, type PlatformOverview } from '@mclink/shared';
@@ -248,6 +249,41 @@ function archOf(name: string): DownloadArtifact['arch'] {
   return 'x64';
 }
 
+/**
+ * 安装包 sha256 的**懒计算缓存**。
+ *
+ * 为什么需要：控制台的「安装包 SHA-256」只有一个字段，只对应 Windows 主产物；
+ * 下载目录里其它产物（macOS 的 dmg/zip）永远是「未登记」，玩家想校验也没有值。
+ * 与其让管理员手贴 4 个哈希（贴错了更糟），不如主控自己算。
+ *
+ * 为什么不在请求里同步算：单个包 120–145MB，同步哈希会把请求拖住一两秒，
+ * 而 /downloads 是下载页每次打开都会调的。所以第一次请求只**登记任务**并返回 null
+ * （界面显示「未登记」），算完后缓存，页面刷新一次就有值。
+ * 缓存键包含 size + mtime：产物被替换（同名不同内容）时会自动重算。
+ */
+const shaCache = new Map<string, { size: number; mtimeMs: number; sha256: string }>();
+const shaPending = new Set<string>();
+
+export function artifactSha256(app: App, filename: string, size: number, mtimeMs: number): string | null {
+  const cached = shaCache.get(filename);
+  if (cached && cached.size === size && cached.mtimeMs === mtimeMs) return cached.sha256;
+  if (shaPending.has(filename)) return null;
+  const abs = path.join(app.downloads.root, filename);
+  shaPending.add(filename);
+  try {
+    const hash = createHash('sha256');
+    const stream = fs.createReadStream(abs);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('error', () => shaPending.delete(filename));
+    stream.on('end', () => {
+      shaCache.set(filename, { size, mtimeMs, sha256: hash.digest('hex') });
+      shaPending.delete(filename);
+    });
+  } catch {
+    shaPending.delete(filename);
+  }
+  return null;
+}
 /** 扫描下载目录，列出可下载的客户端产物 */
 export function listDownloads(app: App): DownloadArtifact[] {
   const root = app.downloads.root;
@@ -269,7 +305,14 @@ export function listDownloads(app: App): DownloadArtifact[] {
       label: labelFor(entry.name),
       filename: entry.name,
       size: stat.size,
-      sha256: entry.name === primaryFile ? (s.clientSha256 ?? null) : null,
+      /**
+       * 主产物优先用管理员登记的 clientSha256（自建下载源的场景，值可能是站外人工核对过的）；
+       * 没有登记的（以及所有其它产物）由主控自己算，算完缓存。
+       */
+      sha256:
+        entry.name === primaryFile && s.clientSha256
+          ? s.clientSha256
+          : artifactSha256(app, entry.name, stat.size, stat.mtimeMs),
       url: `/downloads/${encodeURIComponent(entry.name)}`,
     });
   }
