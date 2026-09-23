@@ -80,7 +80,7 @@ for job in "${jobs[@]}"; do
   url="$API/jobs/$job_id/artifacts"
   if ! curl -fsSL "${auth_header[@]}" "$url" -o "$TMP/$job.zip"; then
     code=$?
-    echo "  ✗ 下载失败（curl 退出码 $code）"
+    echo "  ✗ 下载失败（curl 退出码 ${code}）"
     case "$code" in
       22) echo "     HTTP 4xx：401/403 多半是令牌无效、被 revoke 或缺少 read_api 权限" ;;
       28) echo "     超时：产物较大（macOS 包 ~400MB），换网络或稍后重试" ;;
