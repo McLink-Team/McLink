@@ -37,7 +37,12 @@ build:windows:
     # 显式指定平台，不再依赖宿主架构推断（上一版就是在这里取错资产名导致 404）
     - node scripts/fetch-easytier.mjs --windows
     - pnpm icons
-    - cd client && node scripts/dist.mjs --win nsis
+    # 不要用 cd client && …：GitLab 的 Windows runner 是 PowerShell 5.1，
+    # 它不支持 &&（PowerShell 7 才有），构建会**静默不执行**（解析错误被当成非终止错误，
+    # 退出码仍是 0，job 显示 success 却没有产物）。用 pnpm 的 filter 指定工作目录，
+    # 它对两种 shell 都成立。
+    - pnpm --filter @mclink/client exec node scripts/dist.mjs --win nsis
+    - node deploy/assert-artifacts.mjs --windows
   artifacts:
     name: 'mclink-windows-$CI_COMMIT_SHORT_SHA'
     paths:
@@ -67,7 +72,8 @@ build:macos:
     - node scripts/fetch-easytier.mjs --macos
     - pnpm icons
     # 只出 zip：dmg 由下面的签名脚本在**签名之后**生成（electron-builder 的 dmg 里是未签名副本）
-    - cd client && node scripts/dist.mjs --mac zip --arm64 --x64 && cd ..
+    - pnpm --filter @mclink/client exec node scripts/dist.mjs --mac zip --arm64 --x64
+    - node deploy/assert-artifacts.mjs --macos
     # 未签名包在 Apple 芯片上会被内核拒绝执行 —— 这里补 ad-hoc 签名并用 zip -y 重打包
     - bash deploy/sign-macos-app.sh
     # 证据：核心架构、asar 是否在、签名结果
