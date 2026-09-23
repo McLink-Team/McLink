@@ -57,8 +57,8 @@ bash deploy/sign-macos-app.sh
 
 ```bash
 # 1) 把产物拷进下载目录（Debian 上默认路径）
-sudo cp McLink-0.1.0-arm64.dmg /opt/mclink/data/downloads/
-sudo chown mclink:mclink /opt/mclink/data/downloads/McLink-0.1.0-arm64.dmg
+sudo cp McLink-1.0.0-arm64.dmg /opt/mclink/data/downloads/
+sudo chown mclink:mclink /opt/mclink/data/downloads/McLink-1.0.0-arm64.dmg
 
 # 2) 控制台 →「平台设置」把 clientVersion 改成新版本号即可
 #    （clientDownloadUrl 仍指向 Windows 主产物；macOS 的两个包会被官网自动发现）
