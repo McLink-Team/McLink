@@ -306,7 +306,19 @@ export function buildClientDownloads(app: App): {
    */
   const preferDmg = (arch: 'arm64' | 'x64'): DownloadArtifact | null => {
     const same = macs.filter((a) => a.arch === arch);
-    return same.find((a) => a.filename.toLowerCase().endsWith('.dmg')) ?? same[0] ?? null;
+    /**
+     * **先按当前版本筛，再优先 dmg。**
+     *
+     * 下载目录里通常同时留着旧版本（历史产物没人删）。只按文件名排序的话
+     * `McLink-0.1.0-macos-arm64.dmg` 会排在 `McLink-1.0.0-…` 前面，
+     * 官网的 macOS 按钮就会把玩家指向**过期包** —— 线上实测踩到
+     * （目录里同时有 0.1.0 与 1.0.0 的产物时，卡片会选中 0.1.0）。
+     * 版本号取平台设置里的 clientVersion，与客户端「有新版本」提示用的是同一个值。
+     */
+    const wanted = app.settings.current.clientVersion;
+    const sameVersion = wanted ? same.filter((a) => a.filename.includes(wanted)) : [];
+    const pool = sameVersion.length > 0 ? sameVersion : same;
+    return pool.find((a) => a.filename.toLowerCase().endsWith('.dmg')) ?? pool[0] ?? null;
   };
   const macArm = preferDmg('arm64');
   const macIntel = preferDmg('x64');
