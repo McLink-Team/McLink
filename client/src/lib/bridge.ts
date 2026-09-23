@@ -20,6 +20,11 @@ export interface AppInfo {
 export interface MclinkBridge {
   info(): Promise<AppInfo>;
   freePort(): Promise<number>;
+  /**
+   * ICMP 延迟探测（建房页选节点用）：返回每个主机的最小时延，超时为 null。
+   * **只用于展示与排序** —— ping 不通不代表节点不可用（部分主机会丢 ICMP 但中继端口正常）。
+   */
+  ping(hosts: string[]): Promise<Record<string, number | null>>;
   openPath(target: string): Promise<string>;
   openExternal(url: string): Promise<void>;
   relaunchElevated(): Promise<{ ok: boolean; error?: string }>;

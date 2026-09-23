@@ -23,6 +23,18 @@ export function registerRoomRoutes(router: Router, app: App): void {
     const zone = optStr(body, 'zone', 24) ?? 'auto';
     if (!isKnownRegion(zone)) throw HttpError.badRequest(`未知区域: ${zone}`, { zone: '未知区域' });
 
+    /**
+     * 用户手选的节点（可空 = 自动调度）。
+     *
+     * 区域（zone）与节点是**两层**：zone 只是默认/筛选，节点才是真正的选择对象。
+     * 这里只做"形状"校验（字符串、去重、上限），
+     * 节点是否真的可用由 roomService 校验 —— 那里能拿到 `disabled`/`weight` 等状态，
+     * 而且校验失败要**降级为自动**并回一条说明，而不是建房直接失败（不因为选错节点就挡住建房）。
+     */
+    const nodeIds = Array.isArray(body.nodeIds)
+      ? [...new Set(body.nodeIds.filter((v): v is string => typeof v === 'string' && v.length > 0))].slice(0, 3)
+      : [];
+
     const access = (optStr(body, 'access', 16) ?? 'open') as RoomAccess;
     if (!['open', 'password', 'approval'].includes(access)) {
       throw HttpError.badRequest('access 必须是 open/password/approval 之一');
@@ -36,6 +48,7 @@ export function registerRoomRoutes(router: Router, app: App): void {
       userId: auth.userId,
       name,
       zone,
+      nodeIds,
       access,
       visibility,
       password: optStr(body, 'password', 64) ?? null,

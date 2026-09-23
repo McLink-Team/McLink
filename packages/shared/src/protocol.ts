@@ -21,6 +21,8 @@ export const Routes = {
   /* ---------- 公开 ---------- */
   meta: '/meta',
   regions: '/regions',
+  /** 客户端可见的中继节点列表（需登录）：供建房页自行选节点并探测延迟 */
+  clientNodes: '/nodes',
   downloads: '/downloads',
   stats: '/stats',
 

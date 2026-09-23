@@ -7,6 +7,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('mclink', {
   info: () => ipcRenderer.invoke('app:info'),
   freePort: () => ipcRenderer.invoke('app:freePort'),
+  /** ICMP 延迟探测：入参是主机名/IP 数组，返回 { host: ms|null } */
+  ping: (hosts) => ipcRenderer.invoke('net:ping', hosts),
   openPath: (target) => ipcRenderer.invoke('app:openPath', target),
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
   relaunchElevated: () => ipcRenderer.invoke('app:relaunchElevated'),
