@@ -21,6 +21,7 @@ import { RoomService } from './services/rooms.ts';
 import { SettingsService } from './services/settings.ts';
 import { MailerService } from './services/mailer.ts';
 import { BroadcastService } from './services/broadcast.ts';
+import { unsubscribeUrl } from './api/unsubscribe.ts';
 import { RelayManager } from './easytier/manager.ts';
 import { hashPassword } from './util/id.ts';
 
@@ -145,6 +146,9 @@ export function createApp(options: CreateAppOptions = {}): App {
     audit,
     settings,
     publicBaseUrl: config.publicBaseUrl,
+    // 签名密钥用 jwtSecret：显式配置或由服务端生成并持久化在 data/secrets.json，
+    // 所以邮件里的退订链接重启后依然有效
+    unsubscribeUrl: (userId) => unsubscribeUrl({ secret: config.jwtSecret, origin: config.publicBaseUrl }, userId),
   });
 
   const auth = new AuthService(config, users, audit, settings, emailCodes, mailer);

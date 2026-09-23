@@ -10,6 +10,7 @@ import type { App } from '../app.ts';
 import { APP_VERSION } from '../app.ts';
 import type { Router } from '../http/kit.ts';
 import { endpointHost } from '../db/nodes.ts';
+import { handleUnsubscribe } from './unsubscribe.ts';
 
 export interface DownloadArtifact {
   id: string;
@@ -154,6 +155,37 @@ export function registerPublicRoutes(router: Router, app: App): void {
         })),
     };
   }, { auth: true });
+  /**
+   * 邮件退订（**免登录**）。
+   *
+   * 邮件里的链接必须在没登录、没客户端的情况下直接可用 —— 否则退订等于不存在
+   * （合规要求，也直接影响域名的送达率）。签名与校验在 api/unsubscribe.ts 里。
+   */
+  router.get(Routes.unsubscribe, (ctx) => {
+    const result = handleUnsubscribe(
+      {
+        secret: app.config.jwtSecret,
+        origin: app.config.publicBaseUrl,
+        setOptOut: (userId, value) => {
+          const changed = app.users.setEmailOptOut(userId, value);
+          if (changed) {
+            app.audit.write({
+              actorType: 'user',
+              actorId: userId,
+              action: value ? 'mail.unsubscribe' : 'mail.resubscribe',
+              targetType: 'user',
+              targetId: userId,
+              detail: { via: 'email-link' },
+            });
+          }
+          return changed;
+        },
+        userExists: (userId) => Boolean(app.users.findById(userId)),
+      },
+      ctx.url.searchParams,
+    );
+    ctx.send(result.status, result.html, 'text/html; charset=utf-8');
+  });
   /** 手动触发一次中继状态采样 */
   router.post('/relay/refresh', async () => {
     const sample = await app.relay.sample();

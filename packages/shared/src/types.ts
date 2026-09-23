@@ -28,6 +28,11 @@ export interface UserSelf extends User {
   quotaBytes: number | null;
   /** 本计费周期已用流量（字节） */
   usedBytes: number;
+  /**
+   * 是否已退订公告邮件。
+   * 退订由邮件里的链接触发（免登录），客户端只做展示与重新开启。
+   */
+  emailOptOut?: boolean;
   /** 账号下最多可创建的房间数；null = 用平台默认 */
   maxRooms: number | null;
 }

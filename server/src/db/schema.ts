@@ -328,6 +328,16 @@ update settings
  where key = 'platform'
    and json_extract(value, '$.clientDownloadUrl') = '/downloads/McLink-Setup-1.0.0-x64.exe';
 `;
+
+/**
+ * V10：邮件退订开关。
+ *
+ * 群发公告必须带可用的退订入口（合规要求，也直接影响域名送达率）。
+ * 默认 0 = 正常接收：公告是玩家主动选择的平台通知，不该默认把人静音。
+ */
+const V10_EMAIL_OPT_OUT = `
+alter table users add column email_opt_out integer not null default 0;
+`;
 export const MIGRATIONS: readonly string[] = [
   V1_INITIAL,
   V2_RELAY_ROOM_MAP,
@@ -338,6 +348,7 @@ export const MIGRATIONS: readonly string[] = [
   V7_BRAND_DEFAULTS,
   V8_CLIENT_1_0_0,
   V9_CLIENT_1_0_1,
+  V10_EMAIL_OPT_OUT,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

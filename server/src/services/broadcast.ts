@@ -28,6 +28,8 @@ export interface BroadcastCounts {
   unverified: number;
   /** 有邮箱但被封禁 */
   banned: number;
+  /** 已退订（点过邮件里的退订链接） */
+  optedOut: number;
   /** 根本没填邮箱 */
   withoutEmail: number;
 }
@@ -55,7 +57,7 @@ export interface BroadcastDeps {
   };
   users: {
     /** **不受 list() 分页上限影响**：群发要的是全量收件人 */
-    listBroadcastRecipients(): Array<{ email: string; displayName: string }>;
+    listBroadcastRecipients(): Array<{ id: string; email: string; displayName: string }>;
     broadcastCounts(): BroadcastCounts;
   };
   audit: {
@@ -73,6 +75,12 @@ export interface BroadcastDeps {
   settings: { current: { siteName: string } };
   /** 邮件正文里附的站点地址（取自安装时的 --public-url） */
   publicBaseUrl: string;
+  /**
+   * 生成某个收件人的退订链接。
+   * 由外部注入而不是在这里做 HMAC：签名密钥属于 API 层的事，
+   * 服务保持纯粹（也更好测）。
+   */
+  unsubscribeUrl(userId: string): string;
 }
 
 /** 单次运行的收件人上限：防止误点把配额与域名信誉一次性打光 */
@@ -160,7 +168,7 @@ export class BroadcastService {
   }
 
   async #run(
-    recipients: Array<{ email: string; displayName: string }>,
+    recipients: Array<{ id: string; email: string; displayName: string }>,
     subject: string,
     body: string,
     siteName: string,
@@ -175,10 +183,12 @@ export class BroadcastService {
         const batch = recipients.slice(i, i + BATCH_SIZE);
         const results = await Promise.all(
           batch.map(async (r) => {
-            // 正文尾部附来源与说明：既是礼貌，也能降低被判定为垃圾邮件的概率
-            const text = this.#deps.publicBaseUrl
-              ? `${body}\n\n——\n${siteName}\n${this.#deps.publicBaseUrl}`
-              : `${body}\n\n——\n${siteName}`;
+            // 尾部附来源 + **退订链接**：合规要求，也直接降低被标记为垃圾邮件的比例
+            const unsub = this.#deps.unsubscribeUrl(r.id);
+            const tail = this.#deps.publicBaseUrl
+              ? `${siteName}\n${this.#deps.publicBaseUrl}`
+              : siteName;
+            const text = `${body}\n\n——\n${tail}\n不想再收到公告邮件：${unsub}`;
             const res = await this.#deps.mailer.sendAnnouncement(r.email, subject, text);
             return { to: r.email, ok: res.ok, error: res.error };
           }),

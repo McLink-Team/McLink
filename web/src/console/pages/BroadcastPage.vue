@@ -33,6 +33,8 @@ interface BroadcastPreview {
   unverified: number;
   banned: number;
   withoutEmail: number;
+  /** 点过邮件里退订链接的人数 */
+  optedOut: number;
   running: boolean;
   lastRun: BroadcastReport | null;
 }
@@ -157,8 +159,9 @@ const percent = computed(() => {
           <div class="console-section-text">
             <h2 class="console-section-title">收件人</h2>
             <p class="console-section-note">
-              未验证与未填邮箱的账号默认跳过：给未验证地址发信会拉高退信率，退信率一高，
-              邮件服务商就会限制整个域名发信。
+              未验证、未填邮箱与<b>已退订</b>的账号都会跳过：给未验证地址发信会拉高退信率，
+              退信率一高邮件服务商就会限制整个域名发信。每封信的尾部会自动附上
+              该收件人专属的退订链接（点开即退订，不需要登录）。
             </p>
           </div>
         </div>
@@ -167,6 +170,7 @@ const percent = computed(() => {
           <span class="kv-k">未验证邮箱</span><span class="kv-v mono">{{ data.unverified }}</span>
           <span class="kv-k">未填邮箱</span><span class="kv-v mono">{{ data.withoutEmail }}</span>
           <span class="kv-k">已封禁</span><span class="kv-v mono">{{ data.banned }}</span>
+          <span class="kv-k">已退订</span><span class="kv-v mono">{{ data.optedOut }}</span>
         </div>
       </section>
 
