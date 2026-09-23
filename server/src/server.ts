@@ -23,6 +23,7 @@ import {
   type Ctx,
 } from './http/kit.ts';
 import { registerPublicRoutes } from './api/public.ts';
+import { renderRobots, renderShell, renderSitemap } from './api/shell.ts';
 import { registerAuthRoutes } from './api/auth.ts';
 import { registerRoomRoutes } from './api/rooms.ts';
 import { registerAgentRoutes } from './api/agent.ts';
@@ -298,6 +299,31 @@ export function createServer(app: App): RunningServer {
         }
         logRequest(ctx, started);
         return;
+      }
+
+      // ---- SEO：把平台设置注入前端外壳，并给出 robots / sitemap ----
+      // 必须在 serveStatic 之前：SPA 的 index.html 是构建时写死的，
+      // 直接发出去的话，管理员在控制台改的站点名永远不会出现在搜索结果里。
+      if (ctx.method === 'GET' || ctx.method === 'HEAD') {
+        if (url.pathname === '/robots.txt') {
+          ctx.send(200, renderRobots(app, ctx.req.headers), 'text/plain; charset=utf-8');
+          logRequest(ctx, started);
+          return;
+        }
+        if (url.pathname === '/sitemap.xml') {
+          ctx.send(200, renderSitemap(app, ctx.req.headers), 'application/xml; charset=utf-8');
+          logRequest(ctx, started);
+          return;
+        }
+        if (url.pathname === '/' || url.pathname === '/index.html') {
+          const indexPath = path.join(app.web.root, 'index.html');
+          if (fs.existsSync(indexPath)) {
+            const html = renderShell(app, fs.readFileSync(indexPath, 'utf8'), ctx.req.headers);
+            ctx.send(200, html, 'text/html; charset=utf-8');
+            logRequest(ctx, started);
+            return;
+          }
+        }
       }
 
       // ---- 静态：前端 ----
