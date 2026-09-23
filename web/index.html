@@ -6,11 +6,75 @@
     <!-- 与设计令牌里的 --ink-900 保持一致：移动端浏览器工具栏不再是一块突兀的深蓝 -->
     <meta name="theme-color" content="#121110" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/icon-256.png" />
+
+    <!--
+      ============================================================ TDK
+      两点说明：
+      1. 主控服务这些页面时会把 title / description / canonical / og:url 里的站点信息
+         换成**平台设置里的站点名与简介**（server/src/api/shell.ts），
+         所以下面是"读不到设置时的默认值"，不是唯一事实来源。
+      2. 长度按**中文**定，不照搬英文的 50–60 / 150–160 字符：
+         中文搜索结果页标题约 30 个汉字、摘要约 78 个汉字就会被截断，
+         按英文标准写只会让关键词被砍掉。当前标题 30 字、摘要 78 字。
+    -->
+    <title>McLink 联机 · 《我的世界》异地联机平台，一条加入码就能开黑</title>
     <meta
       name="description"
-      content="McLink —— 基于 EasyTier 的《我的世界》联机平台。主控单端口承载所有房间，玩家按区域就近接入，一条加入码就能一起玩。"
+      content="McLink 联机让《我的世界》玩家像在同一局域网里一样开黑：主控单端口承载所有房间，按区域就近接入中继，支持 P2P 打洞直连与自动回退；房主建房，朋友填一条加入码即可进入。"
     />
-    <title>McLink · 《我的世界》联机平台</title>
+    <meta
+      name="keywords"
+      content="我的世界联机,MC联机,我的世界异地联机,局域网联机,EasyTier,内网穿透,开黑,McLink"
+    />
+    <meta name="robots" content="index,follow,max-image-preview:large" />
+    <link rel="canonical" href="https://cnnic.link/" />
+
+    <!-- 社交平台与部分抓取器读这些（不写的话分享出去只有一行光秃秃的链接） -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="McLink 联机" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:title" content="McLink 联机 · 《我的世界》异地联机平台" />
+    <meta
+      property="og:description"
+      content="像在同一局域网里一样开黑：单端口承载所有房间，按区域就近接入中继，P2P 打洞直连，自动回退。填一条加入码即可进入。"
+    />
+    <meta property="og:url" content="https://cnnic.link/" />
+    <meta property="og:image" content="https://cnnic.link/icon-256.png" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="McLink 联机 · 《我的世界》异地联机平台" />
+    <meta
+      name="twitter:description"
+      content="像在同一局域网里一样开黑：单端口承载所有房间，按区域就近接入中继，P2P 打洞直连，自动回退。"
+    />
+
+    <!-- 结构化数据：让搜索引擎知道这是个什么站点，而不是一个空壳 -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        "name": "McLink 联机",
+        "alternateName": "McLink",
+        "url": "https://cnnic.link/",
+        "description": "基于 EasyTier 的《我的世界》联机平台：单端口承载所有房间，按区域就近接入中继，P2P 打洞直连与自动回退。",
+        "inLanguage": "zh-CN",
+        "publisher": { "@type": "Organization", "name": "McLink", "url": "https://cnnic.link/" }
+      }
+    </script>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "McLink 客户端",
+        "applicationCategory": "GameApplication",
+        "operatingSystem": "Windows 10, Windows 11, macOS",
+        "url": "https://cnnic.link/download",
+        "softwareVersion": "1.0.0",
+        "description": "登录后选择区域、输入加入码即可与朋友联机；内置 EasyTier 核心，无需手工配置网络名、密钥或中继地址。",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "CNY" }
+      }
+    </script>
+
     <script>
       /*
        * 亮/暗主题：必须在首屏绘制前跑，否则会闪一下。
@@ -20,7 +84,7 @@
        * 优先级：?theme=light|dark（检测器与本地核对用） > localStorage['mclink.theme']（用户选的）
        *         > 系统偏好。
        * 中间那层不能省：玩家选了「亮色」之后刷新，如果这里只按系统画，
-       * 会先出现一帧暗色再跳到亮色 —— 那就是闪烁。
+       * 会先出一帧暗色再跳到亮色 —— 那就是闪烁。
        */
       (function () {
         try {
@@ -49,6 +113,34 @@
   </head>
   <body>
     <div id="app"></div>
+
+    <!--
+      不执行 JS 的抓取器（尤其百度）看到的就是下面这段。
+      应用是 SPA、正文由 JS 渲染 —— 这里留空的话，收录结果就是一个没有任何文字的页面。
+      所以放一段**真实可读**的站点说明与入口链接：对人无害（有 JS 时应用盖住它），
+      对爬虫是唯一的正文来源。服务时会把站点名替换成平台设置里的值（api/shell.ts）。
+    -->
+    <noscript>
+      <h1>McLink 联机 —— 《我的世界》异地联机平台</h1>
+      <p>
+        McLink 让《我的世界》玩家像在同一个局域网里一样联机：房主在游戏里「对局域网开放」后创建房间，
+        朋友填一条加入码即可进入，不需要端口映射、内网穿透，也不用手工配置网络名与密钥。
+        底层使用 EasyTier 组网：主控单端口承载所有房间，玩家按区域就近接入中继，
+        能打洞时走 P2P 直连，受限网络自动回退中继。
+      </p>
+      <ul>
+        <li>一条加入码进房，无需公网 IP 与端口映射</li>
+        <li>按区域自动选择中继，也可以自己指定节点</li>
+        <li>P2P 打洞直连优先，打不通自动回退中继</li>
+        <li>Windows 与 macOS 客户端，安装后登录即用</li>
+      </ul>
+      <p>
+        <a href="/download">下载客户端</a> · <a href="/login">管理控制台</a> ·
+        <a href="/download">查看安装包校验值</a>
+      </p>
+      <p>本站需要启用 JavaScript 才能使用完整功能。</p>
+    </noscript>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
