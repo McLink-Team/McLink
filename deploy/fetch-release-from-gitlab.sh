@@ -49,12 +49,46 @@ got=0
 for job in "${jobs[@]}"; do
   echo
   echo "▸ 拉取 job「${job}」的 artifacts"
-  url="$API/jobs/artifacts/$REF/download?job=$(printf '%s' "$job" | sed 's|:|%3A|g')"
+
+  # 先按 ref 查出**这一次**成功的 job id，再按 id 下产物。
+  #
+  # 为什么不直接用「按 job 名下载」的接口
+  #   /projects/:id/jobs/artifacts/:ref/download?job=<name>
+  # 因为我们的 job 名带冒号（build:windows），该接口会返回 404（实测：job 明明 success）。
+  # 按 id 下载（/jobs/:id/artifacts）不依赖名字，稳定得多。
+  job_id="$(curl -fsSL "${auth_header[@]}" "$API/jobs?ref=$REF&per_page=100" 2>/dev/null \
+    | node -e '
+      let s = "";
+      process.stdin.on("data", (d) => (s += d)).on("end", () => {
+        const want = process.argv[1];
+        try {
+          const rows = JSON.parse(s)
+            .filter((j) => j.name === want && j.status === "success" && (j.artifacts ?? []).length > 0)
+            .sort((a, b) => b.id - a.id);
+          process.stdout.write(rows[0] ? String(rows[0].id) : "");
+        } catch { process.stdout.write(""); }
+      });
+    ' "$job" 2>/dev/null || true)"
+
+  if [[ -z "$job_id" ]]; then
+    echo "  ✗ 在 ref=$REF 上找不到成功且带产物的 job「${job}」"
+    echo "    查一下：GitLab → CI/CD → Pipelines，确认这个 ref 的 pipeline 已成功、且 job 名没改"
+    continue
+  fi
+  echo "  job id = $job_id"
+
+  url="$API/jobs/$job_id/artifacts"
   if ! curl -fsSL "${auth_header[@]}" "$url" -o "$TMP/$job.zip"; then
-    echo "  ✗ 拿不到（该 ref 上这个 job 可能还没跑、或没生成 artifacts）"
+    code=$?
+    echo "  ✗ 下载失败（curl 退出码 $code）"
+    case "$code" in
+      22) echo "     HTTP 4xx：401/403 多半是令牌无效、被 revoke 或缺少 read_api 权限" ;;
+      28) echo "     超时：产物较大（macOS 包 ~400MB），换网络或稍后重试" ;;
+    esac
     continue
   fi
   echo "  已下载 $(du -h "$TMP/$job.zip" | cut -f1)"
+
   unzip -q -o "$TMP/$job.zip" -d "$TMP/$job"
 
   # artifacts.zip 里是仓库相对路径（client/release/…），挑出安装包
