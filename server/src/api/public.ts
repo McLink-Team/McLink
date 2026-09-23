@@ -8,6 +8,7 @@ import { REGIONS, Routes, type PlatformOverview } from '@mclink/shared';
 import type { App } from '../app.ts';
 import { APP_VERSION } from '../app.ts';
 import type { Router } from '../http/kit.ts';
+import { endpointHost } from '../db/nodes.ts';
 
 export interface DownloadArtifact {
   id: string;
@@ -128,6 +129,30 @@ export function registerPublicRoutes(router: Router, app: App): void {
     };
   });
 
+  /**
+   * 客户端可见的中继节点列表（**需登录**）。
+   *
+   * 和公开的 `/regions` 的区别只有一点：多了 `host`（探测用的主机名/IP）。
+   * 建房页要自己测延迟，就必须知道往哪儿 ping；但公开接口里绝不能出现端点，
+   * 所以这条单独做成鉴权路由。端口一律不给 —— 客户端只需要 ICMP 目标。
+   */
+  router.get(Routes.clientNodes, () => {
+    return {
+      nodes: app.nodes
+        .list()
+        .filter((n) => n.disabled !== 1 && (n.status === 'online' || n.status === 'degraded'))
+        .map((n) => ({
+          id: n.id,
+          name: n.name,
+          region: n.region,
+          /** 只给主机部分：`relay-sh.example.com:21010` → `relay-sh.example.com` */
+          host: endpointHost(n.endpoint),
+          peers: n.peers,
+          capacity: n.capacity_peers,
+          status: n.status,
+        })),
+    };
+  }, { auth: true });
   /** 手动触发一次中继状态采样 */
   router.post('/relay/refresh', async () => {
     const sample = await app.relay.sample();

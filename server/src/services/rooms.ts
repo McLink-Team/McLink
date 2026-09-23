@@ -90,6 +90,12 @@ export interface CreateRoomInput {
    */
   rpcPort?: number;
   ttlMinutes?: number | null;
+  /**
+   * 用户手选的节点 id（可空 = 自动调度）。
+   * 校验不过时**降级为自动**并把原因放进结果里，而不是让建房失败 ——
+   * 选错节点不该挡住玩家开游戏。
+   */
+  nodeIds?: string[];
   /** 请求的 Host 头，用于在未显式配置公网地址时推导主控中继地址 */
   hostHint?: string | null;
 }
@@ -217,7 +223,23 @@ export class RoomService {
     };
 
     const zone = input.zone && input.zone !== '' ? input.zone : 'auto';
-    const relayNodeIds = this.scheduleRelays(zone);
+    /**
+     * 中继节点：用户指定优先，**平台始终补一个兜底**。
+     *
+     * 为什么要兜底：用户 pin 的节点掉线/被禁用时，房间不能直接断 ——
+     * 兜底节点让它继续能玩，房间页再提示"当前走的是兜底"。
+     * 兜底挑选时会**排除用户已选的**，避免重复占一个名额。
+     */
+    const picked = this.#validatePickedNodes(input.nodeIds ?? []);
+    const auto = this.scheduleRelays(zone, 2);
+    const fallback = auto.find((id) => !picked.ids.includes(id)) ?? auto[0] ?? null;
+    const relayNodeIds = [...picked.ids, ...(fallback ? [fallback] : [])];
+    const nodeSelection = {
+      requested: input.nodeIds ?? [],
+      accepted: picked.ids,
+      rejected: picked.rejected,
+      fallback,
+    };
     // 没有子节点时，主控自身中继仍可作为唯一入口，别让单机部署无法建房
     if (relayNodeIds.length === 0 && !this.masterRelayAvailable()) {
       throw HttpError.unavailable('当前没有可用的中继节点，请联系管理员');
@@ -859,6 +881,37 @@ export class RoomService {
    * 指定区域时只用该区域的节点，若该区域无可用节点则回退到其它区域（并记日志），
    * 避免玩家因为某个区域没部署节点而完全无法联机。
    */
+  /**
+   * 校验用户手选的节点。
+   *
+   * 只接受**真的能承载流量**的节点：存在、未禁用、weight>0、status ∈ online/degraded。
+   * 不满足的记进 rejected（带原因）交给上层回给客户端 —— 建房照常进行，降级为自动。
+   */
+  #validatePickedNodes(ids: string[]): { ids: string[]; rejected: Array<{ id: string; reason: string }> } {
+    const accepted: string[] = [];
+    const rejected: Array<{ id: string; reason: string }> = [];
+    for (const id of ids.slice(0, 3)) {
+      const row = this.nodes.findById(id);
+      if (!row) {
+        rejected.push({ id, reason: '节点不存在' });
+        continue;
+      }
+      if (row.disabled === 1) {
+        rejected.push({ id, reason: '节点已被管理员禁用' });
+        continue;
+      }
+      if (row.weight <= 0) {
+        rejected.push({ id, reason: '节点未参与调度' });
+        continue;
+      }
+      if (row.status !== 'online' && row.status !== 'degraded') {
+        rejected.push({ id, reason: `节点当前${row.status === 'pending' ? '待接入' : '离线'}` });
+        continue;
+      }
+      if (!accepted.includes(id)) accepted.push(id);
+    }
+    return { ids: accepted, rejected };
+  }
   scheduleRelays(zone: string, max = 2): string[] {
     const all = this.nodes.listSchedulable();
     if (all.length === 0) return [];

@@ -9,7 +9,9 @@
  * 而虚拟网络必须一直在后台跑着。
  */
 const { app, BrowserWindow, Tray, Menu, ipcMain, shell, dialog, nativeImage, nativeTheme } = require('electron');
-const { spawn, spawnSync } = require('node:child_process');
+const { spawn, spawnSync, execFile } = require('node:child_process');
+const { promisify } = require('node:util');
+const execFileAsync = promisify(execFile);
 const fs = require('node:fs');
 const path = require('node:path');
 const net = require('node:net');
@@ -915,6 +917,37 @@ function registerIpc() {
     hostname: os.hostname(),
   }));
 
+  /**
+   * ICMP 延迟探测（建房页选节点时用）。
+   *
+   * 为什么直接调系统 `ping`：Node 没有原生 ICMP，引一个第三方库只为了发几个
+   * echo 请求不划算；三平台的 `ping` 普通用户就能用（Windows 走 ICMP API、
+   * macOS/Linux 的 unprivileged ICMP），所以零依赖、零提权。
+   *
+   * 结果**只用于展示与排序**：ping 不通不代表节点不能用（有些主机丢 ICMP 但中继端口正常），
+   * 所以超时返回 null，由界面显示"—"，绝不参与可用性判断。
+   */
+  ipcMain.handle('net:ping', async (_event, hosts) => {
+    const list = (Array.isArray(hosts) ? hosts : []).slice(0, 16).filter((h) => typeof h === 'string' && /^[A-Za-z0-9._:-]+$/.test(h));
+    const out = {};
+    await Promise.all(
+      list.map(async (host) => {
+        const args =
+          process.platform === 'win32'
+            ? ['-n', '2', '-w', '1200', host]
+            : ['-c', '2', '-W', '1', host];
+        try {
+          const res = await execFileAsync('ping', args, { timeout: 5000, windowsHide: true });
+          // Windows 中文系统的输出是「时间=1ms」，英文与 macOS/Linux 是「time=1.2 ms」
+          const matches = [...String(res.stdout ?? '').matchAll(/(?:time|时间)[=<]([\d.]+)\s*ms/gi)];
+          out[host] = matches.length > 0 ? Math.min(...matches.map((m) => Number(m[1]))) : null;
+        } catch {
+          out[host] = null;
+        }
+      }),
+    );
+    return out;
+  });
   ipcMain.handle('app:freePort', () => freePort());
   ipcMain.handle('app:openPath', (_e, target) => shell.openPath(String(target)));
   ipcMain.handle('app:openExternal', (_e, url) => shell.openExternal(String(url)));
