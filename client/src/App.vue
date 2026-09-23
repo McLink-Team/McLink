@@ -14,6 +14,7 @@ import { copyText } from './lib/clipboard.ts';
 import { bootstrap, clearError, clearKicked, clientState, hasRoom, isOnline, mustVerifyEmail } from './lib/store.ts';
 import { onboardingVisible } from './lib/onboarding.ts';
 import TitleBar from './components/TitleBar.vue';
+import ElevationBanner from './components/ElevationBanner.vue';
 import LoginPage from './pages/LoginPage.vue';
 import CreateJoin from './components/CreateJoin.vue';
 import RoomPage from './pages/RoomPage.vue';
@@ -94,6 +95,13 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown));
 <template>
   <div class="app-shell">
     <TitleBar :state="coreState" :label="statusLabel" />
+
+    <!--
+      未提权横幅：放在 v-if/v-else-if 链**之前**，所以登录页、验证邮箱页、
+      主界面每一屏都能看到 —— 玩家没提权时最常停在登录页，放链里等于看不到。
+      （也不能插在链中间：v-else-if 必须紧跟上一个分支，否则整条链会断。）
+    -->
+    <ElevationBanner />
 
     <div v-if="booting" class="boot">
       <span class="spinner" />
