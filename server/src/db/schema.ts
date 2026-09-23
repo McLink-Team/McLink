@@ -307,6 +307,27 @@ update settings
  where key = 'platform'
    and json_extract(value, '$.clientDownloadUrl') = '/downloads/McLink-Setup-0.1.0-x64.exe';
 `;
+
+/**
+ * V9：客户端版本 1.0.0 → 1.0.1。
+ *
+ * 迁移纪律：**已发布过的迁移不能改**（V8 已经在部署上跑过，user_version=8），
+ * 升级只能追加一条新的。同样只动"还停在上一版默认值"的部署，
+ * 管理员手改过版本/下载地址的一律不碰。
+ */
+const V9_CLIENT_1_0_1 = `
+update settings
+   set value = json_set(value, '$.clientVersion', '1.0.1'),
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ where key = 'platform'
+   and json_extract(value, '$.clientVersion') = '1.0.0';
+
+update settings
+   set value = json_set(value, '$.clientDownloadUrl', '/downloads/McLink-Setup-1.0.1-x64.exe'),
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ where key = 'platform'
+   and json_extract(value, '$.clientDownloadUrl') = '/downloads/McLink-Setup-1.0.0-x64.exe';
+`;
 export const MIGRATIONS: readonly string[] = [
   V1_INITIAL,
   V2_RELAY_ROOM_MAP,
@@ -316,6 +337,7 @@ export const MIGRATIONS: readonly string[] = [
   V6_NODE_PORT_SPLIT,
   V7_BRAND_DEFAULTS,
   V8_CLIENT_1_0_0,
+  V9_CLIENT_1_0_1,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
