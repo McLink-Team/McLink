@@ -131,6 +131,23 @@ curl -s -r 0-1 https://cnnic.link/downloads/McLink-Setup-1.0.0-x64.exe | xxd | h
 > 实际存在的 Windows 产物（只是没有"主产物"排序与已登记的校验值）。
 > 目录里可以同时放多个产物（`.exe/.zip/.msi/.apk/.dmg/.deb/.AppImage` 都会被列出）。
 
+### 2.1.2 从 GitLab CI 直接拉产物到下载目录
+
+CI 跑完（推 `v*` 标签会同时构建 Windows 与 macOS）后，在主控上一条命令把安装包放进下载目录，无需手工 scp：
+
+```bash
+# 私有仓库先在 GitLab → 项目 → Settings → Access tokens 建一个 Project Access Token（只勾 read_api）
+GITLAB_TOKEN=glpat-xxxx bash deploy/fetch-release-from-gitlab.sh v1.0.0
+
+# 只要 Windows 包
+GITLAB_TOKEN=glpat-xxxx bash deploy/fetch-release-from-gitlab.sh v1.0.0 --windows-only
+```
+
+脚本会从该 ref 的 pipeline 里取 `build:windows` / `build:macos` 两个 job 的 artifacts，
+挑出 `.exe/.dmg/.zip`（跳过 `.blockmap`）、拷进 `/opt/mclink/data/downloads`、
+设好属主与权限，并打印每个文件的 sha256。
+
+**它不会自动改平台设置** —— 对外宣称哪个版本是运营决定，在控制台「平台设置 → 客户端版本」里改。
 ### 2.2 反向代理与证书
 
 ```bash
