@@ -48,6 +48,7 @@ import {
   generateNetworkSecret,
   generateRoomCode,
   passwordProblem,
+  reconnectDelayMs,
 } from '@mclink/shared';
 import { randomBytes } from 'node:crypto';
 
@@ -771,5 +772,36 @@ describe('外来网络聚合 mergeRelayedNetworks', () => {
     const [first] = mergeRelayedNetworks([node('n', -5, -100, 50)], []);
     assert.ok(first, '应当合并出一条网络');
     assert.deepEqual({ peers: first.peers, rxBps: first.rxBps, txBps: first.txBps }, { peers: 0, rxBps: 0, txBps: 50 });
+  });
+});
+
+/**
+ * 重连退避：必须带抖动。
+ *
+ * 线上实测：一次故障后同一秒里有 6 个不同 IP 的 /ws 一起失败 —— 客户端原来是
+ * 写死的 4 秒固定重连，所有玩家在同一毫秒回来，把刚恢复的单线程主控再打满一次。
+ */
+describe('重连退避 reconnectDelayMs', () => {
+  test('抖动区间是 0.5x–1.5x，并在 8 次后封顶 30s', () => {
+    assert.equal(reconnectDelayMs(0, () => 0), 500);
+    assert.equal(reconnectDelayMs(0, () => 1), 1500);
+    assert.equal(reconnectDelayMs(8, () => 0), 15_000);
+    assert.equal(reconnectDelayMs(8, () => 1), 45_000);
+    // 超过 8 次不再继续增长（否则长时间断网后第一个客户端要等几分钟）
+    assert.equal(reconnectDelayMs(99, () => 1), 45_000);
+  });
+
+  test('同一抖动系数下随重连次数递增', () => {
+    let previous = 0;
+    for (const attempt of [0, 1, 2, 3, 5, 8]) {
+      const value = reconnectDelayMs(attempt, () => 0.5);
+      assert.ok(value >= previous, `${attempt} 次：${value} < ${previous}`);
+      previous = value;
+    }
+  });
+
+  test('不同客户端会得到不同时长（没有抖动就会一起回来）', () => {
+    const values = new Set(Array.from({ length: 40 }, () => reconnectDelayMs(3)));
+    assert.ok(values.size > 5, `40 次只有 ${values.size} 个不同值，抖动没生效`);
   });
 });

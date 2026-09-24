@@ -10,6 +10,9 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 import { MIGRATIONS } from './schema.ts';
+import { logger } from '../logger.ts';
+
+const log = logger('db');
 
 export type Row = Record<string, unknown>;
 
@@ -30,6 +33,18 @@ export class Db {
     this.#db.exec('pragma foreign_keys = ON');
     this.#db.exec('pragma busy_timeout = 5000');
     this.#db.exec('pragma synchronous = NORMAL');
+    /**
+     * WAL 自动 checkpoint 阈值（单位：页；SQLite 默认 1000 页 ≈ 4MB）。
+     *
+     * 特意调大：checkpoint 会在**触发它的那一次写入调用里同步做完**（写主库 + fsync），
+     * 默认阈值下任何一次 `db.run()` 都可能突然多花几十到几百毫秒 ——
+     * 单线程主控在这段时间里连新 TCP 连接都排不进 accept 队列，
+     * nginx 侧就会报 `upstream timed out (110) while connecting to upstream`
+     * （线上实测到过这个现象，WAL 文件也长期卡在阈值附近：主库 3.2MB / WAL 3.95MB）。
+     * 调到 10000 页（≈40MB）后，代价是 WAL 会短暂涨到几十 MB（崩溃恢复多回放一点，可接受），
+     * 换来的是不再在请求路径里随机卡顿；真正的 checkpoint 交给维护窗口的 checkpoint()。
+     */
+    this.#db.exec('pragma wal_autocheckpoint = 10000');
     this.migrate();
   }
 
@@ -56,19 +71,25 @@ export class Db {
   }
 
   run(sql: string, ...params: unknown[]): RunResult {
-    const stmt = this.#db.prepare(sql);
-    const res = stmt.run(...(params as never[]));
-    return { changes: res.changes, lastInsertRowid: res.lastInsertRowid };
+    return this.#timed(sql, () => {
+      const stmt = this.#db.prepare(sql);
+      const res = stmt.run(...(params as never[]));
+      return { changes: res.changes, lastInsertRowid: res.lastInsertRowid };
+    });
   }
 
   get<T = Row>(sql: string, ...params: unknown[]): T | undefined {
-    const stmt = this.#db.prepare(sql);
-    return stmt.get(...(params as never[])) as T | undefined;
+    return this.#timed(sql, () => {
+      const stmt = this.#db.prepare(sql);
+      return stmt.get(...(params as never[])) as T | undefined;
+    });
   }
 
   all<T = Row>(sql: string, ...params: unknown[]): T[] {
-    const stmt = this.#db.prepare(sql);
-    return stmt.all(...(params as never[])) as T[];
+    return this.#timed(sql, () => {
+      const stmt = this.#db.prepare(sql);
+      return stmt.all(...(params as never[])) as T[];
+    });
   }
 
   /** 取单列单值 */
@@ -77,6 +98,48 @@ export class Db {
     if (!row) return undefined;
     const values = Object.values(row);
     return values[0] as T | undefined;
+  }
+
+  /**
+   * 单条语句超过这个毫秒数就打日志（0 = 关闭）。
+   *
+   * 存在的意义只有一个：线上出现"主控突然几十秒不应答"时，日志里能直接看到
+   * 是哪条 SQL 卡住了事件循环 —— 否则只能靠猜（本项目的 IPC/HTTP 兜底看门狗
+   * 只能告诉你"请求没返回"，看不到原因）。
+   */
+  readonly slowMs = Number(process.env.MCLINK_SLOW_SQL_MS ?? 200);
+
+  #timed<T>(sql: string, fn: () => T): T {
+    if (!(this.slowMs > 0)) return fn();
+    const started = Date.now();
+    const out = fn();
+    const ms = Date.now() - started;
+    if (ms >= this.slowMs) {
+      log.warn('SQLite 语句偏慢（事件循环在这段时间被占住）', {
+        ms,
+        sql: sql.replace(/\s+/g, ' ').trim().slice(0, 120),
+      });
+    }
+    return out;
+  }
+
+  /**
+   * 显式 checkpoint（默认 TRUNCATE：做完把 WAL 文件截断）。
+   *
+   * **只在维护窗口调用**：它会同步写主库并 fsync，期间事件循环被占住。
+   * 返回值用于确认"这一次到底卡了多久、有多少页要写"。
+   */
+  checkpoint(mode: 'PASSIVE' | 'TRUNCATE' = 'TRUNCATE'): { ms: number; busy: number; log: number; checkpointed: number } {
+    const started = Date.now();
+    const row = this.#db.prepare(`pragma wal_checkpoint(${mode})`).get() as
+      | { busy?: number | bigint; log?: number | bigint; checkpointed?: number | bigint }
+      | undefined;
+    return {
+      ms: Date.now() - started,
+      busy: Number(row?.busy ?? 0),
+      log: Number(row?.log ?? 0),
+      checkpointed: Number(row?.checkpointed ?? 0),
+    };
   }
 
   /** 同步事务；回调抛错则整体回滚 */
