@@ -15,7 +15,9 @@ import {
   subnetForSlot,
   generateRoomCode,
   generateNetworkSecret,
+  isDirectLink,
   kbpsToBytesPerSecond,
+  linkKind,
   type Room,
   type RoomAccess,
   type RoomMember,
@@ -114,6 +116,53 @@ export interface JoinResult {
     accepted: string[];
     rejected: Array<{ id: string; reason: string }>;
     fallback: string | null;
+  };
+}
+
+/** 心跳上报的一条 peer 记录：客户端只报这三项，够判定「直连还是中继」与延迟 */
+export interface PeerReport {
+  ipv4: string;
+  cost: string;
+  latencyMs: number | null;
+}
+
+/** 成员的链路结论：体感延迟 + 是否真的直连 */
+export interface MemberLink {
+  latencyMs: number | null;
+  p2p: boolean;
+}
+
+function stripCidr(ip: string): string {
+  return ip.replace(/\/\d+$/, '');
+}
+
+/** 延迟最低的那条 peer 记录；一条都没测到延迟时返回 undefined */
+function fastestPeer(rows: PeerReport[]): PeerReport | undefined {
+  let best: PeerReport | undefined;
+  for (const row of rows) {
+    if (row.latencyMs === null) continue;
+    if (!best || best.latencyMs === null || row.latencyMs < best.latencyMs) best = row;
+  }
+  return best;
+}
+
+/**
+ * 从成员上报的 peer 列表里判定「体感延迟 + 是否直连」。
+ *
+ * 只认**到房主**那一条：房间里的游戏流量走的就是成员↔房主。
+ * 修正的 bug：EasyTier 对**经中继的路由同样会报 lat_ms**，以前把「有延迟」当成直连，
+ * 于是走中继的成员在房间管理里被一律标成了 P2P（用户实测反馈）。
+ * 现在只看 peer 行的 cost，规则与客户端诊断面板共用（`@mclink/shared` 的 linkKind）。
+ *
+ * 房主那一行没有「到房主」的链路，退化成它看到的最快成员（仍有参考价值：房主侧到玩家的延迟），
+ * 但**不**声称自己直连。
+ */
+export function resolveMemberLink(rows: PeerReport[], hostIp: string, isHost: boolean): MemberLink {
+  const remote = rows.filter((peer) => linkKind(peer.cost) !== 'local');
+  const picked = isHost ? fastestPeer(remote) : remote.find((peer) => stripCidr(peer.ipv4) === hostIp);
+  return {
+    latencyMs: picked?.latencyMs ?? null,
+    p2p: !isHost && picked !== undefined && isDirectLink(picked.cost),
   };
 }
 
@@ -857,15 +906,16 @@ export class RoomService {
       return { kicked: true, aclToml: null, aclRevision: 0 };
     }
 
-    // 从上报的 peer 列表里挑一条直连延迟，作为该成员的「体感延迟」
-    let latency: number | null = null;
-    let p2p = false;
-    for (const peer of payload.peers ?? []) {
-      if (peer.latencyMs !== null && peer.latencyMs !== undefined) {
-        latency = latency === null ? peer.latencyMs : Math.min(latency, peer.latencyMs);
-        p2p = true;
-      }
-    }
+    // 挑一条链路作为该成员的「体感延迟 + 链路类型」：判定逻辑在 resolveMemberLink（有单测）。
+    // 以前这里是「有 lat_ms 就算直连」，于是走中继的成员在房间管理里显示成了 P2P。
+    const row = this.rooms.findById(roomId);
+    const hostMember = row ? this.rooms.findMember(roomId, row.host_user_id) : undefined;
+    const hostIp = stripCidr(hostMember?.virtual_ip ?? hostIpCidr(row?.subnet_slot ?? 0));
+    const { latencyMs: latency, p2p } = resolveMemberLink(
+      payload.peers ?? [],
+      hostIp,
+      member.role === 'host',
+    );
 
     this.rooms.updateMemberHeartbeat(roomId, userId, {
       virtualIp: payload.virtualIp ?? undefined,
@@ -878,7 +928,6 @@ export class RoomService {
     this.rooms.touch(roomId);
     this.rooms.recalcCounts(roomId);
 
-    const row = this.rooms.findById(roomId);
     const revision = row?.acl_revision ?? 0;
     const isHostOfRoom = row?.host_user_id === userId;
     // ACL 只在版本变化时下发：房主每 10 秒收一份近 1KB 的 ACL 是纯浪费

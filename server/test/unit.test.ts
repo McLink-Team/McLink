@@ -14,7 +14,7 @@ import { test, describe } from 'node:test';
 import { renderAcl, renderEasytierToml, buildLaunchArgs, tomlString, aclToJson, rpcPortalForListenPort, usableRpcPort } from '../src/easytier/config.ts';
 import { buildRoomAcl, isAclEmpty } from '../src/easytier/acl.ts';
 import { parseHumanNumber, parseLatencyMs } from '../src/easytier/manager.ts';
-import { hashRoomPassword, verifyRoomPassword, deriveNetworkName } from '../src/services/rooms.ts';
+import { hashRoomPassword, verifyRoomPassword, deriveNetworkName, resolveMemberLink } from '../src/services/rooms.ts';
 import { parsePolicy } from '../src/api/helpers.ts';
 import {
   buildMessage,
@@ -653,5 +653,72 @@ describe('SMTP 组信（中文邮件最容易坏的两个地方）', () => {  co
     });
     assert.equal(resolveFrom('', 'fallback@cnnic.link').address, 'fallback@cnnic.link');
     assert.equal(resolveFrom('"带引号" <a@b.com>', '').name, '带引号');
+  });
+});
+
+/**
+ * 成员链路判定：锁住「中继被显示成 P2P」这个线上 bug。
+ *
+ * 触发条件很隐蔽：EasyTier 对**经中继的路由同样会报 lat_ms**，
+ * 老实现认为「这条 peer 有延迟 = 直连」，于是走中继的成员全被标成 P2P。
+ */
+describe('成员链路判定 resolveMemberLink', () => {
+  const hostIp = '10.20.0.1';
+
+  test('到房主经中继 → 不是 P2P（哪怕它到别的成员是直连、延迟更低）', () => {
+    const link = resolveMemberLink(
+      [
+        { ipv4: hostIp, cost: 'relay(1)', latencyMs: 82 },
+        { ipv4: '10.20.0.3', cost: 'p2p', latencyMs: 12 },
+      ],
+      hostIp,
+      false,
+    );
+    assert.deepEqual(link, { latencyMs: 82, p2p: false });
+  });
+
+  test('到房主直连 → P2P，延迟取房主那一条而不是最小延迟', () => {
+    const link = resolveMemberLink(
+      [
+        { ipv4: hostIp, cost: 'p2p', latencyMs: 24 },
+        { ipv4: '10.20.0.4', cost: 'relay(2)', latencyMs: 9 },
+      ],
+      hostIp,
+      false,
+    );
+    assert.deepEqual(link, { latencyMs: 24, p2p: true });
+  });
+
+  test('房主自己：取最快成员，且不声称直连', () => {
+    const link = resolveMemberLink(
+      [
+        { ipv4: '10.20.0.2', cost: 'p2p', latencyMs: 18 },
+        { ipv4: '10.20.0.3', cost: 'relay(1)', latencyMs: 41 },
+      ],
+      hostIp,
+      true,
+    );
+    assert.deepEqual(link, { latencyMs: 18, p2p: false });
+  });
+
+  test('只报得出本机行 / 房主不在列表里 → 不给结论（未测得）', () => {
+    assert.deepEqual(
+      resolveMemberLink([{ ipv4: '', cost: 'Local', latencyMs: 1 }], hostIp, false),
+      { latencyMs: null, p2p: false },
+    );
+    assert.deepEqual(
+      resolveMemberLink([{ ipv4: '10.20.0.4', cost: 'p2p', latencyMs: 7 }], hostIp, false),
+      { latencyMs: null, p2p: false },
+    );
+  });
+
+  test('成本字符串未知形态（如 relay 换写法 / 空）一律不算直连', () => {
+    assert.equal(resolveMemberLink([{ ipv4: hostIp, cost: 'Relayed', latencyMs: 30 }], hostIp, false).p2p, false);
+    assert.equal(resolveMemberLink([{ ipv4: hostIp, cost: '', latencyMs: 30 }], hostIp, false).p2p, false);
+  });
+
+  test('虚拟地址带掩码也能对上房主（客户端可能上报 /24 形式）', () => {
+    const link = resolveMemberLink([{ ipv4: '10.20.0.1/24', cost: 'p2p', latencyMs: 5 }], hostIp, false);
+    assert.deepEqual(link, { latencyMs: 5, p2p: true });
   });
 });
