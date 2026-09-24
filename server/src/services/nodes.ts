@@ -36,12 +36,89 @@ export interface NodeAuthResult {
   node: NodeRow;
 }
 
+/** 某个中继来源正在转发的一个房间网络 */
+export interface RelayedNetworkSample {
+  networkName: string;
+  /** 该网络上探测到的 peer 数 */
+  peers: number;
+  rxBps: number;
+  txBps: number;
+  rxBytes?: number;
+  txBytes?: number;
+}
+
+export interface MergedRelayedNetwork {
+  networkName: string;
+  peers: number;
+  rxBps: number;
+  txBps: number;
+  rxBytes: number;
+  txBytes: number;
+  /**
+   * 有几个中继来源在转发它（主控 + 各子节点，各算 1 个）。
+   * 界面上用它区分"只走主控"和"两个区域节点都在带"。
+   */
+  relaySources: number;
+  /** 主控中继是否也在转发它（false 表示只走子节点） */
+  onMaster: boolean;
+}
+
+/**
+ * 按网络名合并「主控 + 子节点」的外来网络列表。
+ *
+ * 为什么必须合并：玩家是按区域就近接入的，绝大多数房间流量走在子节点上，
+ * 只看主控那一台的话，控制台的「外来网络」和流量页的按房间视图会长期是 0 或残缺。
+ * 同一个网络被多个来源转发时，peer 数与速率相加、来源计数 +1。
+ */
+export function mergeRelayedNetworks(
+  master: ReadonlyArray<RelayedNetworkSample>,
+  nodes: ReadonlyArray<RelayedNetworkSample>,
+): MergedRelayedNetwork[] {
+  const merged = new Map<string, MergedRelayedNetwork>();
+  const add = (item: RelayedNetworkSample, onMaster: boolean): void => {
+    const name = item.networkName?.trim();
+    if (!name) return;
+    const current = merged.get(name);
+    if (current) {
+      current.peers += Math.max(0, item.peers);
+      current.rxBps += Math.max(0, item.rxBps);
+      current.txBps += Math.max(0, item.txBps);
+      current.rxBytes += Math.max(0, item.rxBytes ?? 0);
+      current.txBytes += Math.max(0, item.txBytes ?? 0);
+      current.relaySources += 1;
+      current.onMaster ||= onMaster;
+      return;
+    }
+    merged.set(name, {
+      networkName: name,
+      peers: Math.max(0, item.peers),
+      rxBps: Math.max(0, item.rxBps),
+      txBps: Math.max(0, item.txBps),
+      rxBytes: Math.max(0, item.rxBytes ?? 0),
+      txBytes: Math.max(0, item.txBytes ?? 0),
+      relaySources: 1,
+      onMaster,
+    });
+  };
+  for (const item of master) add(item, true);
+  for (const item of nodes) add(item, false);
+  // 速率高的排前面：控制台的表格按这个顺序看最有用
+  return [...merged.values()].sort((a, b) => b.rxBps + b.txBps - (a.rxBps + a.txBps));
+}
+
 export class NodeService {
   private readonly config: ServerConfig;
   private readonly nodes: NodeRepo;
   private readonly enrollKeys: EnrollKeyRepo;
   private readonly audit: AuditRepo;
   private readonly settings: SettingsService;
+  /**
+   * 各子节点当前正在转发的房间网络（内存态，心跳刷新）。
+   *
+   * 不放数据库：这是"此刻在转发什么"的实时读数，重启后 20 秒内就会被心跳填回来，
+   * 落库反而要为它加列、加迁移，还会引入"节点掉线后残留的脏记录"。
+   */
+  readonly #relaying = new Map<string, { at: number; networks: RelayedNetworkSample[] }>();
 
   constructor(
     config: ServerConfig,
@@ -263,6 +340,37 @@ export class NodeService {
       configToml: null,
       configRevision: fresh?.config_revision ?? 0,
     };
+  }
+
+  /* ---------------------------------------------- 外来网络（子节点侧） */
+
+  /**
+   * 记下这个子节点此刻正在转发的房间网络。
+   *
+   * 心跳载荷里本来就有 `roomTraffic`（逐房间网络名 + 速率），以前只拿去记账，
+   * 于是控制台的「外来网络」只看得到主控自己转发的那几个 —— 玩家按区域接入后
+   * 这个读数长期是 0（用户实测反馈）。
+   */
+  noteRelayingNetworks(nodeId: string, networks: RelayedNetworkSample[]): void {
+    this.#relaying.set(nodeId, { at: Date.now(), networks });
+  }
+
+  /**
+   * 聚合所有「刚心跳过」的子节点正在转发的房间网络。
+   *
+   * 新鲜度窗口默认 90s（心跳间隔 20s，允许连漏三次），避免节点掉线后
+   * 它的网络还挂在这个读数上。被管理员禁用的节点一律不计入。
+   */
+  relayingNetworks(now = Date.now(), freshMs = 90_000): RelayedNetworkSample[] {
+    const out: RelayedNetworkSample[] = [];
+    for (const [nodeId, entry] of this.#relaying) {
+      if (now - entry.at > freshMs) continue;
+      const node = this.nodes.findById(nodeId);
+      // 节点被删掉/被禁用后要立刻退出聚合，不能靠 90s 窗口过期
+      if (!node || node.disabled === 1) continue;
+      out.push(...entry.networks);
+    }
+    return out;
   }
 
   /* ------------------------------------------------------------ 管理 */

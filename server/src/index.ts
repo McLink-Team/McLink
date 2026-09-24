@@ -8,6 +8,7 @@
 import { Topics, type ForeignNetworkInfo, type RelayNode } from '@mclink/shared';
 import { createApp, disposeApp, ensureBootstrapAdmin, APP_VERSION, type App } from './app.ts';
 import { createServer } from './server.ts';
+import { mergeRelayedNetworks } from './services/nodes.ts';
 import { logger } from './logger.ts';
 import { toRoom } from './db/rooms.ts';
 
@@ -129,10 +130,33 @@ async function main(): Promise<void> {
 
   // 1) 中继采样：把状态写进流量账本，并通过 WebSocket 推送
   app.relay.on('sample', (sample) => {
-    const foreignWithRooms: ForeignNetworkInfo[] = sample.foreignNetworks.map((fn) => {
+    /**
+     * 主控自己转发的外来网络。
+     * `relay.update` 是「主控中继面板」的数据源，口径**保持只看主控** ——
+     * 把子节点带的网络混进去，那一页的读数就变成两码事了。
+     */
+    const masterForeign: ForeignNetworkInfo[] = sample.foreignNetworks.map((fn) => {
       const room = app.rooms.findByNetworkName(fn.networkName);
       return { ...fn, roomId: room?.id ?? null };
     });
+
+    /**
+     * 全网外来网络：主控 + 所有在线子节点，按网络名去重、速率相加。
+     *
+     * 玩家是按区域就近接入的，房间流量大多走在子节点上；只看主控的话，
+     * 控制台的「外来网络」和流量页的按房间视图会长期是 0 或残缺（用户实测反馈）。
+     */
+    const foreignAll = mergeRelayedNetworks(
+      sample.foreignNetworks.map((fn) => ({
+        networkName: fn.networkName,
+        peers: fn.peerCount,
+        rxBps: fn.rxBps,
+        txBps: fn.txBps,
+        rxBytes: fn.rxBytes,
+        txBytes: fn.txBytes,
+      })),
+      app.nodeService.relayingNetworks(),
+    ).map((fn) => ({ ...fn, roomId: app.rooms.findByNetworkName(fn.networkName)?.id ?? null }));
 
     /**
      * 全网聚合：主控中继 + 所有在线子节点。
@@ -164,7 +188,7 @@ async function main(): Promise<void> {
     });
 
     let attributed = 0;
-    for (const fn of foreignWithRooms) {
+    for (const fn of masterForeign) {
       app.traffic.record({
         scope: 'room',
         scopeId: fn.roomId ?? fn.networkName,
@@ -205,7 +229,7 @@ async function main(): Promise<void> {
           totalRxBytes: sample.totalRxBytes,
           totalTxBytes: sample.totalTxBytes,
           relayPeers: sample.peerCount + nodeBps.peers,
-          roomCount: foreignWithRooms.length,
+          roomCount: foreignAll.length,
         },
       });
       hub.publish(Topics.traffic, {
@@ -221,12 +245,13 @@ async function main(): Promise<void> {
           onlineRelayNodes: nodeBps.nodes,
           totalRxBytes: sample.totalRxBytes,
           totalTxBytes: sample.totalTxBytes,
-          byRoom: foreignWithRooms.map((f) => ({
+          // 按房间归因也用全网口径：子节点带的房间同样要出现在这里
+          byRoom: foreignAll.map((f) => ({
             roomId: f.roomId ?? f.networkName,
             name: f.roomId ? (app.rooms.findById(f.roomId)?.name ?? f.networkName) : f.networkName,
             rxBps: f.rxBps,
             txBps: f.txBps,
-            peers: f.peerCount,
+            peers: f.peers,
           })),
           byNode: app.nodes.list().map((n) => ({
             nodeId: n.id,
@@ -239,10 +264,11 @@ async function main(): Promise<void> {
       });
       hub.publish(Topics.traffic, {
         type: 'relay.update',
-        relay: { ...app.relay.status(), foreignNetworks: foreignWithRooms },
+        // 只看主控：这一帧是给「主控中继面板」用的
+        relay: { ...app.relay.status(), foreignNetworks: masterForeign },
       });
     }
-    log.debug('中继采样', { peers: sample.peerCount, rooms: foreignWithRooms.length, attributed });
+    log.debug('中继采样', { peers: sample.peerCount, rooms: foreignAll.length, attributed });
   });
 
   let lastPlatformPush = 0;
