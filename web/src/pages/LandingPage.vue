@@ -255,7 +255,7 @@ const steps = [
               {{ failed ? '未连接到主控' : locked ? '链路正常' : '正在获取链路数据' }}
             </span>
             <span class="grow" />
-            <span class="tag">v{{ meta?.version ?? '0.1.0' }}</span>
+            <span class="tag">v{{ meta?.version ?? '1.0.0' }}</span>
           </div>
 
           <div class="scanline" aria-hidden="true" />
