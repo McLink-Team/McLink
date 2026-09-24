@@ -173,13 +173,22 @@ server {
 limit_req_zone $binary_remote_addr zone=mclink_login:10m rate=30r/m;
 
 # =============================================================================
-# 变体：只想要**一个** location（宝塔面板那种模板改起来最省事）
+# 变体：只想要**一个** location（宝塔 / 1Panel 那种模板改起来最省事）
 #
-# 单个 location 也能跑，关键是把三个值一次调对：
-#   1) proxy_buffering off      —— WS 升级响应不能被缓冲；大文件也直接流式转发
-#   2) proxy_read_timeout 3600s —— /downloads/ 与 /agent/ 要下几十 MB，
-#                                  落在 60s/120s 的超时里必然 504
-#   3) Upgrade / Connection $http_connection —— 保留这两行，/ws 才能升级
+# 单个 location 也能跑全站（网页 + API + /ws + 下载），关键是这几个值：
+#   1) proxy_pass 写死 127.0.0.1:8787 —— 没有 upstream 块就不能用名字；
+#      **千万别走公网 IP**：同机反代时那是绕出去再绕回来（云厂商 NAT/hairpin、安全组、
+#      conntrack 都会在这条路上咬人，表现就是间歇性的
+#      `upstream timed out (110) while connecting to upstream`）。
+#   2) Connection 用 $http_connection —— 不要用 $connection_upgrade：
+#      后者要靠 map 定义，没有 map 时 nginx 会因为"未定义变量"直接起不来。
+#      WS 握手时浏览器发的就是 Connection: Upgrade，原样透传即可；
+#      HTTP/2 请求没有这个头（值为空），正好让 nginx 对上游走 keep-alive。
+#   3) proxy_connect_timeout 5s —— 默认 60s。主控在重启/发版窗口不监听时，
+#      请求会先挂满 60 秒再报错；调小让客户端立刻失败并重试。
+#   4) send_timeout 3600s —— **发往客户端**那一侧的超时（默认 60s）。
+#      下 87MB 安装包时客户端读得慢/中途暂停会被掐断，proxy_read_timeout 管不到它。
+#   5) proxy_buffering off + read/send 3600s —— WS 与几十 MB 的下载都要。
 #
 # 为什么超时给到 3600s 也不会"卡一小时"：主控自己会在 MCLINK_REQUEST_DEADLINE_MS
 # （默认 110s）主动回一个 JSON 504，客户端拿到的是结构化错误而不是干等。
@@ -193,11 +202,18 @@ limit_req_zone $binary_remote_addr zone=mclink_login:10m rate=30r/m;
 #     proxy_set_header X-Forwarded-Proto $scheme;
 #     proxy_set_header Upgrade           $http_upgrade;
 #     proxy_set_header Connection        $http_connection;
-#     proxy_buffering off;
+#
+#     proxy_connect_timeout 5s;
 #     proxy_read_timeout 3600s;
 #     proxy_send_timeout 3600s;
+#     send_timeout 3600s;
+#     proxy_buffering off;
 #     client_max_body_size 2048m;
 # }
+#
+# 单个 location 的取舍：没有 upstream keepalive 连接池（每个请求开一条到主控的连接，
+# 本地回环很便宜，不值得为它引入 upstream 块）；登录限流也得另配 location，
+# 不做的话登录接口就只剩主控自身那道 240/分/IP 的限流。
 # =============================================================================
 
 # =============================================================================
