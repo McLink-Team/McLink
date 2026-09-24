@@ -138,7 +138,7 @@ async function submit(): Promise<void> {
         <!-- 未登录也能看大厅：/rooms/public 是匿名接口，只是不能加入 -->
         <PublicPlaza v-if="showPlaza" :can-join="false" />
 
-        <p class="hint center">登录即表示你同意仅将本平台用于合法的《我的世界》联机用途。</p>
+        <p class="hint center">登录即表示你同意仅将本平台用于合法的联机用途。</p>
       </div>
     </div>
 

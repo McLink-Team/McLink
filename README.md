@@ -1,6 +1,6 @@
 # McLink
 
-**基于 [EasyTier](https://github.com/EasyTier/EasyTier) 的《我的世界》联机平台。**
+**基于 [EasyTier](https://github.com/EasyTier/EasyTier) 的局域网联机平台，支持《我的世界》等各类局域网联机游戏。**
 一台主控、一个端口，把分散在各地的玩家拉进同一个虚拟局域网里开黑——不需要公网 IP、不需要端口映射、
 不需要玩家装任何组网工具。
 
