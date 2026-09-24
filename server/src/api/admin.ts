@@ -12,6 +12,7 @@ import { enrollKey as makeEnrollKey } from '../util/id.ts';
 import { buildOverview } from './public.ts';
 import { DEFAULT_SETTINGS, toPublicSettings } from '../services/settings.ts';
 import { SCHEMA_VERSION } from '../db/schema.ts';
+import { mergeRelayedNetworks } from '../services/nodes.ts';
 
 const log = logger('api:admin');
 
@@ -369,15 +370,41 @@ export function registerAdminRoutes(router: Router, app: App): void {
       peers: n.peers,
     }));
 
-    // 按房间归因：中继侧只看到网络名，这里补上房间 ID 与显示名，
-    // 否则「每个房间用了多少流量」这个关键视图就没法呈现（之前只在 WS 推送里做了映射）
-    const foreignNetworks = (sample?.foreignNetworks ?? []).map((fn) => {
+    /**
+     * 按房间归因：中继侧只看到网络名，这里补上房间 ID 与显示名，
+     * 否则「每个房间用了多少流量」这个关键视图就没法呈现（之前只在 WS 推送里做了映射）。
+     *
+     * **口径是全网**：主控自己转发的外来网络 + 所有刚心跳过的子节点上报的网络，
+     * 按网络名去重合并（同一个房间被两个区域的节点同时带着时会合并成一条，标注来源数）。
+     * 以前只看主控，于是"外来网络"长期是 0（用户实测反馈）。
+     */
+    const foreignNetworks = mergeRelayedNetworks(
+      (sample?.foreignNetworks ?? []).map((fn) => ({
+        networkName: fn.networkName,
+        peers: fn.peerCount,
+        rxBps: fn.rxBps,
+        txBps: fn.txBps,
+        rxBytes: fn.rxBytes,
+        txBytes: fn.txBytes,
+      })),
+      app.nodeService.relayingNetworks(),
+    ).map((fn) => {
       const room = app.rooms.findByNetworkName(fn.networkName);
       return {
-        ...fn,
-        roomId: fn.roomId ?? room?.id ?? null,
+        networkName: fn.networkName,
+        roomId: room?.id ?? null,
         roomName: room?.name ?? null,
         roomCode: room?.code ?? null,
+        peerCount: fn.peers,
+        rxBytes: fn.rxBytes,
+        txBytes: fn.txBytes,
+        rxBps: fn.rxBps,
+        txBps: fn.txBps,
+        /** 有几个中继来源在转发它（1 = 只有主控；≥2 = 主控或节点中至少两个） */
+        relaySources: fn.relaySources,
+        /** 主控中继是否也在转发它 */
+        onMaster: fn.onMaster,
+        lastSeenAt: sample?.ts ?? null,
       };
     });
 

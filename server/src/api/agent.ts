@@ -6,6 +6,7 @@
  */
 import { Routes } from '@mclink/shared';
 import type { App } from '../app.ts';
+import type { RelayedNetworkSample } from '../services/nodes.ts';
 import type { Router, Ctx } from '../http/kit.ts';
 import { bearerToken, optInt, optStr } from './helpers.ts';
 import { HttpError } from '../util/errors.ts';
@@ -61,6 +62,8 @@ export function registerAgentRoutes(router: Router, app: App): void {
     // 逐房间流量落库，用于平台级流量账本
     if (Array.isArray(body.roomTraffic)) {
       const items: Array<Parameters<App['traffic']['record']>[0]> = [];
+      /** 这个节点此刻在转发的房间网络 —— 给控制台的「外来网络」做全网聚合 */
+      const relayed: RelayedNetworkSample[] = [];
       for (const raw of body.roomTraffic.slice(0, 512)) {
         if (!raw || typeof raw !== 'object') continue;
         const entry = raw as Record<string, unknown>;
@@ -69,6 +72,15 @@ export function registerAgentRoutes(router: Router, app: App): void {
         const roomRow = app.rooms.findByNetworkName(networkName);
         const rxBytes = typeof entry.rxBytes === 'number' ? entry.rxBytes : 0;
         const txBytes = typeof entry.txBytes === 'number' ? entry.txBytes : 0;
+        const peerCount = typeof entry.peerCount === 'number' ? entry.peerCount : 0;
+        relayed.push({
+          networkName,
+          peers: peerCount,
+          rxBps: typeof entry.rxBps === 'number' ? entry.rxBps : 0,
+          txBps: typeof entry.txBps === 'number' ? entry.txBps : 0,
+          rxBytes,
+          txBytes,
+        });
         items.push({
           scope: 'room',
           scopeId: roomRow?.id ?? networkName,
@@ -77,13 +89,18 @@ export function registerAgentRoutes(router: Router, app: App): void {
           txBytes,
           rxBps: typeof entry.rxBps === 'number' ? entry.rxBps : 0,
           txBps: typeof entry.txBps === 'number' ? entry.txBps : 0,
-          peers: typeof entry.peerCount === 'number' ? entry.peerCount : 0,
+          peers: peerCount,
         });
         if (roomRow) {
-          app.rooms.incrementUsage(roomRow.id, rxBytes, txBytes, typeof entry.peerCount === 'number' ? entry.peerCount : 0);
+          app.rooms.incrementUsage(roomRow.id, rxBytes, txBytes, peerCount);
         }
       }
       app.traffic.recordMany(items);
+      /**
+       * 空数组也要记：节点停止转发后，必须把它从「外来网络」聚合里清掉，
+       * 否则控制台会一直挂着一个已经不存在的网络（直到新鲜度窗口过期）。
+       */
+      app.nodeService.noteRelayingNetworks(row.id, relayed);
     }
 
     // 节点级样本

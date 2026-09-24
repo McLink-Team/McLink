@@ -25,7 +25,7 @@ import {
 } from '../src/mail/smtp.ts';
 import { resolveFrom } from '../src/services/mailer.ts';
 import { emailGateProblem } from '../src/services/email-gate.ts';
-import { normalizePort } from '../src/services/nodes.ts';
+import { normalizePort, mergeRelayedNetworks } from '../src/services/nodes.ts';
 import { isDecorationLine } from '../src/easytier/process.ts';
 import { DEFAULT_SETTINGS, clientArtifactName } from '../src/services/settings.ts';
 import { endpointHost, endpointPort, nodeClientEndpoint, nodeConnectPort, nodeListenPort } from '../src/db/nodes.ts';
@@ -720,5 +720,56 @@ describe('成员链路判定 resolveMemberLink', () => {
   test('虚拟地址带掩码也能对上房主（客户端可能上报 /24 形式）', () => {
     const link = resolveMemberLink([{ ipv4: '10.20.0.1/24', cost: 'p2p', latencyMs: 5 }], hostIp, false);
     assert.deepEqual(link, { latencyMs: 5, p2p: true });
+  });
+});
+
+/**
+ * 外来网络聚合：锁住「只看主控 → 长期显示 0」这个线上读数问题。
+ *
+ * 玩家按区域就近接入，房间流量大多走在子节点上；节点心跳里本来就有 roomTraffic
+ * （网络名 + 速率），以前只拿去记账，没有并进这个读数。
+ */
+describe('外来网络聚合 mergeRelayedNetworks', () => {
+  const node = (name: string, peers: number, rxBps: number, txBps: number) => ({ networkName: name, peers, rxBps, txBps });
+
+  test('只有子节点在转发时也要算进来（这正是以前显示 0 的场景）', () => {
+    const [first] = mergeRelayedNetworks([], [node('mclink-room-abc', 3, 1000, 2000)]);
+    assert.ok(first, '应当合并出一条网络');
+    assert.equal(first.onMaster, false);
+    assert.equal(first.relaySources, 1);
+  });
+
+  test('同一网络被主控 + 两个节点带着：去重成一条、速率相加、来源计数 3', () => {
+    const [first] = mergeRelayedNetworks(
+      [node('net-a', 2, 100, 200)],
+      [node('net-a', 3, 300, 400), node('net-a', 1, 50, 60)],
+    );
+    assert.ok(first, '应当合并出一条网络');
+    assert.deepEqual(
+      {
+        peers: first.peers,
+        rxBps: first.rxBps,
+        txBps: first.txBps,
+        sources: first.relaySources,
+        onMaster: first.onMaster,
+      },
+      { peers: 6, rxBps: 450, txBps: 660, sources: 3, onMaster: true },
+    );
+  });
+
+  test('网络名两边的空白被忽略，空名不产生条目', () => {
+    const merged = mergeRelayedNetworks([node('   ', 9, 9, 9)], [node(' net-b ', 1, 1, 1)]);
+    assert.deepEqual(merged.map((m) => m.networkName), ['net-b']);
+  });
+
+  test('按速率从大到小排序：控制台第一眼看到最忙的那个', () => {
+    const merged = mergeRelayedNetworks([], [node('slow', 1, 10, 10), node('busy', 1, 5000, 5000)]);
+    assert.deepEqual(merged.map((m) => m.networkName), ['busy', 'slow']);
+  });
+
+  test('负数被夹成 0：脏上报不能把总量算小', () => {
+    const [first] = mergeRelayedNetworks([node('n', -5, -100, 50)], []);
+    assert.ok(first, '应当合并出一条网络');
+    assert.deepEqual({ peers: first.peers, rxBps: first.rxBps, txBps: first.txBps }, { peers: 0, rxBps: 0, txBps: 50 });
   });
 });

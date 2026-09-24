@@ -27,6 +27,10 @@ import StatCard from '../../components/StatCard.vue';
 interface ForeignNetworkMapped extends ForeignNetworkInfo {
   roomName: string | null;
   roomCode: string | null;
+  /** 有几个中继来源在转发它（主控 + 子节点） */
+  relaySources: number;
+  /** 主控中继是否也在转发它 */
+  onMaster: boolean;
 }
 
 interface RoomSeries {
@@ -150,7 +154,7 @@ const cards = computed(() => {
     },
     { label: '今日累计接收', value: formatBytes(totals.value.rxBytes), hint: '自然日 00:00 起', accent: 'accent' as const },
     { label: '今日累计发送', value: formatBytes(totals.value.txBytes), hint: '自然日 00:00 起', accent: 'accent' as const },
-    { label: '外来网络', value: foreignNetworks.value.length, hint: '正在经由主控中继的房间网络', accent: 'warn' as const },
+    { label: '外来网络', value: foreignNetworks.value.length, hint: '全网正在转发的房间网络（主控 + 子节点）', accent: 'warn' as const },
     { label: '开放房间', value: roomSeries.value.length, hint: '按房间归因的流量序列', accent: 'accent' as const },
   ];
 });
@@ -235,14 +239,15 @@ const cards = computed(() => {
           <div class="console-section-text">
             <h2 class="console-section-title">外来网络 → 房间归因</h2>
             <p class="console-section-note">
-              主控中继正在为其转发的外来网络。这是判断「哪个房间在吃带宽」最直接的视图；
+              <strong>主控与子节点</strong>正在转发的房间网络（按网络名去重，多个中继同时带着时速率相加）。
+              这是判断「哪个房间在吃带宽」最直接的视图；
               「未映射」表示该网络的房间已关闭或尚未登记。
             </p>
           </div>
         </div>
 
         <div v-if="foreignNetworks.length === 0" class="empty">
-          当前没有外来网络经由主控中继，或 easytier-cli 不可用导致无法采样。
+          当前没有房间网络正在被转发（主控与子节点都没有），或采样不可用。
         </div>
         <div v-else class="table-wrap">
           <table class="table">
@@ -250,6 +255,7 @@ const cards = computed(() => {
               <tr>
                 <th>网络名</th>
                 <th>映射房间</th>
+                <th>中继来源</th>
                 <th class="table-num">peer</th>
                 <th class="table-num">接收速率</th>
                 <th class="table-num">发送速率</th>
@@ -270,6 +276,10 @@ const cards = computed(() => {
                     </div>
                   </template>
                   <Badge v-else tone="warn">未映射</Badge>
+                </td>
+                <td>
+                  <Badge :tone="f.onMaster ? 'brand' : 'neutral'">{{ f.onMaster ? '主控' : '子节点' }}</Badge>
+                  <div v-if="f.relaySources > 1" class="cell-sub">共 {{ f.relaySources }} 处在转发</div>
                 </td>
                 <td class="table-num">{{ f.peerCount }}</td>
                 <td class="table-num">{{ formatBitrate(f.rxBps) }}</td>

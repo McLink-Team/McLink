@@ -8,6 +8,7 @@ import path from 'node:path';
 import { REGIONS, Routes, type PlatformOverview } from '@mclink/shared';
 import type { App } from '../app.ts';
 import { APP_VERSION } from '../app.ts';
+import { mergeRelayedNetworks } from '../services/nodes.ts';
 import type { Router } from '../http/kit.ts';
 import { endpointHost } from '../db/nodes.ts';
 import { handleUnsubscribe } from './unsubscribe.ts';
@@ -25,6 +26,25 @@ export interface DownloadArtifact {
 }
 
 export function registerPublicRoutes(router: Router, app: App): void {
+  /**
+   * 全网外来网络数：主控自己 + 所有刚心跳过的子节点，按网络名去重。
+   *
+   * 只算主控那一台是错的：玩家按区域就近接入，绝大多数房间走在子节点上，
+   * 落地页那格读数会长期是 0（用户实测反馈）。
+   */
+  const foreignNetworkCount = (): number =>
+    mergeRelayedNetworks(
+      (app.relay.latest()?.foreignNetworks ?? []).map((fn) => ({
+        networkName: fn.networkName,
+        peers: fn.peerCount,
+        rxBps: fn.rxBps,
+        txBps: fn.txBps,
+        rxBytes: fn.rxBytes,
+        txBytes: fn.txBytes,
+      })),
+      app.nodeService.relayingNetworks(),
+    ).length;
+
   router.get(Routes.meta, () => {
     const s = app.settings.current;
     const nodeCounts = app.nodes.countByStatus();
@@ -71,7 +91,7 @@ export function registerPublicRoutes(router: Router, app: App): void {
         nodesRxBps: nodeBps.rxBps,
         nodesTxBps: nodeBps.txBps,
         onlineRelayNodes: nodeBps.nodes,
-        foreignNetworks: relaySample?.foreignNetworks.length ?? 0,
+        foreignNetworks: foreignNetworkCount(),
       },
     };
   });
