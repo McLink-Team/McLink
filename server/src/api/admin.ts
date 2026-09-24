@@ -242,6 +242,8 @@ export function registerAdminRoutes(router: Router, app: App): void {
       connectPort: optInt(body, 'connectPort', 1, 65535),
       weight: optInt(body, 'weight', 0, 100000),
       capacityPeers: optInt(body, 'capacityPeers', 10, 100_000),
+      // 带宽上限（bit/s）：0 = 不限。调度会按 3 分钟 EWMA 利用率算余量
+      capacityBps: optInt(body, 'capacityBps', 0, 1e12),
       tags: Array.isArray(body.tags) ? body.tags.map((t) => String(t).slice(0, 24)).slice(0, 8) : undefined,
     });
     app.audit.write({

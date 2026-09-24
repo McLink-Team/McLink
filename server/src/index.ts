@@ -450,6 +450,8 @@ function toNodePublic(row: {
     status: row.status as RelayNode['status'],
     version: null,
     capacityPeers: 0,
+    // 主控中继不参与"按带宽调度"（它永远是兜底，没法被排除掉），所以不带带宽上限
+    capacityBps: 0,
     peers: row.peers,
     rooms: row.rooms,
     rxBps: row.rx_bps,

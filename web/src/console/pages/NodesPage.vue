@@ -15,7 +15,7 @@ import {
   type RelayNode,
 } from '@mclink/shared';
 import { api, friendlyError } from '../../lib/api.ts';
-import { asArray, asStringList, copyText, formatDateTime, nodeLabel, nodeTone, reportError, toInt } from '../../lib/ui.ts';
+import { asArray, asStringList, copyText, formatDateTime, nodeLabel, nodeTone, reportError, toFloat, toInt } from '../../lib/ui.ts';
 import { notifyOk } from '../../lib/toast.ts';
 import Badge from '../../components/Badge.vue';
 
@@ -205,6 +205,8 @@ const editForm = reactive({
   connectPort: '',
   weight: '100',
   capacityPeers: '500',
+  /** 带宽上限，单位 Mbps（按云厂商口径填，如「5 Mbps BGP」填 5；空 = 不限） */
+  capacityMbps: '',
   tags: '',
 });
 
@@ -218,6 +220,8 @@ function openEdit(node: RelayNode): void {
   editForm.connectPort = node.connectPort === null ? '' : String(node.connectPort);
   editForm.weight = String(node.weight);
   editForm.capacityPeers = String(node.capacityPeers);
+  // 库里存的是 bit/s，界面上按 Mbps 填（云厂商口径）；0 显示成空 = 不限
+  editForm.capacityMbps = node.capacityBps > 0 ? String(node.capacityBps / 1_000_000) : '';
   editForm.tags = asStringList(node.tags).join(', ');
 }
 
@@ -234,6 +238,7 @@ async function saveEdit(): Promise<void> {
       connectPort: toInt(editForm.connectPort, node.connectPort ?? 11010),
       weight: toInt(editForm.weight, node.weight),
       capacityPeers: toInt(editForm.capacityPeers, node.capacityPeers),
+      capacityBps: Math.max(0, Math.round(toFloat(editForm.capacityMbps, 0) * 1_000_000)),
       tags: editForm.tags
         .split(/[,，\s]+/)
         .map((t) => t.trim())
@@ -464,10 +469,21 @@ async function removeNode(node: RelayNode): Promise<void> {
                 </div>
               </td>
               <td class="table-num mono">{{ n.listenPort ?? '—' }}</td>
-              <td><Badge :tone="nodeTone(n.status)" dot>{{ nodeLabel(n.status) }}</Badge></td>
+              <td>
+                <Badge :tone="nodeTone(n.status)" dot>{{ nodeLabel(n.status) }}</Badge>
+                <!-- 降级的原因要能看出来：带宽吃紧与人多都会让节点降权 -->
+                <div v-if="(n.utilization ?? 0) >= 0.9" class="cell-sub">带宽吃紧</div>
+              </td>
               <td class="table-num">{{ n.peers }} / {{ n.capacityPeers }}</td>
               <td class="table-num">{{ n.rooms }}</td>
-              <td class="table-num">{{ formatBitrate(n.rxBps) }} / {{ formatBitrate(n.txBps) }}</td>
+              <td class="table-num">
+                <div>{{ formatBitrate(n.rxBps) }} / {{ formatBitrate(n.txBps) }}</div>
+                <!-- 带宽这一行只在配了上限时才有意义：没配就是"不构成约束" -->
+                <div v-if="n.capacityBps > 0" class="cell-sub">
+                  带宽 {{ Math.round((n.utilization ?? 0) * 100) }}% / {{ formatBitrate(n.capacityBps) }}
+                </div>
+                <div v-else class="cell-sub">带宽不限</div>
+              </td>
               <td class="table-num">{{ n.weight }}</td>
               <td class="cell-sub">{{ formatRelativeTime(n.lastSeenAt) }}</td>
               <td>
@@ -700,6 +716,14 @@ async function removeNode(node: RelayNode): Promise<void> {
           <div class="field">
             <label class="label" for="e-cap">容量（peer）</label>
             <input id="e-cap" v-model="editForm.capacityPeers" class="input" type="number" min="10" />
+          </div>
+          <div class="field">
+            <label class="label" for="e-bw">带宽上限（Mbps）</label>
+            <input id="e-bw" v-model="editForm.capacityMbps" class="input" type="number" min="0" step="0.1" placeholder="留空 = 不限" />
+            <span class="hint">
+              按云厂商口径填（5 Mbps 就填 5）。调度按 <b>3 分钟平均</b>利用率算余量：
+              带宽吃紧的节点只是不再优先分配<b>新</b>房间，不会影响正在联机的房间。
+            </span>
           </div>
         </div>
         <div class="field">

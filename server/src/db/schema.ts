@@ -365,6 +365,17 @@ const V12_USER_LAST_SEEN = `
 alter table users add column last_seen_at text;
 create index if not exists idx_users_last_seen on users(last_seen_at);
 `;
+
+/**
+ * V13：`relay_nodes.capacity_bps` —— 节点的带宽上限（bit/s），供调度打分用。
+ *
+ * 为什么要有它：只看 peer 数是错的 —— 200 个 peer 的节点和 5 个 peer 但跑满 5Mbps 的节点，
+ * 后者才是真的顶不住。0 = 不限（只用人数维度），与 `relayBandwidthKbps` 的约定一致。
+ * 由管理员在控制台按节点填（云厂商给的是"5 Mbps BGP"这种口径），不做自动探测。
+ */
+const V13_NODE_CAPACITY_BPS = `
+alter table relay_nodes add column capacity_bps integer not null default 0;
+`;
 export const MIGRATIONS: readonly string[] = [
   V1_INITIAL,
   V2_RELAY_ROOM_MAP,
@@ -378,6 +389,7 @@ export const MIGRATIONS: readonly string[] = [
   V10_EMAIL_OPT_OUT,
   V11_TAGLINE_ALL_GAMES,
   V12_USER_LAST_SEEN,
+  V13_NODE_CAPACITY_BPS,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
