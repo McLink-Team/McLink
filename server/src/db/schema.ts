@@ -338,6 +338,21 @@ update settings
 const V10_EMAIL_OPT_OUT = `
 alter table users add column email_opt_out integer not null default 0;
 `;
+
+/**
+ * V11：站点简介不再写成"我的世界专用"。
+ *
+ * 平台本来就支持各类局域网联机游戏，简介写成《我的世界》专用等于把其它游戏的玩家
+ * 挡在门外（搜索结果里的摘要也一直是这句话）。同 V8/V9 的纪律：
+ * 只动**还停在上一版默认值**的部署，管理员自己改过简介的一律不碰。
+ */
+const V11_TAGLINE_ALL_GAMES = `
+update settings
+   set value = json_set(value, '$.siteTagline', '基于 EasyTier 的局域网联机平台，支持《我的世界》等各类局域网联机游戏'),
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ where key = 'platform'
+   and json_extract(value, '$.siteTagline') = '基于 EasyTier 的《我的世界》联机平台 —— 单端口、低延迟、开箱即用';
+`;
 export const MIGRATIONS: readonly string[] = [
   V1_INITIAL,
   V2_RELAY_ROOM_MAP,
@@ -349,6 +364,7 @@ export const MIGRATIONS: readonly string[] = [
   V8_CLIENT_1_0_0,
   V9_CLIENT_1_0_1,
   V10_EMAIL_OPT_OUT,
+  V11_TAGLINE_ALL_GAMES,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

@@ -219,8 +219,9 @@ const steps = [
             同一个世界
           </h1>
           <p class="hero-sub rise rise-2">
-            基于 EasyTier 的《我的世界》联机平台。主控只在<strong>一个端口</strong>上同时承载所有房间，
-            玩家按区域就近接入，房主一条加入码就能把单人存档变成一个小服务器。
+            基于 EasyTier 的局域网联机平台，支持《我的世界》等各类局域网联机游戏。
+            主控只在<strong>一个端口</strong>上同时承载所有房间，玩家按区域就近接入，
+            房主一条加入码就能把单人存档变成一个小服务器。
           </p>
           <div class="hero-actions rise rise-3">
             <!--
@@ -519,7 +520,7 @@ const steps = [
             <span>McLink</span>
           </div>
           <p class="faint footer-blurb">
-            基于 EasyTier 的《我的世界》联机平台。EasyTier 以 LGPL-3.0 发布，
+            基于 EasyTier 的局域网联机平台，支持《我的世界》等各类局域网联机游戏。EasyTier 以 LGPL-3.0 发布，
             本项目以子进程方式调用其核心，未修改其源码。
           </p>
         </div>
@@ -540,7 +541,7 @@ const steps = [
         </dl>
       </div>
       <div class="container footer-fine faint">
-        《我的世界》是 Mojang 的商标，本平台与 Mojang 无关联，仅供合法的联机用途。
+        《我的世界》是 Mojang 的商标，其它游戏名称与商标归各自权利人所有；本平台与 Mojang 无关联，仅供合法的联机用途。
       </div>
     </footer>
   </div>

@@ -159,7 +159,7 @@
   "ok": true,
   "data": {
     "siteName": "mclink 联机",
-    "siteTagline": "基于 EasyTier 的《我的世界》联机平台 —— 单端口、低延迟、开箱即用",
+    "siteTagline": "基于 EasyTier 的局域网联机平台，支持《我的世界》等各类局域网联机游戏",
     "version": "1.0.0",
     "serverTime": "2026-01-01T08:00:00.000Z",
     "uptimeSeconds": 3600,

@@ -1,6 +1,6 @@
 # mclink 架构
 
-mclink 是一个基于 [EasyTier](https://github.com/EasyTier/EasyTier) 的《我的世界》联机平台：
+mclink 是一个基于 [EasyTier](https://github.com/EasyTier/EasyTier) 的局域网联机平台，支持《我的世界》等各类局域网联机游戏：
 **主控（Master）** 负责账号、房间编排与子节点调度；**子节点（区域中继）** 提供各区域的
 公共中继；玩家用 **Windows 客户端** 建房/进房，客户端在本地托管一个 `easytier-core`，
 把所有人的 Minecraft 连接拉进同一个虚拟网络。

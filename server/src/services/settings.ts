@@ -19,7 +19,7 @@ export function clientArtifactName(version: string, arch = 'x64'): string {
 
 export const DEFAULT_SETTINGS: PlatformSettings = {
   siteName: 'McLink 联机',
-  siteTagline: '基于 EasyTier 的《我的世界》联机平台 —— 单端口、低延迟、开箱即用',
+  siteTagline: '基于 EasyTier 的局域网联机平台，支持《我的世界》等各类局域网联机游戏',
   // 版本号要与下一行的 clientVersion 一致，改版本时两个一起改
   clientDownloadUrl: `/downloads/${clientArtifactName('1.0.1')}`,
   clientVersion: '1.0.1',

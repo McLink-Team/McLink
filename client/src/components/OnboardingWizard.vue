@@ -74,7 +74,7 @@ function finish(persist: boolean): void {
 
       <!-- ③ 游戏里怎么连 -->
       <div v-else class="stack">
-        <div>以《我的世界》Java 版为例：房主在游戏里「对局域网开放」（或开好服务端）之后，玩家这样进：</div>
+        <div>以《我的世界》Java 版为例（其它支持局域网联机的游戏同理）：房主在游戏里「对局域网开放」（或开好服务端）之后，玩家这样进：</div>
         <div class="steps">
           <div>① 启动游戏 → 主菜单点「多人游戏」</div>
           <div>② 点「直接连接」（基岩版是「服务器 → 添加服务器」）</div>

@@ -186,7 +186,7 @@ async function resume(room: Room): Promise<void> {
   <div class="home">
     <div class="home-stage">
       <div class="home-main is-wide">
-        <BrandLockup v-if="pane === 'menu'">《我的世界》局域网联机工具</BrandLockup>
+        <BrandLockup v-if="pane === 'menu'">局域网联机工具 · 支持《我的世界》等游戏</BrandLockup>
 
         <!-- ----------------------------------------------------------- 主页 -->
         <template v-if="pane === 'menu'">
