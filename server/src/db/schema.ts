@@ -393,6 +393,27 @@ update rooms set ttl_minutes = (
   select json_extract(value, '$.roomTtlMinutes') from settings where key = 'platform'
 ) where status = 'open' and ttl_minutes is null;
 `;
+
+/**
+ * V15：客户端版本 1.0.1 → 1.0.2。
+ *
+ * 沿用 V8/V9 的纪律：只动"还停在上一版默认值"的部署，管理员手改过版本或下载地址的一律不碰。
+ * 1.0.2 是纯客户端修复（WS 重连加抖动、GPU 进程崩溃后自动降级软件渲染），
+ * 主控侧只需要把对外宣称的版本与下载地址推上去 —— 客户端靠它提示"有新版本"。
+ */
+const V15_CLIENT_1_0_2 = `
+update settings
+   set value = json_set(value, '$.clientVersion', '1.0.2'),
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ where key = 'platform'
+   and json_extract(value, '$.clientVersion') = '1.0.1';
+
+update settings
+   set value = json_set(value, '$.clientDownloadUrl', '/downloads/McLink-Setup-1.0.2-x64.exe'),
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ where key = 'platform'
+   and json_extract(value, '$.clientDownloadUrl') = '/downloads/McLink-Setup-1.0.1-x64.exe';
+`;
 export const MIGRATIONS: readonly string[] = [
   V1_INITIAL,
   V2_RELAY_ROOM_MAP,
@@ -408,6 +429,7 @@ export const MIGRATIONS: readonly string[] = [
   V12_USER_LAST_SEEN,
   V13_NODE_CAPACITY_BPS,
   V14_ROOM_TTL,
+  V15_CLIENT_1_0_2,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

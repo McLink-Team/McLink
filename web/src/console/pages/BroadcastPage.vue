@@ -306,7 +306,7 @@ const percent = computed(() => {
               v-model="subject"
               class="input"
               maxlength="80"
-              placeholder="例如：McLink 1.0.1 已发布"
+              placeholder="例如：McLink 1.0.2 已发布"
             />
           </div>
           <div class="field">
