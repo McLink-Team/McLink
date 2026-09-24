@@ -27,6 +27,8 @@ INSTALL_DIR="/opt/mclink-node"
 RUN_USER="mclink"
 MASTER=""
 ENROLL_KEY=""
+# 更新模式：已经装过的机器上刷新 agent/二进制/单元并重启（不注册、不写 node.env）
+UPDATE_MODE="false"
 REGION=""
 ENDPOINT=""
 # 运行端口 / 链接端口：默认都取 --endpoint 的端口；NAT 后面两者可以不同
@@ -59,6 +61,12 @@ fi
 log()  { printf '%s[信息]%s %s\n' "$c_cyan" "$c_reset" "$*" >&2; }
 ok()   { printf '%s[完成]%s %s\n' "$c_green" "$c_reset" "$*" >&2; }
 warn() { printf '%s[警告]%s %s\n' "$c_yellow" "$c_reset" "$*" >&2; }
+
+# 从 node.env 里取一个值。**故意用 sed 而不是 source**：那个文件是给 systemd 的
+# EnvironmentFile，值里可能有空格/引号（例如 TAGS），source 进来会当成命令执行。
+env_get() {
+  sed -n "s/^$1=//p" "${ENV_FILE:-/nonexistent}" 2>/dev/null | tail -n 1
+}
 die()  { printf '%s[错误]%s %s\n' "$c_red" "$c_reset" "$*" >&2; exit 1; }
 
 usage() {
@@ -102,12 +110,17 @@ mclink 子节点（区域中继）一键安装脚本（Debian 12 x86_64）
   --source <目录>            源码目录（用于在 node.env 里记录文档路径，可省略）
   --skip-easytier            跳过 EasyTier 下载
   --no-ufw                   不修改 ufw 规则
+  --update                   更新模式：这台机器已经装过，只把 agent / 二进制 / 单元刷到最新并重启，
+                             不碰令牌、不需要注册密钥（参数从 /etc/mclink/node.env 读回）
   -h, --help                 显示本帮助
   --version                  显示脚本版本
 
 说明：
   * 注册密钥是一次性的：安装成功后 agent 会把长期令牌写入 /etc/mclink/node-token.json，
     之后重启服务无需再次注册。可以放心把 MCLINK_NODE_ENROLL_KEY 从 node.env 中删掉。
+  * **同一台机器重装不会换身份**：令牌文件不会被删除，agent 会继续用原来的节点 ID，
+    新签发的那把密钥保持未使用（换机器安装时才用得上）。
+  * 只想让节点用上主控侧的最新配置/脚本时，用 `--update`（控制台的「复制更新指令」就是它）。
   * 防火墙要放行的是**运行端口**（本机监听的那个）与对外映射端口，TCP 与 UDP 都要。
   * 典型的"一条命令"由管理台生成（控制台 → 中继节点 → 签发注册密钥），
     形如 `curl -fsSL <主控>/agent/install.sh | sudo bash -s -- ...`，无需先拿到本仓库。
@@ -134,11 +147,30 @@ while [[ $# -gt 0 ]]; do
     --source)            [[ $# -ge 2 ]] || die "--source 缺少参数"; SOURCE_DIR="$2"; shift 2 ;;
     --skip-easytier)     SKIP_EASYTier="true"; shift ;;
     --no-ufw)            NO_UFW="true"; shift ;;
+    --update)            UPDATE_MODE="true"; shift ;;
     -h|--help)           usage; exit 0 ;;
     --version)           echo "install-node.sh ${SCRIPT_VERSION}"; exit 0 ;;
     *)                   printf '[错误] 未知参数: %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+# ---------------------------------------------------------------- 更新模式的参数来源
+# `--update` 时参数不从命令行来，而是从这台机器上已有的 node.env 读回 ——
+# 这样控制台给的"更新指令"可以短到只有一条 curl，也不会因为运维忘了当初的参数而装错。
+# 读回来之后，下面那套校验/规范化（master 前缀、endpoint 拆端口…）照常跑一遍。
+if [[ "$UPDATE_MODE" == "true" ]]; then
+  [[ -f "$ENV_FILE" ]] || die "没找到 ${ENV_FILE}：这台机器还没装过子节点。请用控制台的「复制安装指令」先安装。"
+  MASTER="$(env_get MCLINK_NODE_MASTER)"
+  REGION="$(env_get MCLINK_NODE_REGION)"
+  ENDPOINT="$(env_get MCLINK_NODE_ENDPOINT)"
+  LISTEN_PORT="$(env_get MCLINK_NODE_LISTEN_PORT)"
+  CONNECT_PORT="$(env_get MCLINK_NODE_CONNECT_PORT)"
+  NODE_NAME="$(env_get MCLINK_NODE_NAME)"
+  CAPACITY_PEERS="$(env_get MCLINK_NODE_CAPACITY_PEERS)"
+  TAGS="$(env_get MCLINK_NODE_TAGS)"
+  GITHUB_PROXY="$(env_get MCLINK_NODE_GITHUB_PROXY)"
+  [[ -n "$MASTER" ]] || die "${ENV_FILE} 里没有 MCLINK_NODE_MASTER，无法确定主控地址"
+fi
 
 # ---------------------------------------------------------------- 基本校验
 [[ "${EUID}" -eq 0 ]] || die "请用 root 运行：sudo bash deploy/install-node.sh ..."
@@ -469,6 +501,8 @@ write_env_file() {
     echo "# 留空则主控按请求来源 IP 记录；也可显式指定（多网卡 / NAT 场景）"
     echo "# MCLINK_NODE_PUBLIC_IP="
     echo "MCLINK_NODE_LOG_LEVEL=info"
+    # 记下加速前缀：`--update` 时靠它把 EasyTier 二进制也刷到最新（国内直连 GitHub 会超时）
+    [[ -n "$GITHUB_PROXY" ]] && echo "MCLINK_NODE_GITHUB_PROXY=${GITHUB_PROXY}"
   } > "$ENV_FILE"
   umask "$old_umask"
 
@@ -579,8 +613,56 @@ ${c_green}======================= mclink 子节点安装完成 =================
 EOF
 }
 
+# ---------------------------------------------------------------- 更新模式
+# 已装过的机器上「只更新」：主控侧改了 agent 脚本 / 配置 / 单元，节点侧一条命令跟上。
+# 与安装的区别：不消耗注册密钥、不重写 node.env（节点身份与端口都不变）、不碰防火墙。
+# 参数已在上面的"更新模式的参数来源"里从 node.env 读回，这里只做真正的工作。
+run_update() {
+  # 令牌在，说明这台机器注册过 —— 身份不变是更新模式的关键前提
+  if [[ ! -f "${CONF_DIR}/node-token.json" ]]; then
+    die "还没有节点令牌（${CONF_DIR}/node-token.json）：这台机器尚未注册成功，请改用「安装指令」重新安装"
+  fi
+
+  log "更新模式：${NODE_NAME} → ${MASTER}（不消耗注册密钥，不重写 ${ENV_FILE}）"
+
+  install_base_packages
+  ensure_node
+  ensure_user
+  prepare_dirs
+  install_agent
+  install_easytier
+  install_unit
+
+  log "重启服务…"
+  systemctl daemon-reload
+  systemctl restart mclink-node
+
+  # 起来没有？给 3 秒观察，失败时把最近的日志打出来（而不是只说"失败了"）
+  local i
+  for i in 1 2 3; do
+    sleep 1
+    if systemctl is-active --quiet mclink-node; then break; fi
+  done
+
+  echo
+  if systemctl is-active --quiet mclink-node; then
+    ok "更新完成：服务已运行（节点 ${NODE_NAME}）"
+    log "agent 会在下一次心跳（默认 20 秒内）把主控侧的最新配置应用到 easytier-core"
+    log "查看状态：systemctl status mclink-node --no-pager"
+  else
+    warn "服务没起来，最近 20 行日志如下："
+    journalctl -u mclink-node -n 20 --no-pager || true
+    exit 1
+  fi
+}
+
 # ---------------------------------------------------------------- 主流程
 main() {
+  if [[ "$UPDATE_MODE" == "true" ]]; then
+    run_update
+    return
+  fi
+
   log "mclink 子节点安装脚本 ${SCRIPT_VERSION} 开始（${NODE_NAME} → ${MASTER}）"
 
   install_base_packages

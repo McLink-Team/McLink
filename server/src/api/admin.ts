@@ -6,7 +6,7 @@ import type { Router } from '../http/kit.ts';
 import { optBool, optInt, optStr, paging, req, requireAdmin } from './helpers.ts';
 import { HttpError } from '../util/errors.ts';
 import { logger } from '../logger.ts';
-import { toNode } from '../db/nodes.ts';
+import { endpointHost, toNode } from '../db/nodes.ts';
 import { toRoom } from '../db/rooms.ts';
 import { enrollKey as makeEnrollKey } from '../util/id.ts';
 import { buildOverview } from './public.ts';
@@ -177,6 +177,57 @@ export function registerAdminRoutes(router: Router, app: App): void {
       usedBy: k.used_by,
       revoked: k.revoked === 1,
     }));
+  }, { auth: true, admin: true });
+
+  /**
+   * 给**已有节点**重新生成「安装指令」。
+   *
+   * 为什么要重新签密钥：注册密钥是一次性的，节点表里存的是哈希，原文拿不回来。
+   * 参数默认取这个节点现有记录（区域/名字/端口/主机名），换机器或换端口时可以用 body 覆盖。
+   *
+   * 一个容易误解的点（界面上也要写清楚）：**同一台机器重装不会换身份** ——
+   * install-node.sh 不删 /etc/mclink/node-token.json，agent 会继续用原来的节点 ID，
+   * 这把新密钥会保持未使用。只有换机器安装才会真的用掉它。
+   */
+  router.post('/admin/nodes/:id/reinstall-command', async (ctx) => {
+    const auth = requireAdmin(ctx);
+    const body = await ctx.body();
+    const node = app.nodeService.get(ctx.params.id ?? '');
+    const key = makeEnrollKey();
+    app.enrollKeys.create(key, `重装节点 ${node.name}`, auth.userId);
+    const command = buildAgentCommand(app, key, {
+      region: node.region,
+      name: node.name,
+      // 节点表里的 endpoint 是 host:port；这里只要 host，端口用节点自己的链接端口
+      host: optStr(body, 'host', 120) ?? endpointHost(node.endpoint),
+      listenPort: node.listenPort ?? undefined,
+      connectPort: node.connectPort ?? undefined,
+      domestic: optBool(body, 'domestic') === true,
+      githubProxy: optStr(body, 'githubProxy', 200),
+    });
+    app.audit.write({
+      actorType: 'admin',
+      actorId: auth.userId,
+      actorName: auth.username,
+      action: 'node.reinstall_command',
+      targetType: 'node',
+      targetId: node.id,
+      detail: { enrollKey: key },
+      ip: ctx.ip,
+    });
+    return { enrollKey: key, command };
+  }, { auth: true, admin: true });
+
+  /**
+   * 「更新指令」：不换令牌，只把节点上的 agent / 二进制 / systemd 单元刷到最新并重启。
+   *
+   * 配置本身不需要这条命令 —— agent 每次心跳都会应用主控下发的 configToml
+   * （有变化才写盘并重启核心）。这条命令解决的是另一半：脚本与单元也会随版本更新。
+   */
+  router.get('/admin/nodes/:id/update-command', (ctx) => {
+    requireAdmin(ctx);
+    app.nodeService.get(ctx.params.id ?? '');
+    return { command: buildAgentUpdateCommand(app) };
   }, { auth: true, admin: true });
 
   router.patch('/admin/nodes/:id', async (ctx) => {
@@ -808,4 +859,17 @@ function publicHostOf(app: App): string {
   const fromRelay = app.config.easytier.relayPublicHost;
   if (fromRelay) return fromRelay;
   return `127.0.0.1:${app.config.port}`;
+}
+
+/**
+ * 「更新指令」：在**已经装过**的节点上跑，把 agent / EasyTier 二进制 / systemd 单元
+ * 刷到主控侧的最新版，然后重启服务。
+ *
+ * 为什么不需要注册密钥：`--update` 从 /etc/mclink/node.env 读回主控地址与节点参数、
+ * 用已有的 /etc/mclink/node-token.json 保持身份，全程不碰注册流程。
+ * 所以这条命令对运维是"零参数"的，复制粘贴就能用。
+ */
+function buildAgentUpdateCommand(app: App): string {
+  const base = app.config.publicBaseUrl || `http://${publicHostOf(app)}`;
+  return `curl -fsSL ${base}/agent/install.sh | sudo bash -s -- --update`;
 }
