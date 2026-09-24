@@ -9,6 +9,7 @@ import type { IncomingMessage, Server } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { Topics, type ClientEvent, type ServerEvent } from '@mclink/shared';
 import { logger } from '../logger.ts';
+import { APP_VERSION } from '../app.ts';
 import type { AuthContext } from '../http/kit.ts';
 
 const log = logger('ws');
@@ -154,7 +155,7 @@ export class WsHub {
     this.#send(client, {
       type: 'hello',
       serverTime: new Date().toISOString(),
-      version: '0.1.0',
+      version: APP_VERSION,
       topics: [...client.topics],
     });
   }
@@ -182,7 +183,7 @@ export class WsHub {
             accepted.push(topic);
           }
         }
-        this.#send(client, { type: 'hello', serverTime: new Date().toISOString(), version: '0.1.0', topics: [...client.topics] });
+        this.#send(client, { type: 'hello', serverTime: new Date().toISOString(), version: APP_VERSION, topics: [...client.topics] });
         log.debug('话题订阅', { client: client.id, accepted });
         return;
       }

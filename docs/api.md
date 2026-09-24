@@ -725,7 +725,7 @@ ws(s)://<host>/ws?token=<登录令牌>
 { "type": "hello", "serverTime": "2026-01-01T08:00:00.000Z", "version": "1.0.0", "topics": ["user:u_ab12cd", "platform"] }
 ```
 
-说明：`hello` 里的 `version` 目前是硬编码的 `"1.0.0"`（与 `APP_VERSION` 一致）。
+说明：`hello` 里的 `version` 取自主控的 `APP_VERSION`（`server/src/app.ts`），与 `/meta.version` 同源，不再在各处硬编码。
 
 客户端 → 服务端：
 
