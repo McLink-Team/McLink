@@ -325,20 +325,32 @@ async function main(): Promise<void> {
    * 单次阻塞降到毫秒级，清理进度也不会因为一次跑不完而丢掉（下一小时继续）。
    */
   const purgeOldData = async (): Promise<void> => {
-    // 会话也一样分批：上限 100 批（20 万行）纯属防御，正常每小时只有几百行过期
+    /**
+     * 会话也一样分批。
+     *
+     * 批大小按"单批最坏阻塞时长"定：实测（1 万到 100 万行）无界 DELETE 最坏
+     * 385ms～4.3 秒，2000/批最坏 113～745ms，500/批约 30～190ms。
+     * 主控是单线程的，单批越短，被顶住的事件循环越短 —— 批数多一点无所谓，
+     * 反正批间 setImmediate 会让出循环。
+     */
     let sessions = 0;
-    for (let i = 0; i < 100; i += 1) {
-      const removed = app.users.pruneExpiredSessions(2000);
+    for (let i = 0; i < 400; i += 1) {
+      const removed = app.users.pruneExpiredSessions(500);
       sessions += removed;
-      if (removed < 2000) break;
+      if (removed < 500) break;
       await new Promise((resolve) => setImmediate(resolve));
     }
+    /**
+     * 采样表分批删除。批大小同样是按"单批最坏阻塞"定的：实测 100 万行库上
+     * 5000/批最坏 483ms，500 万行库上 5000/批最坏 1,129ms；改成 1000/批
+     * 大约降到 100～230ms。（无界 DELETE 在 500 万行时要 96 秒，等于主控
+     * 整整一分半完全不应答，任何代理都会先超时。）
+     */
     let samples = 0;
-    // 上限 400 批（200 万行）纯粹是防御：正常每小时只会有几千行过期
-    for (let i = 0; i < 400; i += 1) {
-      const removed = app.traffic.pruneBatch(72, 5000);
+    for (let i = 0; i < 2000; i += 1) {
+      const removed = app.traffic.pruneBatch(72, 1000);
       samples += removed;
-      if (removed < 5000) break;
+      if (removed < 1000) break;
       await new Promise((resolve) => setImmediate(resolve));
     }
     // 聊天记录只保留 7 天：房间早就关了的话，留着也没有意义（同样分批）

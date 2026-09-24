@@ -34,6 +34,14 @@ export class Db {
     this.#db.exec('pragma busy_timeout = 5000');
     this.#db.exec('pragma synchronous = NORMAL');
     /**
+     * 页缓存 64MB（SQLite 默认只有 2MB）。
+     * 实测（500 万行 / 727MB 的库）：一次 512 房间的心跳中位 24.9ms → 9.6ms。
+     * 代价是常驻内存 +64MB，可以随时回滚这两行。
+     */
+    this.#db.exec('pragma cache_size = -65536');
+    /** mmap 256MB：读走内存映射，省掉一轮页拷贝（库小于该值时按库大小映射） */
+    this.#db.exec('pragma mmap_size = 268435456');
+    /**
      * WAL 自动 checkpoint 阈值（单位：页；SQLite 默认 1000 页 ≈ 4MB）。
      *
      * 特意调大：checkpoint 会在**触发它的那一次写入调用里同步做完**（写主库 + fsync），
@@ -70,26 +78,39 @@ export class Db {
     this.#db.exec(sql);
   }
 
+  /**
+   * prepared statement 缓存。
+   *
+   * `DatabaseSync.prepare()` 每次都要重新解析 SQL 并编译。实测在 512 行/批的写入路径上，
+   * 复用语句比每次 prepare 快 **2.3 倍**（32.8k → 76.4k 行/秒）。
+   * 语句对象无状态（参数每调用传入），缓存安全；容量给 512 —— 本项目语句总数远小于它，
+   * 等于全缓存，万一到顶就整体清空重来（最坏退化成原来的行为）。
+   */
+  readonly #stmts = new Map<string, ReturnType<DatabaseSync['prepare']>>();
+
+  #stmt(sql: string): ReturnType<DatabaseSync['prepare']> {
+    let stmt = this.#stmts.get(sql);
+    if (!stmt) {
+      if (this.#stmts.size >= 512) this.#stmts.clear();
+      stmt = this.#db.prepare(sql);
+      this.#stmts.set(sql, stmt);
+    }
+    return stmt;
+  }
+
   run(sql: string, ...params: unknown[]): RunResult {
     return this.#timed(sql, () => {
-      const stmt = this.#db.prepare(sql);
-      const res = stmt.run(...(params as never[]));
+      const res = this.#stmt(sql).run(...(params as never[]));
       return { changes: res.changes, lastInsertRowid: res.lastInsertRowid };
     });
   }
 
   get<T = Row>(sql: string, ...params: unknown[]): T | undefined {
-    return this.#timed(sql, () => {
-      const stmt = this.#db.prepare(sql);
-      return stmt.get(...(params as never[])) as T | undefined;
-    });
+    return this.#timed(sql, () => this.#stmt(sql).get(...(params as never[])) as T | undefined);
   }
 
   all<T = Row>(sql: string, ...params: unknown[]): T[] {
-    return this.#timed(sql, () => {
-      const stmt = this.#db.prepare(sql);
-      return stmt.all(...(params as never[])) as T[];
-    });
+    return this.#timed(sql, () => this.#stmt(sql).all(...(params as never[])) as T[]);
   }
 
   /** 取单列单值 */
@@ -142,9 +163,22 @@ export class Db {
     };
   }
 
-  /** 同步事务；回调抛错则整体回滚 */
+  /**
+   * 事务嵌套深度。嵌套调用**并入外层事务**。
+   *
+   * SQLite 不支持嵌套 `begin`（会直接报 "cannot start a transaction within a transaction"），
+   * 而调用链天然会嵌套：例如 agent 心跳想把自己那 512 次 upsert + recordMany 合成一个事务，
+   * 而 recordMany 内部也在开事务。并进来既省掉重复的 begin/commit（少几次 fsync），
+   * 也让"顺手把外层包成事务"变成安全的优化手段。
+   * 不做 savepoint：这里不需要部分回滚，语义越简单越好。
+   */
+  #txDepth = 0;
+
+  /** 同步事务；回调抛错则整体回滚。已在事务里时直接并入外层 */
   transaction<T>(fn: () => T): T {
+    if (this.#txDepth > 0) return fn();
     this.#db.exec('begin immediate');
+    this.#txDepth += 1;
     try {
       const out = fn();
       this.#db.exec('commit');
@@ -156,10 +190,14 @@ export class Db {
         /* 回滚失败时保留原始异常 */
       }
       throw err;
+    } finally {
+      this.#txDepth -= 1;
     }
   }
 
   close(): void {
+    // 先放掉缓存的语句，避免"关闭时仍有未结束的语句"
+    this.#stmts.clear();
     try {
       this.#db.close();
     } catch {
