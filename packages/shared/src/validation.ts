@@ -171,3 +171,28 @@ export function isValidHostPort(value: string): boolean {
   const port = Number(m[2]);
   return port >= 1 && port <= 65535;
 }
+
+/** 手填用户名名单的长度上限：一次定向公告足够用，也防呆（防粘贴一整张表） */
+export const BROADCAST_USERNAME_MAX = 200;
+
+/**
+ * 解析管理员手填的用户名名单。
+ *
+ * 允许逗号、顿号、分号、空白、换行混合分隔 —— 从表格或聊天记录里粘过来就是这样。
+ * 大小写不敏感去重（用户名本身是唯一的，但人写的时候大小写随便）。
+ * **不在这里校验存在性**：那要查库才知道，由调用方回传"没找到的名字"让人自己核对。
+ */
+export function parseUsernameList(text: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of text.split(/[\s,，、;；]+/)) {
+    const name = raw.trim();
+    if (name.length === 0) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(name);
+    if (out.length >= BROADCAST_USERNAME_MAX) break;
+  }
+  return out;
+}

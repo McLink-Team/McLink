@@ -21,6 +21,8 @@
  * 但结果写审计日志，"谁在什么时候发了什么、成功多少失败多少"可追溯。
  */
 
+import { DEFAULT_BROADCAST_AUDIENCE, type BroadcastAudience } from '@mclink/shared';
+
 export interface BroadcastCounts {
   /** 可发送：有邮箱 + 已验证 + 未封禁 */
   deliverable: number;
@@ -37,6 +39,8 @@ export interface BroadcastCounts {
 export interface BroadcastReport {
   id: string;
   subject: string;
+  /** 本次的收件人筛选（便于事后回答"那封信到底发给了谁"） */
+  audience: BroadcastAudience;
   startedAt: string;
   finishedAt: string | null;
   total: number;
@@ -47,6 +51,17 @@ export interface BroadcastReport {
 }
 
 export interface BroadcastPreview extends BroadcastCounts {
+  /**
+   * 当前筛选条件下的收件人数（= 点发送真正会发给的人数）。
+   * 与 `deliverable`（全平台可发送总数）分开：管理员改筛选时看的是它。
+   */
+  selected: number;
+  /** 手填名单里库里没有的用户名（界面要逐个列出来让人核对） */
+  missingUsernames: string[];
+  /** 手填名单里存在、但不满足发送条件的用户名（没邮箱/未验证/已封禁/已退订） */
+  undeliverableUsernames: string[];
+  /** 回显当前筛选，便于界面确认"看到的就是要发的" */
+  audience: BroadcastAudience;
   running: boolean;
   lastRun: BroadcastReport | null;
 }
@@ -57,7 +72,11 @@ export interface BroadcastDeps {
   };
   users: {
     /** **不受 list() 分页上限影响**：群发要的是全量收件人 */
-    listBroadcastRecipients(): Array<{ id: string; email: string; displayName: string }>;
+    listBroadcastRecipients(audience?: BroadcastAudience): {
+      recipients: Array<{ id: string; email: string; displayName: string }>;
+      missingUsernames: string[];
+      undeliverableUsernames: string[];
+    };
     broadcastCounts(): BroadcastCounts;
   };
   audit: {
@@ -102,9 +121,18 @@ export class BroadcastService {
     this.#deps = deps;
   }
 
-  preview(): BroadcastPreview {
+  preview(audience: BroadcastAudience = DEFAULT_BROADCAST_AUDIENCE): BroadcastPreview {
     const counts = this.#deps.users.broadcastCounts();
-    return { ...counts, running: this.#running !== null, lastRun: this.#running ?? this.#last };
+    const picked = this.#deps.users.listBroadcastRecipients(audience);
+    return {
+      ...counts,
+      selected: picked.recipients.length,
+      missingUsernames: picked.missingUsernames,
+      undeliverableUsernames: picked.undeliverableUsernames,
+      audience,
+      running: this.#running !== null,
+      lastRun: this.#running ?? this.#last,
+    };
   }
 
   status(): BroadcastReport | null {
@@ -133,16 +161,26 @@ export class BroadcastService {
    * 登记并启动一次群发，**立刻返回**（发送在后台）。
    * 返回 null = 已有任务在跑，界面要提示等上一次结束（绝不排队，避免误点多次）。
    */
-  start(input: { subject?: unknown; body?: unknown; actor?: string }): BroadcastReport | null {
+  start(input: { subject?: unknown; body?: unknown; actor?: string; audience?: BroadcastAudience }): BroadcastReport | null {
     if (this.#running !== null) return null;
     const { subject, body } = this.#normalize(input);
+    const audience = input.audience ?? DEFAULT_BROADCAST_AUDIENCE;
 
     const siteName = this.#deps.settings.current.siteName || 'McLink 联机';
-    const recipients = this.#deps.users.listBroadcastRecipients().slice(0, MAX_RECIPIENTS);
+    const picked = this.#deps.users.listBroadcastRecipients(audience);
+    /**
+     * 一个人都没有就别登记任务：否则界面上会出现一次"成功发出 0 封"的记录，
+     * 管理员会以为公告已经发过了（实际是筛选条件把所有人都排除了）。
+     */
+    if (picked.recipients.length === 0) {
+      throw new Error('当前筛选下没有可发送的收件人：请放宽条件，或确认这些账号是否都已验证邮箱');
+    }
+    const recipients = picked.recipients.slice(0, MAX_RECIPIENTS);
 
     const report: BroadcastReport = {
       id: `bc_${Date.now().toString(36)}`,
       subject,
+      audience,
       startedAt: new Date().toISOString(),
       finishedAt: null,
       total: recipients.length,
@@ -160,7 +198,15 @@ export class BroadcastService {
       action: 'mail.broadcast.start',
       targetType: 'platform',
       targetId: report.id,
-      detail: { subject, recipients: recipients.length },
+      // 筛选条件也写进审计：事后要能回答"那封信到底发给了谁"
+      detail: {
+        subject,
+        recipients: recipients.length,
+        roles: audience.roles,
+        activeWithinDays: audience.activeWithinDays,
+        usernames: audience.usernames,
+        missingUsernames: picked.missingUsernames,
+      },
     });
 
     void this.#run(recipients, subject, body, siteName, report);

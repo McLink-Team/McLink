@@ -929,7 +929,9 @@ dt + dd {
 .console-head-sub {
   font-size: var(--fs-sm);
   color: var(--paper-dim);
-  max-width: 76ch;
+  /* 行宽用项目自己的度量 token，不写 ch：ch 是拉丁字宽，CJK 下会宽出一倍，
+     一行塞到 80+ 字既不好读，也会被设计检测器的 line-length 规则判超长。 */
+  max-width: var(--measure);
 }
 .console-head-actions {
   display: flex;
@@ -979,7 +981,8 @@ dt + dd {
 .console-section-note {
   font-size: var(--fs-sm);
   color: var(--paper-dim);
-  max-width: 72ch;
+  /* 同上：与落地页正文用同一个行宽度量，CJK 一行约 35–40 字 */
+  max-width: var(--measure);
 }
 /* 区块内的分组小标题：靠字号与颜色分层，不加下划线也不加底色 */
 .console-sub-title {

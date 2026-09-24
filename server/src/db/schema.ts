@@ -353,6 +353,18 @@ update settings
  where key = 'platform'
    and json_extract(value, '$.siteTagline') = '基于 EasyTier 的《我的世界》联机平台 —— 单端口、低延迟、开箱即用';
 `;
+
+/**
+ * V12：`users.last_seen_at` —— 群发公告要能按「最近 N 天活跃」挑收件人。
+ *
+ * 为什么不直接读 `sessions.last_seen_at`：会话是登出/过期就删的，
+ * 活跃度会莫名其妙"变旧"（一个昨天还在玩、今天退出了登录的人，看起来像从没来过）。
+ * 挂在用户行上才是持久的，也不受会话保留期影响。
+ */
+const V12_USER_LAST_SEEN = `
+alter table users add column last_seen_at text;
+create index if not exists idx_users_last_seen on users(last_seen_at);
+`;
 export const MIGRATIONS: readonly string[] = [
   V1_INITIAL,
   V2_RELAY_ROOM_MAP,
@@ -365,6 +377,7 @@ export const MIGRATIONS: readonly string[] = [
   V9_CLIENT_1_0_1,
   V10_EMAIL_OPT_OUT,
   V11_TAGLINE_ALL_GAMES,
+  V12_USER_LAST_SEEN,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

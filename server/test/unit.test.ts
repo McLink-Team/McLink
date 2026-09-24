@@ -49,6 +49,8 @@ import {
   generateRoomCode,
   passwordProblem,
   reconnectDelayMs,
+  parseUsernameList,
+  BROADCAST_USERNAME_MAX,
 } from '@mclink/shared';
 import { randomBytes } from 'node:crypto';
 
@@ -803,5 +805,33 @@ describe('重连退避 reconnectDelayMs', () => {
   test('不同客户端会得到不同时长（没有抖动就会一起回来）', () => {
     const values = new Set(Array.from({ length: 40 }, () => reconnectDelayMs(3)));
     assert.ok(values.size > 5, `40 次只有 ${values.size} 个不同值，抖动没生效`);
+  });
+});
+
+/** 群发公告的手填名单：管理员是从表格/聊天记录里复制粘贴过来的，分隔符必须宽容 */
+describe('群发名单解析 parseUsernameList', () => {
+  test('逗号/顿号/分号/空白/换行混合分隔都能切开', () => {
+    assert.deepEqual(parseUsernameList('alice, bob、carol;dave\neve fiona'), [
+      'alice',
+      'bob',
+      'carol',
+      'dave',
+      'eve',
+      'fiona',
+    ]);
+  });
+
+  test('大小写不敏感去重，保留第一次出现的写法', () => {
+    assert.deepEqual(parseUsernameList('Alice, alice, ALICE'), ['Alice']);
+  });
+
+  test('空串与纯分隔符得到空数组（= 不筛人，走全量）', () => {
+    assert.deepEqual(parseUsernameList(''), []);
+    assert.deepEqual(parseUsernameList('   ,, 、 ; \n'), []);
+  });
+
+  test('超过上限时截断，避免一次粘贴整张表', () => {
+    const many = Array.from({ length: BROADCAST_USERNAME_MAX + 50 }, (_, i) => `user${i}`).join(',');
+    assert.equal(parseUsernameList(many).length, BROADCAST_USERNAME_MAX);
   });
 });

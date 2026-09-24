@@ -37,6 +37,29 @@ export interface UserSelf extends User {
   maxRooms: number | null;
 }
 
+/**
+ * 群发公告的收件人筛选。
+ *
+ * 角色与活跃度可以叠加，但**手填用户名优先**：一旦填了名单，就只发给名单上的人，
+ * 另外两个条件被忽略 —— 手填的语义是"我就要发给这几个人"，
+ * 再叠一层活跃度只会让人猜不透为什么少了人。
+ */
+export interface BroadcastAudience {
+  /** 角色范围：全部 / 仅管理员 / 仅普通用户 */
+  roles: 'all' | 'admin' | 'user';
+  /** 只看最近 N 天活跃过（登录或客户端心跳）的账号；null = 不限 */
+  activeWithinDays: number | null;
+  /** 手工指定的用户名（非空时以它为准） */
+  usernames: string[];
+}
+
+/** 筛选默认值：全部人、不限活跃度、不手填 */
+export const DEFAULT_BROADCAST_AUDIENCE: BroadcastAudience = {
+  roles: 'all',
+  activeWithinDays: null,
+  usernames: [],
+};
+
 /* ------------------------------------------------------------ 子节点/中继 */
 
 export type NodeStatus = 'pending' | 'online' | 'degraded' | 'offline' | 'disabled';

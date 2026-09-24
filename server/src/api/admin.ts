@@ -1,5 +1,5 @@
 /** 管理员接口：仪表盘、节点管理、房间管理、用户管理、流量、审计、中继控制 */
-import { Routes, DEFAULT_GITHUB_PROXY, emailProblem, regionLabel, type PlatformSettings, type SmtpEncryption } from '@mclink/shared';
+import { Routes, DEFAULT_GITHUB_PROXY, emailProblem, parseUsernameList, regionLabel, type BroadcastAudience, type PlatformSettings, type SmtpEncryption } from '@mclink/shared';
 import fs from 'node:fs';
 import type { App } from '../app.ts';
 import type { Router } from '../http/kit.ts';
@@ -15,6 +15,23 @@ import { SCHEMA_VERSION } from '../db/schema.ts';
 import { mergeRelayedNetworks } from '../services/nodes.ts';
 
 const log = logger('api:admin');
+
+/**
+ * 解析群发的收件人筛选（GET 走 query、POST 走 body，所以这里收的是裸值）。
+ *
+ * 越界的值一律**夹到合法区间**而不是报错：管理员在界面上点来点去，
+ * 因为一个数字越界就发不出去，比"按最接近的合法值处理"体验差得多。
+ */
+function audienceFrom(
+  rolesRaw: string | undefined,
+  daysRaw: string | number | undefined,
+  namesRaw: string | undefined,
+): BroadcastAudience {
+  const roles = rolesRaw === 'admin' || rolesRaw === 'user' ? rolesRaw : 'all';
+  const days = daysRaw === undefined || daysRaw === '' ? Number.NaN : Number(daysRaw);
+  const activeWithinDays = !Number.isFinite(days) || days <= 0 ? null : Math.min(Math.trunc(days), 3650);
+  return { roles, activeWithinDays, usernames: parseUsernameList(namesRaw ?? '') };
+}
 
 /**
  * 读取一个"允许为空"的字符串字段。
@@ -438,17 +455,31 @@ export function registerAdminRoutes(router: Router, app: App): void {
    * 三个动作分开：GET 取预览（能发给多少人、为什么有人收不到）+ 进度，
    * POST 登记并启动（**立刻返回**，发送在后台分批跑），DELETE 中止。
    * 之所以启动与查询分开：主控有 110 秒请求看门狗，同步发几百封信必然被掐。
+   *
+   * 收件人可以筛：角色（全部/仅管理员/仅普通）、最近 N 天活跃、或手填用户名。
+   * 筛选条件跟着 GET 一起传，页面上的"将发送给 N 人"就是按它算出来的。
    */
   router.get(Routes.adminBroadcast, (ctx) => {
     requireAdmin(ctx);
-    return app.broadcast.preview();
+    return app.broadcast.preview(
+      audienceFrom(ctx.query.get('roles') ?? undefined, ctx.query.get('activeDays') ?? undefined, ctx.query.get('usernames') ?? undefined),
+    );
   }, { auth: true, admin: true });
 
   router.post(Routes.adminBroadcast, async (ctx) => {
     const auth = requireAdmin(ctx);
     const body = await ctx.body();
     try {
-      const report = app.broadcast.start({ subject: body.subject, body: body.body, actor: auth.userId });
+      const report = app.broadcast.start({
+        subject: body.subject,
+        body: body.body,
+        actor: auth.userId,
+        audience: audienceFrom(
+          typeof body.roles === 'string' ? body.roles : undefined,
+          typeof body.activeDays === 'number' || typeof body.activeDays === 'string' ? body.activeDays : undefined,
+          Array.isArray(body.usernames) ? body.usernames.join(',') : typeof body.usernames === 'string' ? body.usernames : undefined,
+        ),
+      });
       if (!report) {
         // 不排队：误点两次不该把同一封信发两遍
         throw HttpError.conflict('已有群发任务在运行，请等它结束后再发');
