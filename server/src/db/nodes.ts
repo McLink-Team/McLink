@@ -15,6 +15,8 @@ export interface NodeRow {
   status: string;
   version: string | null;
   capacity_peers: number;
+  /** V13：带宽上限（bit/s），0 = 不限；调度用它算带宽余量 */
+  capacity_bps?: number;
   peers: number;
   rooms: number;
   rx_bps: number;
@@ -82,6 +84,7 @@ export function toNode(row: NodeRow): RelayNode {
     status: row.status as NodeStatus,
     version: row.version,
     capacityPeers: row.capacity_peers,
+    capacityBps: row.capacity_bps ?? 0,
     peers: row.peers,
     rooms: row.rooms,
     rxBps: row.rx_bps,
@@ -204,6 +207,8 @@ export class NodeRepo {
       connectPort?: number;
       weight?: number;
       capacityPeers?: number;
+      /** 带宽上限（bit/s），0 = 不限 */
+      capacityBps?: number;
       tags?: string[];
     },
   ): void {
@@ -236,6 +241,10 @@ export class NodeRepo {
     if (fields.capacityPeers !== undefined) {
       sets.push('capacity_peers = ?');
       params.push(fields.capacityPeers);
+    }
+    if (fields.capacityBps !== undefined) {
+      sets.push('capacity_bps = ?');
+      params.push(fields.capacityBps);
     }
     if (fields.tags !== undefined) {
       sets.push('tags = ?');

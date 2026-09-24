@@ -42,8 +42,14 @@ import { AuditRepo } from '../db/traffic.ts';
 import { MessageRepo } from '../db/chat.ts';
 import { assertEmailVerified } from './email-gate.ts';
 import type { SettingsService } from './settings.ts';
+import { NodeUtilization } from './node-utilization.ts';
 
 const log = logger('rooms');
+
+/** 带宽利用率阈值：与 NodeService 的状态机保持一致（≥90% 不再分配新房间） */
+const UTIL_SHED = 0.9;
+/** 降级节点的罚分：够大，能压过权重差异，但不会把它彻底排除（兜底时仍然可用） */
+const DEGRADED_PENALTY = 100;
 
 /** 房间状态变化后统一广播，避免每个分支各写一遍 */
 function notifyChanged(events: AppEventBus, roomId: string): void {
@@ -166,6 +172,22 @@ export function resolveMemberLink(rows: PeerReport[], hostIp: string, isHost: bo
   };
 }
 
+/**
+ * 调度打分（纯函数，便于单测）。
+ *
+ * `weight × min(人数余量, 带宽余量) − 降级罚分`
+ *
+ * 两个余量取**最小值**：它们各自都能独立把节点顶死 —— 200 个 peer 的节点即使没什么流量
+ * 也接不了新房间（每个 peer 都要握手与维护路由），而只有 5 个 peer 但跑满 5Mbps 的节点
+ * 同样不行。以前只算人数余量，于是"5 个 peer 的满带宽节点"会被当成最优选择（用户实测反馈）。
+ */
+export function relayScore(row: NodeRow, utilization: number): number {
+  const peerHeadroom = Math.max(0, row.capacity_peers - row.peers) / Math.max(1, row.capacity_peers);
+  const bwHeadroom = 1 - Math.min(1, Math.max(0, utilization));
+  const penalty = row.status === 'degraded' ? DEGRADED_PENALTY : 0;
+  return row.weight * Math.min(peerHeadroom, bwHeadroom) - penalty;
+}
+
 export class RoomService {
   private readonly config: ServerConfig;
   private readonly rooms: RoomRepo;
@@ -175,6 +197,8 @@ export class RoomService {
   private readonly settings: SettingsService;
   private readonly events: AppEventBus;
   private readonly messages: MessageRepo;
+  /** 带宽利用率（与 NodeService 共享同一个实例） */
+  private readonly util: NodeUtilization;
 
   constructor(
     config: ServerConfig,
@@ -185,6 +209,7 @@ export class RoomService {
     settings: SettingsService,
     events: AppEventBus,
     messages: MessageRepo,
+    util: NodeUtilization,
   ) {
     this.config = config;
     this.rooms = rooms;
@@ -194,6 +219,7 @@ export class RoomService {
     this.settings = settings;
     this.events = events;
     this.messages = messages;
+    this.util = util;
   }
 
   /**
@@ -981,22 +1007,45 @@ export class RoomService {
   scheduleRelays(zone: string, max = 2): string[] {
     const all = this.nodes.listSchedulable();
     if (all.length === 0) return [];
-    const score = (n: NodeRow): number => {
-      const headroom = Math.max(0, n.capacity_peers - n.peers) / Math.max(1, n.capacity_peers);
-      const loadPenalty = n.status === 'degraded' ? 0.5 : 0;
-      return n.weight * headroom - loadPenalty * 100;
-    };
+    const score = (n: NodeRow): number => relayScore(n, this.utilizationOf(n));
     const sorter = (a: NodeRow, b: NodeRow) => score(b) - score(a) || a.peers - b.peers;
 
-    if (zone === 'auto') {
-      return all.sort(sorter).slice(0, max).map((n) => n.id);
+    /**
+     * 带宽已吃紧（利用率 ≥90%）的节点**这次不再分配新房间**。
+     *
+     * 这是"只影响新票据"的核心：不动已经跑着的房间，也不去改节点配置 ——
+     * 改配置要重启该节点的 easytier-core，会把它上面所有房间一起抖断（秒级），
+     * 为了缓解负载而制造一次全网瞬断是不划算的。房间是短命的（TTL + 空房回收），
+     * 不再分配新房间就能让这台节点自然排空。
+     *
+     * 但如果**所有**候选都吃紧，就不能空手而归：那样新房间会连中继都没有，
+     * 只剩主控兜底。这时退回全量候选并记一条日志（宁可挤一点，也别把房间挤没了）。
+     */
+    const relaxed = all.filter((n) => !this.isBandwidthBusy(n));
+    const pool = relaxed.length > 0 ? relaxed : all;
+    if (relaxed.length === 0) {
+      log.warn('所有可用节点的带宽都已吃紧，回退到全量候选（新房间只能挤一挤）', { zone });
     }
-    const inZone = all.filter((n) => n.region === zone);
+
+    if (zone === 'auto') {
+      return pool.sort(sorter).slice(0, max).map((n) => n.id);
+    }
+    const inZone = pool.filter((n) => n.region === zone);
     if (inZone.length === 0) {
       log.warn('指定区域没有可用节点，回退到全局调度', { zone });
-      return all.sort(sorter).slice(0, max).map((n) => n.id);
+      return pool.sort(sorter).slice(0, max).map((n) => n.id);
     }
     return inZone.sort(sorter).slice(0, Math.min(max, inZone.length)).map((n) => n.id);
+  }
+
+  /** 这台节点的带宽利用率（0–1）；没配 capacity_bps 时恒为 0（不构成约束） */
+  utilizationOf(row: NodeRow): number {
+    return this.util.utilization(row.id, row.capacity_bps ?? 0);
+  }
+
+  /** 带宽是否已到"不再分配新房间"的程度（与 NodeService 的状态机用同一个阈值） */
+  isBandwidthBusy(row: NodeRow): boolean {
+    return this.utilizationOf(row) >= UTIL_SHED;
   }
 
   /* ------------------------------------------------------------ 内部 */

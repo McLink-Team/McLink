@@ -22,8 +22,36 @@ import { sha256, shortId, randomBytesBuf } from '../util/id.ts';
 import { renderEasytierToml, buildLaunchArgs, rpcPortalForListenPort, CONFIG_PLACEHOLDER } from '../easytier/config.ts';
 import type { ServerConfig } from '../config.ts';
 import type { SettingsService } from './settings.ts';
+import { NodeUtilization } from './node-utilization.ts';
 
 const log = logger('nodes');
+
+/** 带宽利用率阈值：≥90% 降权（不再优先分配新房间），≤70% 恢复 */
+const UTIL_SHED = 0.9;
+const UTIL_RESTORE = 0.7;
+
+/**
+ * 在线节点的负载状态机（纯函数，便于单测）。
+ *
+ * 人数与带宽**任一项**吃紧就降级；两项都回落才恢复。阈值带滞后，否则正好卡在
+ * 阈值上的节点会来回抖（每 20 秒一次心跳就翻一次状态，控制台看着像抽风）。
+ * 返回 null 表示维持原状。
+ *
+ * 注意它只影响**新票据**：已经跑着的房间不动，我们也不会去改节点配置 ——
+ * 改配置要重启 easytier-core，会把该节点上所有房间一起抖断。
+ */
+export function nextNodeStatus(
+  status: string,
+  peers: number,
+  capacityPeers: number,
+  utilization: number,
+): 'online' | 'degraded' | null {
+  const busy = peers > capacityPeers * 0.9 || utilization >= UTIL_SHED;
+  const free = peers < capacityPeers * 0.8 && utilization <= UTIL_RESTORE;
+  if (status === 'online' && busy) return 'degraded';
+  if (status === 'degraded' && free) return 'online';
+  return null;
+}
 
 /** 端口归一化：只接受 1–65535 的整数，其余一律当作"没给" */
 export function normalizePort(value: unknown): number | null {
@@ -112,6 +140,8 @@ export class NodeService {
   private readonly enrollKeys: EnrollKeyRepo;
   private readonly audit: AuditRepo;
   private readonly settings: SettingsService;
+  /** 带宽利用率（与 RoomService 共享同一个实例：调度要用它算余量） */
+  readonly util: NodeUtilization;
   /**
    * 各子节点当前正在转发的房间网络（内存态，心跳刷新）。
    *
@@ -126,12 +156,14 @@ export class NodeService {
     enrollKeys: EnrollKeyRepo,
     audit: AuditRepo,
     settings: SettingsService,
+    util: NodeUtilization,
   ) {
     this.config = config;
     this.nodes = nodes;
     this.enrollKeys = enrollKeys;
     this.audit = audit;
     this.settings = settings;
+    this.util = util;
   }
 
   /* ------------------------------------------------------------ 注册 */
@@ -312,6 +344,12 @@ export class NodeService {
       publicIp: input.publicIp ?? null,
     });
 
+    /**
+     * 带宽利用率（EWMA，时间常数 3 分钟）—— 先记采样，状态机与调度都读它。
+     * 只看 peer 数是错的：5 个 peer 但跑满 5Mbps 的节点才是真顶不住的那台。
+     */
+    const usedBps = this.util.record(row.id, Math.max(0, input.rxBps), Math.max(0, input.txBps));
+
     // 待上线 → 在线：首次心跳即视为节点存活（没有人工审批这一步），管理员可随时禁用
     const fresh = this.nodes.findById(row.id);
     if (fresh && fresh.status === 'pending') {
@@ -328,11 +366,29 @@ export class NodeService {
     } else if (fresh && fresh.status === 'offline') {
       this.nodes.setStatus(row.id, 'online');
       log.info('子节点恢复在线', { node: row.id, name: row.name });
-    } else if (fresh && fresh.status === 'online' && Math.max(0, input.peers) > fresh.capacity_peers * 0.9) {
-      // 接近容量上限时标记为「降级」，调度器会降低其权重
-      this.nodes.setStatus(row.id, 'degraded');
-    } else if (fresh && fresh.status === 'degraded' && Math.max(0, input.peers) < fresh.capacity_peers * 0.8) {
-      this.nodes.setStatus(row.id, 'online');
+    } else if (fresh) {
+      /**
+       * 负载状态机：人数或带宽任一项吃紧 → degraded（调度降权，新房间优先去别处）。
+       *
+       * 阈值带**滞后**，否则在阈值附近会来回抖：人数 90%/80%，带宽 90%/70%
+       * （带宽恢复要更松一点：它的 EWMA 本身就有惯性，再叠一层紧阈值会恢复得太慢）。
+       * 这里只影响**新票据** —— 已经在跑的房一个都不动。
+       */
+      const peers = Math.max(0, input.peers);
+      const utilization = this.util.utilization(row.id, fresh.capacity_bps ?? 0);
+      const next = nextNodeStatus(fresh.status, peers, fresh.capacity_peers, utilization);
+      if (next === 'degraded') {
+        this.nodes.setStatus(row.id, 'degraded');
+        log.warn('节点负载吃紧：已降权，新房间不再优先分配给它（运行中的房间不受影响）', {
+          node: row.id,
+          name: row.name,
+          peers,
+          utilization: Number(utilization.toFixed(2)),
+        });
+      } else if (next === 'online') {
+        this.nodes.setStatus(row.id, 'online');
+        log.info('节点负载回落：恢复参与调度', { node: row.id, name: row.name, usedBps: Math.round(usedBps) });
+      }
     }
 
     return {
@@ -376,13 +432,28 @@ export class NodeService {
   /* ------------------------------------------------------------ 管理 */
 
   list(filter: { region?: string; status?: string; search?: string } = {}): RelayNode[] {
-    return this.nodes.list(filter).map(toNode);
+    return this.nodes.list(filter).map(toNode).map((n) => this.withUtilization(n));
+  }
+
+  /**
+   * 给节点补上"带宽利用率"这类运行时字段。
+   * 它们是主控算出来的（需要相邻两次心跳差分），库里没有对应的列，
+   * 所以统一在这里补 —— 控制台与调度器看到的必须是同一份数字。
+   */
+  withUtilization(node: RelayNode): RelayNode {
+    const usedBps = Math.round(this.util.usedBps(node.id));
+    return { ...node, usedBps, utilization: this.util.utilization(node.id, node.capacityBps) };
+  }
+
+  /** 带宽利用率的对外口径（0–1）：调度与控制台都走它，避免两处各算一遍 */
+  utilizationOf(nodeId: string, capacityBps: number): number {
+    return this.util.utilization(nodeId, capacityBps);
   }
 
   get(id: string): RelayNode {
     const row = this.nodes.findById(id);
     if (!row) throw HttpError.notFound('节点不存在');
-    return toNode(row);
+    return this.withUtilization(toNode(row));
   }
 
   update(
@@ -395,6 +466,8 @@ export class NodeService {
       connectPort?: number;
       weight?: number;
       capacityPeers?: number;
+      /** 带宽上限（bit/s），0 = 不限 */
+      capacityBps?: number;
       tags?: string[];
     },
   ): RelayNode {
@@ -463,6 +536,8 @@ export class NodeService {
     const row = this.nodes.findById(id);
     if (!row) throw HttpError.notFound('节点不存在');
     this.nodes.delete(id);
+    // 采样也要一起清掉：否则长跑进程里会攒下无主记录（节点删了、利用率还在）
+    this.util.forget(id);
     this.audit.write({ actorType: 'admin', action: 'node.delete', targetType: 'node', targetId: id });
   }
 

@@ -17,6 +17,7 @@ import { AuditRepo, TrafficRepo } from './db/traffic.ts';
 import { MessageRepo } from './db/chat.ts';
 import { AuthService } from './services/auth.ts';
 import { NodeService } from './services/nodes.ts';
+import { NodeUtilization } from './services/node-utilization.ts';
 import { RoomService } from './services/rooms.ts';
 import { SettingsService } from './services/settings.ts';
 import { MailerService } from './services/mailer.ts';
@@ -160,8 +161,14 @@ export function createApp(options: CreateAppOptions = {}): App {
   });
 
   const auth = new AuthService(config, users, audit, settings, emailCodes, mailer);
-  const roomService = new RoomService(config, rooms, nodes, users, audit, settings, events, messages);
-  const nodeService = new NodeService(config, nodes, enrollKeys, audit, settings);
+  /**
+   * 带宽利用率：**两个服务共用同一个实例**（写出采样的是 NodeService，
+   * 读它做调度的是 RoomService）。让 RoomService 直接依赖 NodeService 会成环，
+   * 所以按项目一贯做法，由这里构造并注入。
+   */
+  const nodeUtil = new NodeUtilization();
+  const roomService = new RoomService(config, rooms, nodes, users, audit, settings, events, messages, nodeUtil);
+  const nodeService = new NodeService(config, nodes, enrollKeys, audit, settings, nodeUtil);
   const relay = new RelayManager(config);
 
   const webRoot = resolveWebRoot();

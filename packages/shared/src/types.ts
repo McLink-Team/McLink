@@ -91,6 +91,20 @@ export interface RelayNode {
   version: string | null;
   /** 容量：可承载的最大并发 peer 数 */
   capacityPeers: number;
+  /**
+   * 带宽上限（bit/s），0 = 不限。管理员按云厂商给的口径填（例如「5 Mbps BGP」= 5000000）。
+   *
+   * 为什么需要它：只看 peer 数是错的 —— 200 个 peer 的节点、和只有 5 个 peer
+   * 却已经跑满 5Mbps 的节点，后者才是真顶不住的那台。
+   */
+  capacityBps: number;
+  /**
+   * 实时：带宽利用率的 EWMA（0–1，时间常数 3 分钟）。
+   * 只有主控进程里算得出来（需要相邻两次心跳差分），所以是运行时字段而非库里的列。
+   */
+  utilization?: number;
+  /** 实时：用于算利用率的「已用带宽」（bit/s，取收发的较大者，见 services/nodes.ts） */
+  usedBps?: number;
   /** 实时：当前承载的 peer 数 / 房间数 */
   peers: number;
   rooms: number;

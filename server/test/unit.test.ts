@@ -14,7 +14,8 @@ import { test, describe } from 'node:test';
 import { renderAcl, renderEasytierToml, buildLaunchArgs, tomlString, aclToJson, rpcPortalForListenPort, usableRpcPort } from '../src/easytier/config.ts';
 import { buildRoomAcl, isAclEmpty } from '../src/easytier/acl.ts';
 import { parseHumanNumber, parseLatencyMs } from '../src/easytier/manager.ts';
-import { hashRoomPassword, verifyRoomPassword, deriveNetworkName, resolveMemberLink } from '../src/services/rooms.ts';
+import { hashRoomPassword, verifyRoomPassword, deriveNetworkName, resolveMemberLink, relayScore } from '../src/services/rooms.ts';
+import { ewma, NodeUtilization } from '../src/services/node-utilization.ts';
 import { parsePolicy } from '../src/api/helpers.ts';
 import {
   buildMessage,
@@ -25,7 +26,7 @@ import {
 } from '../src/mail/smtp.ts';
 import { resolveFrom } from '../src/services/mailer.ts';
 import { emailGateProblem } from '../src/services/email-gate.ts';
-import { normalizePort, mergeRelayedNetworks } from '../src/services/nodes.ts';
+import { normalizePort, mergeRelayedNetworks, nextNodeStatus } from '../src/services/nodes.ts';
 import { isDecorationLine } from '../src/easytier/process.ts';
 import { DEFAULT_SETTINGS, clientArtifactName } from '../src/services/settings.ts';
 import { endpointHost, endpointPort, nodeClientEndpoint, nodeConnectPort, nodeListenPort } from '../src/db/nodes.ts';
@@ -833,5 +834,73 @@ describe('群发名单解析 parseUsernameList', () => {
   test('超过上限时截断，避免一次粘贴整张表', () => {
     const many = Array.from({ length: BROADCAST_USERNAME_MAX + 50 }, (_, i) => `user${i}`).join(',');
     assert.equal(parseUsernameList(many).length, BROADCAST_USERNAME_MAX);
+  });
+});
+
+/**
+ * 带宽感知调度：修的是"只看 peer 数"这个错。
+ * 5 个 peer 但跑满 5Mbps 的节点，以前会被当成最优选择（用户实测反馈）。
+ */
+describe('带宽利用率与调度打分', () => {
+  const node = (peers: number, status = 'online', weight = 100): NodeRow =>
+    ({ capacity_peers: 500, peers, weight, status }) as NodeRow;
+
+  test('relayScore：同样 5 个 peer，带宽跑满的那个应当被压到 0 分', () => {
+    // 500 的容量、5 个在用 → 人数余量 0.99；带宽余量 1 → 取最小值 0.99
+    assert.equal(relayScore(node(5), 0), 99);
+    assert.equal(relayScore(node(5), 1), 0);
+  });
+
+  test('两个余量取最小值：人多时同样被压下来', () => {
+    const busyPeers = relayScore({ capacity_peers: 100, peers: 90, weight: 100, status: 'online' } as NodeRow, 0);
+    assert.ok(Math.abs(busyPeers - 10) < 1e-9, `(100-90)/100 = 0.1 → 期望 10，实际 ${busyPeers}`);
+  });
+
+  test('degraded 罚分：余量再大也被压成负数（兜底时才用得上）', () => {
+    assert.equal(relayScore({ capacity_peers: 100, peers: 0, weight: 50, status: 'degraded' } as NodeRow, 0), -50);
+  });
+
+  test('利用率越界被夹到 0–1，不会算出负余量', () => {
+    assert.equal(relayScore(node(0), 5), 0);
+    assert.equal(relayScore(node(0), -1), 100);
+  });
+
+  test('ewma：dt = 时间常数时走完约 63%（1 - 1/e）', () => {
+    const v = ewma(0, 100, 180_000, 180_000);
+    assert.ok(Math.abs(v - 63.2) < 0.5, `期望 ≈63.2，实际 ${v}`);
+    // dt 很小 → 几乎不动（脉冲不该立刻改变结论）
+    assert.ok(ewma(100, 0, 1_000, 180_000) > 99, '1 秒的采样不该把 3 分钟均值拉下来');
+  });
+
+  test('NodeUtilization：首次采样直接作初值，之后平滑；未设上限时利用率恒为 0', () => {
+    const util = new NodeUtilization(180_000);
+    assert.equal(util.record('n1', 1_000_000, 0, 1_000), 1_000_000);
+    const second = util.record('n1', 3_000_000, 6_000_000, 21_000);
+    assert.ok(second > 1_000_000 && second < 3_000_000, `应当落在两次采样之间，实际 ${second}`);
+    assert.equal(util.utilization('n1', 2_000_000), Math.min(1, second / 2_000_000));
+    assert.equal(util.utilization('n1', 0), 0, '0 = 不限，不构成约束');
+    util.forget('n1');
+    assert.equal(util.usedBps('n1'), 0, '节点删除后采样要清掉');
+  });
+
+  test('NodeUtilization：收发取较大者（云厂商的 Mbps 按单向计）', () => {
+    const util = new NodeUtilization();
+    assert.equal(util.record('n2', 100, 9_000_000, 1_000), 9_000_000);
+  });
+
+  test('状态机：带宽 ≥90% 降级、≤70% 才恢复（滞后区间内维持原状）', () => {
+    // 人数完全空闲（0/500），只有带宽在动
+    assert.equal(nextNodeStatus('online', 0, 500, 0.9), 'degraded', '到 90% 就降');
+    assert.equal(nextNodeStatus('online', 0, 500, 0.89), null, '89% 不动');
+    assert.equal(nextNodeStatus('degraded', 0, 500, 0.71), null, '71% 还不恢复（滞后）');
+    assert.equal(nextNodeStatus('degraded', 0, 500, 0.7), 'online', '降到 70% 才恢复');
+  });
+
+  test('状态机：人数维度仍是 90%/80%，两者任一吃紧就降级', () => {
+    assert.equal(nextNodeStatus('online', 91, 100, 0), 'degraded');
+    assert.equal(nextNodeStatus('degraded', 85, 100, 0), null, '人数 80–90% 之间维持降级');
+    assert.equal(nextNodeStatus('degraded', 79, 100, 0), 'online');
+    // 人数已回落但带宽还没回落 → 不能恢复
+    assert.equal(nextNodeStatus('degraded', 0, 100, 0.95), null);
   });
 });
