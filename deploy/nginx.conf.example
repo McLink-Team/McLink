@@ -12,6 +12,20 @@
 # 手动验证续期用 `sudo certbot renew --dry-run`。
 #
 # =============================================================================
+# 「反向代理有时候会超时」先查这三件套（按被忽略的概率排序）
+#   1) send_timeout 3600s —— **给客户端写响应**的超时，默认 60s。
+#      下 87MB 安装包时客户端读得慢（或中途暂停），60s 一到 nginx 就掐连接；
+#      proxy_read_timeout 管的是"等上游"，管不到这一段，所以只调大它是没用的。
+#   2) proxy_connect_timeout 10s —— 默认 60s。主控在重启/发版窗口内不监听，
+#      请求会先挂满 60s 再 502；调小让失败变快、也更容易在日志里看见。
+#   3) proxy_read_timeout 3600s —— 管"等上游响应"（含 WS 空闲）。默认 60s。
+# 另外两点容易踩：
+#   * 本文件的 upstream 故意**不写** keepalive_timeout（用 nginx 默认 60s）：
+#     主控的 keepAliveTimeout 是 65s（server/src/server.ts:111）。要是把它调到 ≥65s，
+#     就会出现"nginx 复用了一条主控刚关掉的连接 → 间歇性 502"。
+#   * location 里只要出现 add_header，**server 段的 add_header 会被全部丢掉**；
+#     且不加 always 时，4xx/5xx 响应上不会带 HSTS。安全头一律写 server 段 + always。
+# =============================================================================
 # 为什么 WebSocket（/ws）必须单独配置？（约 6 行关键点）
 #   1) WebSocket 握手是一次标准的 HTTP/1.1 GET + `Upgrade: websocket` 请求，
 #      要求代理**原样透传** Upgrade / Connection 头，并且必须使用 HTTP/1.1。
@@ -85,6 +99,10 @@ server {
         # 慢线路上会超时成 HTTP 504，安装脚本随即报「返回了非 JSON 响应」这类怪错。
         proxy_buffering off;
         proxy_read_timeout 3600s;
+        # 7–23MB 的二进制发给子节点：**发往客户端这一侧的超时是 send_timeout**，
+        # 默认 60s 会在"对方读得慢"时把连接掐掉（安装脚本随即报非 JSON 响应）。
+        send_timeout 3600s;
+        proxy_connect_timeout 10s;
     }
 
     location /api/ {
@@ -92,8 +110,29 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Connection "";
         proxy_read_timeout 120s;
+        proxy_connect_timeout 10s;
+    }
 
-        # 登录/注册是低频接口，按 IP 限流（主控自身也有滑动窗口限流，这里是第一道）
+    # 登录/注册是低频接口，按 IP 限流（主控自身也有滑动窗口限流，这里是第一道）。
+    # **只挂在这两个精确路径上**：以前挂在 location /api/ 上，等于给"某个 IP 的全部
+    # API 调用"限 30 请求/分 —— 客户端在房间里固定 8 请求/分（心跳 10s + 房间详情 30s），
+    # 控制台广播页运行中是 2s 一次轮询（30 请求/分），一张页面就能把配额吃满；
+    # 家里/宿舍/网吧一个出口 IP 几台设备同时用，就会莫名其妙收到 503。
+    location = /api/v1/auth/login {
+        proxy_pass http://mclink_master;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_read_timeout 120s;
+        proxy_connect_timeout 10s;
+        limit_req zone=mclink_login burst=10 nodelay;
+    }
+
+    location = /api/v1/auth/register {
+        proxy_pass http://mclink_master;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_read_timeout 120s;
+        proxy_connect_timeout 10s;
         limit_req zone=mclink_login burst=10 nodelay;
     }
 
@@ -123,6 +162,10 @@ server {
         proxy_buffering off;
         proxy_request_buffering off;
         proxy_read_timeout 3600s;
+        # 87MB 的包发给慢客户端：默认 send_timeout 60s 会在客户端读得慢
+        # 或中途暂停时把连接掐掉（表现就是"下载有时候失败/反代超时"）。
+        send_timeout 3600s;
+        proxy_connect_timeout 10s;
     }
 }
 
