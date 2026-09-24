@@ -250,6 +250,49 @@ async function saveEdit(): Promise<void> {
   }
 }
 
+/* ----------------------------------------------------- 安装 / 更新指令 */
+
+/**
+ * 「安装指令」：给这个节点重新生成一条一键安装命令（会新签一把注册密钥）。
+ *
+ * 为什么必须先确认：注册密钥是一次性的、签发即入库，而且**换机器安装会真的用掉它**
+ * （新机器会以新节点身份注册，旧记录留在列表里变成离线）。同机重装则不会换身份 ——
+ * 这一点写进确认文案里，否则运维会以为"重装等于掉线"而不敢用。
+ */
+async function copyInstallCommand(node: RelayNode): Promise<void> {
+  const ok = confirm(
+    `为「${node.name}」签发一把新的注册密钥并复制安装指令？\n\n` +
+      `· 同一台机器上重装：节点身份不变（令牌还在），这把密钥会保持未使用；\n` +
+      `· 换一台机器安装：会以**新节点**身份注册，列表里这条旧记录之后会显示离线。`,
+  );
+  if (!ok) return;
+  busyId.value = node.id;
+  try {
+    const res = await api.post<{ enrollKey: string; command: string }>(`/admin/nodes/${node.id}/reinstall-command`, {});
+    await copyText(res.command, `「${node.name}」安装指令`);
+  } catch (err) {
+    reportError(err);
+  } finally {
+    busyId.value = null;
+  }
+}
+
+/**
+ * 「更新指令」：不换令牌，只把节点上的 agent / 二进制 / 单元刷到最新并重启。
+ * 配置本身不用它 —— agent 每次心跳都会应用主控下发的 configToml。
+ */
+async function copyUpdateCommand(node: RelayNode): Promise<void> {
+  busyId.value = node.id;
+  try {
+    const res = await api.get<{ command: string }>(`/admin/nodes/${node.id}/update-command`);
+    await copyText(res.command, `「${node.name}」更新指令`);
+  } catch (err) {
+    reportError(err);
+  } finally {
+    busyId.value = null;
+  }
+}
+
 /* ----------------------------------------------------- 禁用 / 删除 */
 
 async function toggleDisabled(node: RelayNode): Promise<void> {
@@ -291,6 +334,8 @@ async function removeNode(node: RelayNode): Promise<void> {
         <h1 class="console-head-title">中继节点</h1>
         <p class="console-head-sub">
           子节点即部署在各区域的 EasyTier 公共中继，单端口即可服务所有房间，仅靠网络名白名单决定是否转发。
+          每一行都能复制两条命令：<b>安装指令</b>（新签一把注册密钥，给新机器装或同机重装）
+          与<b>更新指令</b>（不换令牌，把节点上的脚本与配置刷到最新）。
         </p>
       </div>
       <div class="console-head-actions">
@@ -433,6 +478,12 @@ async function removeNode(node: RelayNode): Promise<void> {
               </td>
               <td>
                 <div class="row-actions">
+                  <button class="btn btn-sm" type="button" :disabled="busyId === n.id" @click="copyInstallCommand(n)">
+                    安装指令
+                  </button>
+                  <button class="btn btn-sm" type="button" :disabled="busyId === n.id" @click="copyUpdateCommand(n)">
+                    更新指令
+                  </button>
                   <button class="btn btn-sm" type="button" :disabled="busyId === n.id" @click="openEdit(n)">编辑</button>
                   <button class="btn btn-sm" type="button" :disabled="busyId === n.id" @click="toggleDisabled(n)">
                     {{ n.status === 'disabled' ? '启用' : '禁用' }}
