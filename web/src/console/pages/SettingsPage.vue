@@ -558,7 +558,11 @@ const envWhitelist = computed(() => asPatternList(env.value?.relayNetworkWhiteli
           <div class="field">
             <label class="label" for="s-ttl">房间默认存活时长（分钟）</label>
             <input id="s-ttl" v-model="form.roomTtlMinutes" class="input" type="number" min="0" />
-            <span class="hint">0 表示不自动过期，仅靠空房回收。</span>
+            <span class="hint">
+              <b>无人活跃</b>这么久之后过期：只要房里还有人（客户端每 10 秒一次心跳），
+              到期时间就会一直顺延 —— 正在联机的房间不会被解散。
+              0 表示不自动过期，仅靠空房回收。
+            </span>
           </div>
           <div class="field">
             <label class="label" for="s-cap">单节点容量（peer）</label>

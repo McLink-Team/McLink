@@ -188,6 +188,26 @@ export function relayScore(row: NodeRow, utilization: number): number {
   return row.weight * Math.min(peerHeadroom, bwHeadroom) - penalty;
 }
 
+/**
+ * 「活跃即续期」：算出这次心跳该把到期时间顺延到什么时候，不必写库时返回 null。
+ *
+ * 语义：**存活时长 = 无人活跃多久之后过期**，而不是"建房那一刻起算的硬期限"。
+ * 所以只要房里还有人在心跳（客户端 10 秒一次），到期时间就一直被推着走；
+ * 房间真正过期只有一种情况 —— 连续这么久没人活跃（含所有人都掉线了）。
+ *
+ * 为什么带 `minMove` 节流：每 10 秒写一次 expires_at 是纯浪费（写放大且毫无意义），
+ * 期限只在"已经走过去一小段"时才值得写。节流窗口取 TTL 的 1/10、上限 5 分钟、
+ * 下限 5 秒 —— 短 TTL（比如测试里的 1 分钟）也能正常滑动。
+ */
+export function nextRoomExpiry(current: string | null, nowMs: number, ttlMs: number): string | null {
+  if (!current || !(ttlMs > 0)) return null; // 没设 TTL 的房间本来就不会过期
+  const currentMs = Date.parse(current);
+  const target = nowMs + ttlMs;
+  if (!Number.isFinite(currentMs)) return new Date(target).toISOString();
+  const minMove = Math.min(5 * 60_000, Math.max(5_000, ttlMs / 10));
+  return target - currentMs >= minMove ? new Date(target).toISOString() : null;
+}
+
 export class RoomService {
   private readonly config: ServerConfig;
   private readonly rooms: RoomRepo;
@@ -359,6 +379,8 @@ export class RoomService {
       subnetSlot: slot,
       passwordHash,
       expiresAt,
+      // 存下房间自己的 TTL：到期时间会随活跃顺延，之后推不出该顺延多久（见 V14 迁移）
+      ttlMinutes: ttlMinutes && ttlMinutes > 0 ? ttlMinutes : null,
     });
 
     // 房主占 seat 0 → 网段 .1
@@ -953,6 +975,23 @@ export class RoomService {
     });
     this.rooms.touch(roomId);
     this.rooms.recalcCounts(roomId);
+
+    /**
+     * 「活跃即续期」：房间里还有人在心跳，就不该因为"存活时长到了"被解散。
+     *
+     * 以前 `expires_at` 是建房那一刻算死的硬期限，到点就被 30 秒一次的
+     * `findExpired()` 关掉 —— **房里有人也照关**（虽然已建立的隧道不会立刻断，
+     * 但新人再也进不来，房间在大厅里也消失了，语义很别扭）。
+     * 现在期限跟着活跃走：只要有人心跳就顺延，真正过期的只有"连续 TTL 没人活跃"的房间。
+     * 写库有节流（见 nextRoomExpiry），不是每 10 秒一次。
+     */
+    const ttlMs =
+      (row?.ttl_minutes ?? this.settings.current.roomTtlMinutes ?? 0) * 60_000;
+    const extended = nextRoomExpiry(row?.expires_at ?? null, Date.now(), ttlMs);
+    if (extended && row?.status === 'open') {
+      this.rooms.setExpiry(roomId, extended);
+      log.debug('房间因活跃而顺延过期时间', { room: roomId, expiresAt: extended });
+    }
 
     const revision = row?.acl_revision ?? 0;
     const isHostOfRoom = row?.host_user_id === userId;
