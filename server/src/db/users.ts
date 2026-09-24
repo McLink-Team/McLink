@@ -1,5 +1,6 @@
 /** 用户与会话仓储 */
-import type { User, UserRole, UserSelf } from '@mclink/shared';
+import type { BroadcastAudience, User, UserRole, UserSelf } from '@mclink/shared';
+import { DEFAULT_BROADCAST_AUDIENCE } from '@mclink/shared';
 import { Db, boolToInt, nowIso, parseJson, toBool } from './index.ts';
 import { shortId, sha256 } from '../util/id.ts';
 
@@ -14,6 +15,8 @@ export interface UserRow {
   email_verified: number;
   /** V10 加的列；旧库/测试夹具可能没有，读的时候按 undefined 处理 */
   email_opt_out?: number;
+  /** V12 加的列：最近一次活跃（登录/心跳都算）。同上，旧夹具可能没有 */
+  last_seen_at?: string | null;
   quota_bytes: number | null;
   used_bytes: number;
   max_rooms: number | null;
@@ -179,19 +182,80 @@ export class UserRepo {
   }
 
   /**
-   * 群发公告的收件人：有邮箱 + 已验证 + 未封禁。
+   * 群发公告的收件人（带筛选）。
    *
    * **刻意不复用 list()**：那个方法有 50 条默认上限（最大 200），
    * 拿来群发会静默地只发给前 50 个人 —— 这种"看起来成功、实际漏发"最坑。
+   *
+   * 筛选优先级：**手填用户名 > 角色/活跃度**。手填的语义是"我就要发给这几个人"，
+   * 再叠一层活跃度会让人猜不透为什么少了人（界面上也写明了这一点）。
+   * 返回值里带上「没找到的名字」与「找到了但不满足发送条件的名字」，
+   * 让界面能明确告诉管理员少了谁、为什么 —— 而不是安静地少发几封。
    */
-  listBroadcastRecipients(): Array<{ id: string; email: string; displayName: string }> {
-    const rows = this.db.all<{ id: string; email: string; display_name: string }>(
-      `select id, email, display_name from users
-        where email is not null and trim(email) <> ''
-          and email_verified = 1 and banned = 0 and email_opt_out = 0
+  listBroadcastRecipients(audience: BroadcastAudience = DEFAULT_BROADCAST_AUDIENCE): {
+    recipients: Array<{ id: string; email: string; displayName: string; username: string }>;
+    missingUsernames: string[];
+    undeliverableUsernames: string[];
+  } {
+    const names = audience.usernames.map((n) => n.trim()).filter((n) => n.length > 0);
+    if (names.length > 0) {
+      const placeholders = names.map(() => '?').join(',');
+      const rows = this.db.all<{
+        id: string;
+        username: string;
+        email: string | null;
+        display_name: string;
+        email_verified: number;
+        banned: number;
+        email_opt_out?: number;
+      }>(
+        `select id, username, email, display_name, email_verified, banned, email_opt_out
+           from users where username collate nocase in (${placeholders})`,
+        ...names,
+      );
+      const found = new Map(rows.map((r) => [r.username.toLowerCase(), r]));
+      const missing: string[] = [];
+      const undeliverable: string[] = [];
+      const recipients: Array<{ id: string; email: string; displayName: string; username: string }> = [];
+      for (const name of names) {
+        const row = found.get(name.toLowerCase());
+        if (!row) {
+          missing.push(name);
+          continue;
+        }
+        const email = (row.email ?? '').trim();
+        const ok = email.length > 0 && row.email_verified === 1 && row.banned === 0 && (row.email_opt_out ?? 0) === 0;
+        if (!ok) {
+          undeliverable.push(row.username);
+          continue;
+        }
+        recipients.push({ id: row.id, email, displayName: row.display_name, username: row.username });
+      }
+      return { recipients: recipients.sort((a, b) => a.username.localeCompare(b.username)), missingUsernames: missing, undeliverableUsernames: undeliverable };
+    }
+
+    const where = ['email is not null', "trim(email) <> ''", 'email_verified = 1', 'banned = 0', 'email_opt_out = 0'];
+    const params: unknown[] = [];
+    if (audience.roles === 'admin' || audience.roles === 'user') {
+      where.push('role = ?');
+      params.push(audience.roles);
+    }
+    if (audience.activeWithinDays !== null && audience.activeWithinDays > 0) {
+      // 从未活跃过（last_seen_at 为空）的不算"最近 N 天活跃过"
+      where.push('last_seen_at is not null', 'last_seen_at >= ?');
+      params.push(new Date(Date.now() - audience.activeWithinDays * 86_400_000).toISOString());
+    }
+    const rows = this.db.all<{ id: string; username: string; email: string; display_name: string }>(
+      `select id, username, email, display_name from users
+        where ${where.join(' and ')}
         order by created_at asc`,
+      ...params,
     );
-    return rows.map((r) => ({ id: r.id, email: r.email, displayName: r.display_name }));
+    return {
+      recipients: rows.map((r) => ({ id: r.id, email: r.email, displayName: r.display_name, username: r.username })),
+      missingUsernames: [],
+      undeliverableUsernames: [],
+    };
   }
 
   /** 群发预览用的分组计数：让管理员明白"为什么人数对不上" */
@@ -292,7 +356,23 @@ export class UserRepo {
   }
 
   touchSession(id: string): void {
-    this.db.run('update sessions set last_seen_at = ? where id = ?', nowIso(), id);
+    const ts = nowIso();
+    this.db.run('update sessions set last_seen_at = ? where id = ?', ts, id);
+    /**
+     * 顺手维护 users.last_seen_at —— 群发公告的「最近 N 天活跃」用它。
+     *
+     * **带节流**：这段代码在**每个已认证请求**上都会跑（客户端心跳 10 秒一次），
+     * 无条件写 users 会让写放大一倍。所以条件是"超过 5 分钟没更新过"，
+     * 并且**用一条 UPDATE 完成**（子查询取 user_id，不额外读一次）。
+     */
+    this.db.run(
+      `update users set last_seen_at = ?
+        where id = (select user_id from sessions where id = ?)
+          and (last_seen_at is null or last_seen_at < ?)`,
+      ts,
+      id,
+      new Date(Date.now() - 5 * 60_000).toISOString(),
+    );
   }
 
   deleteSession(token: string): void {

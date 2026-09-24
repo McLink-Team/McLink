@@ -154,7 +154,7 @@ const cards = computed(() => {
     },
     { label: '今日累计接收', value: formatBytes(totals.value.rxBytes), hint: '自然日 00:00 起', accent: 'accent' as const },
     { label: '今日累计发送', value: formatBytes(totals.value.txBytes), hint: '自然日 00:00 起', accent: 'accent' as const },
-    { label: '外来网络', value: foreignNetworks.value.length, hint: '全网正在转发的房间网络（主控 + 子节点）', accent: 'warn' as const },
+    { label: '外来网络', value: foreignNetworks.value.length, hint: '全网正在转发的房间网络', accent: 'warn' as const },
     { label: '开放房间', value: roomSeries.value.length, hint: '按房间归因的流量序列', accent: 'accent' as const },
   ];
 });
