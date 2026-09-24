@@ -14,7 +14,7 @@ import { test, describe } from 'node:test';
 import { renderAcl, renderEasytierToml, buildLaunchArgs, tomlString, aclToJson, rpcPortalForListenPort, usableRpcPort } from '../src/easytier/config.ts';
 import { buildRoomAcl, isAclEmpty } from '../src/easytier/acl.ts';
 import { parseHumanNumber, parseLatencyMs } from '../src/easytier/manager.ts';
-import { hashRoomPassword, verifyRoomPassword, deriveNetworkName, resolveMemberLink, relayScore } from '../src/services/rooms.ts';
+import { hashRoomPassword, verifyRoomPassword, deriveNetworkName, resolveMemberLink, relayScore, nextRoomExpiry } from '../src/services/rooms.ts';
 import { ewma, NodeUtilization } from '../src/services/node-utilization.ts';
 import { parsePolicy } from '../src/api/helpers.ts';
 import {
@@ -887,7 +887,6 @@ describe('带宽利用率与调度打分', () => {
     const util = new NodeUtilization();
     assert.equal(util.record('n2', 100, 9_000_000, 1_000), 9_000_000);
   });
-
   test('状态机：带宽 ≥90% 降级、≤70% 才恢复（滞后区间内维持原状）', () => {
     // 人数完全空闲（0/500），只有带宽在动
     assert.equal(nextNodeStatus('online', 0, 500, 0.9), 'degraded', '到 90% 就降');
@@ -902,5 +901,44 @@ describe('带宽利用率与调度打分', () => {
     assert.equal(nextNodeStatus('degraded', 79, 100, 0), 'online');
     // 人数已回落但带宽还没回落 → 不能恢复
     assert.equal(nextNodeStatus('degraded', 0, 100, 0.95), null);
+  });
+});
+
+/**
+ * 「活跃即续期」：房间的存活时长 = 无人活跃多久之后过期。
+ *
+ * 以前 expires_at 是建房那一刻算死的硬期限，到点就被 30 秒一次的 findExpired() 关掉，
+ * **房里有人也照关**（隧道不会立刻断，但新人再也进不来）。
+ */
+describe('房间过期时间顺延 nextRoomExpiry', () => {
+  const MIN = 60_000;
+  const now = Date.parse('2026-09-25T12:00:00.000Z');
+
+  test('没设 TTL 的房间永不续期（本来就不会过期）', () => {
+    assert.equal(nextRoomExpiry(null, now, 720 * MIN), null);
+    assert.equal(nextRoomExpiry('2026-09-25T13:00:00.000Z', now, 0), null);
+  });
+
+  test('时间只走了一点点时不写库（节流，避免每 10 秒一次写）', () => {
+    const current = new Date(now + 720 * MIN).toISOString();
+    // 12 小时的 TTL → 节流窗口 5 分钟；才过 10 秒 → 不动
+    assert.equal(nextRoomExpiry(current, now + 10_000, 720 * MIN), null);
+  });
+
+  test('走过去超过节流窗口后顺延到「现在 + TTL」', () => {
+    const current = new Date(now + 720 * MIN).toISOString();
+    const moved = nextRoomExpiry(current, now + 6 * MIN, 720 * MIN);
+    assert.equal(moved, new Date(now + 6 * MIN + 720 * MIN).toISOString());
+  });
+
+  test('短 TTL 用更小的节流窗口（1 分钟的房间也能滑动）', () => {
+    const current = new Date(now + MIN).toISOString();
+    // 1 分钟 TTL → 节流取 max(5s, 6s) = 6s
+    assert.equal(nextRoomExpiry(current, now + 3_000, MIN), null, '3 秒还不够');
+    assert.equal(nextRoomExpiry(current, now + 7_000, MIN), new Date(now + 7_000 + MIN).toISOString());
+  });
+
+  test('到期时间不可解析时直接按现在重算（脏数据不该让房间永不过期）', () => {
+    assert.equal(nextRoomExpiry('not-a-date', now, MIN), new Date(now + MIN).toISOString());
   });
 });

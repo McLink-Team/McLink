@@ -376,6 +376,23 @@ create index if not exists idx_users_last_seen on users(last_seen_at);
 const V13_NODE_CAPACITY_BPS = `
 alter table relay_nodes add column capacity_bps integer not null default 0;
 `;
+
+/**
+ * V14：`rooms.ttl_minutes` —— 房间自己的存活时长。
+ *
+ * 为什么要存：到期时间现在会**随活跃顺延**（心跳把 expires_at 往后推），
+ * 于是"expires_at − created_at"不再是房间的 TTL，推不出该顺延多久。
+ * 不存的话就只能用平台当前默认值硬推 —— 房主建房时把 TTL 下调到 2 小时的房间，
+ * 会被心跳悄悄拉回 12 小时，那是改用户的选择。
+ *
+ * 存量房间：只有还开着的会用到这个值，按此刻的平台默认值回填即可。
+ */
+const V14_ROOM_TTL = `
+alter table rooms add column ttl_minutes integer;
+update rooms set ttl_minutes = (
+  select json_extract(value, '$.roomTtlMinutes') from settings where key = 'platform'
+) where status = 'open' and ttl_minutes is null;
+`;
 export const MIGRATIONS: readonly string[] = [
   V1_INITIAL,
   V2_RELAY_ROOM_MAP,
@@ -390,6 +407,7 @@ export const MIGRATIONS: readonly string[] = [
   V11_TAGLINE_ALL_GAMES,
   V12_USER_LAST_SEEN,
   V13_NODE_CAPACITY_BPS,
+  V14_ROOM_TTL,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

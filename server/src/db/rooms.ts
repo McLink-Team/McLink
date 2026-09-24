@@ -26,6 +26,8 @@ export interface RoomRow {
   expires_at: string | null;
   closed_at: string | null;
   last_active_at: string;
+  /** V14：房间自己的存活时长（分钟）；null = 不自动过期 */
+  ttl_minutes?: number | null;
 }
 
 export interface MemberRow {
@@ -170,14 +172,16 @@ export class RoomRepo {
     subnetSlot: number;
     passwordHash: string | null;
     expiresAt: string | null;
+    /** 房间自己的存活时长（分钟）；null = 不自动过期。心跳续期按它算 */
+    ttlMinutes?: number | null;
   }): JoinedRoomRow {
     const id = input.id;
     const ts = nowIso();
     this.db.run(
       `insert into rooms (id, code, name, host_user_id, status, access, visibility, zone,
         relay_node_ids, policy, network_name, network_secret, subnet, subnet_slot, password_hash,
-        online_members, member_count, acl_revision, created_at, expires_at, closed_at, last_active_at)
-       values (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, ?, ?, null, ?)`,
+        online_members, member_count, acl_revision, created_at, expires_at, closed_at, last_active_at, ttl_minutes)
+       values (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, ?, ?, null, ?, ?)`,
       id,
       input.code,
       input.name,
@@ -195,6 +199,7 @@ export class RoomRepo {
       ts,
       input.expiresAt,
       ts,
+      input.ttlMinutes ?? null,
     );
     const row = this.findById(id);
     if (!row) throw new Error('创建房间后无法读回记录');
@@ -283,6 +288,16 @@ export class RoomRepo {
 
   touch(id: string): void {
     this.db.run('update rooms set last_active_at = ? where id = ?', nowIso(), id);
+  }
+
+  /**
+   * 顺延过期时间（"活跃即续期"）。
+   *
+   * 只在**确实往后推了**才写库：房间心跳每 10 秒一次，每次都写会把写放大好几倍，
+   * 所以由调用方（`nextRoomExpiry`）先算好要不要动，这里只负责落库。
+   */
+  setExpiry(id: string, expiresAt: string): void {
+    this.db.run('update rooms set expires_at = ?, last_active_at = ? where id = ? and status = ?', expiresAt, nowIso(), id, 'open');
   }
 
   recalcCounts(id: string): void {

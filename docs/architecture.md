@@ -184,6 +184,10 @@ export function deriveNetworkName(secret: string): string {
 * **轮换密钥**（`rotateSecret()`）：新 secret + 新 network_name + `acl_revision++`。
 * **关闭/过期/空房回收**：`close()` / `findExpired()` / `findIdle()`（默认 600 秒无人心跳即回收，
   `MCLINK_ROOM_IDLE_TIMEOUT`）。
+  `expires_at` 是**滑动窗口**而不是硬期限：房间里只要有人心跳（客户端 10 秒一次），
+  就会按该房间自己的 `ttl_minutes` 把到期时间往后推（写库有节流，见 `nextRoomExpiry()`），
+  所以「存活时长」的真实语义是**无人活跃多久之后过期** —— 正在联机的房间不会被解散。
+  存量数据由 V14 回填 `ttl_minutes`；`ttl_minutes` 为 null 或 0 的房间不自动过期。
 
 ### 踢人生效的真实链路（容易误解）
 
