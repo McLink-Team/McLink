@@ -233,6 +233,26 @@ function readPrefs() {
   }
 }
 
+/**
+ * GPU 加速的**自动降级**。
+ *
+ * 背景（真实日志）：
+ *   ERROR:gpu_process_host.cc(976) GPU process launch failed: error_code=18
+ *   FATAL:gpu_data_manager_impl_private.cc(423) GPU process isn't usable. Goodbye.
+ * 这是 Electron 的 GPU 子进程起不来（虚拟机/远程桌面没有可用 GPU、显卡驱动异常、
+ * 或被安全软件拦截），Chromium 会**直接致命退出** —— 玩家看到的是"客户端打不开"。
+ *
+ * 为什么不让玩家自己去设置里关：这种情况应用根本进不去，设置页也就点不到。
+ * 所以做成自愈：只要观测到 GPU 进程挂过，就写标记；**下次启动自动改用软件渲染**。
+ * disableHardwareAcceleration 必须在 app ready 之前调用，所以这段放在模块顶层。
+ *
+ * 另一个入口是环境变量 MCLINK_DISABLE_GPU=1，方便客服远程指导（比重装快）。
+ */
+const softwareRendering = readPrefs().disableGpu === true || process.env.MCLINK_DISABLE_GPU === '1';
+if (softwareRendering) {
+  app.disableHardwareAcceleration();
+  console.warn('[gpu] 已启用软件渲染（之前观测到 GPU 进程异常，或 MCLINK_DISABLE_GPU=1）');
+}
 function writePrefs(patch) {
   try {
     fs.mkdirSync(path.dirname(PREFS_FILE), { recursive: true });
@@ -901,6 +921,17 @@ function registerIpc() {
   ipcMain.handle('win:hide', withMain((w) => (w.hide(), true)));
   ipcMain.handle('win:hideToTray', withMain((w) => (w.hide(), true)));
 
+  /**
+   * GPU 子进程挂掉时写标记：下一次启动就会走软件渲染。
+   * 注意这个事件在**致命退出之前**也会触发，所以标记能在本次就落盘。
+   */
+  app.on('child-process-gone', (_event, details) => {
+    if (details.type !== 'GPU') return;
+    const reason = String(details.reason ?? 'unknown');
+    logLine(`GPU 进程异常退出（${reason}），下次启动将改用软件渲染`, 'stderr');
+    writePrefs({ disableGpu: true, gpuGoneAt: Date.now() });
+  });
+
   ipcMain.handle('app:info', () => ({
     version: app.getVersion(),
     platform: process.platform,
@@ -914,6 +945,8 @@ function registerIpc() {
     elevated: isElevated(),
     /** 启动时是否会自动请求管理员权限（设置页的开关读它） */
     autoElevate: readPrefs().autoElevate !== false,
+    /** true = 正在用软件渲染（此前观测到 GPU 进程异常，或设了 MCLINK_DISABLE_GPU=1） */
+    softwareRendering,
     hostname: os.hostname(),
   }));
 
