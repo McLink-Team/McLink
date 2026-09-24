@@ -14,6 +14,8 @@ export interface AppInfo {
   elevated: boolean;
   /** 启动时是否自动请求管理员权限（默认 true） */
   autoElevate: boolean;
+  /** true = 正在用软件渲染（此前观测到 GPU 进程异常，或设了 MCLINK_DISABLE_GPU=1） */
+  softwareRendering?: boolean;
   hostname: string;
 }
 
