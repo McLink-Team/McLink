@@ -224,8 +224,15 @@ export class UserRepo {
     const search = options.search?.trim();
     if (search) {
       const like = `%${search}%`;
+      /**
+       * 搜索也匹配邮箱。
+       *
+       * 管理员拿到的线索常常就是邮箱（玩家报问题、SMTP 退信、公告退订），
+       * 只能按用户名找的话等于白给一条线索。
+       */
       const rows = this.db.all<UserRow>(
-        'select * from users where username like ? or display_name like ? order by created_at desc limit ? offset ?',
+        'select * from users where username like ? or display_name like ? or email like ? order by created_at desc limit ? offset ?',
+        like,
         like,
         like,
         limit,
@@ -233,7 +240,8 @@ export class UserRepo {
       );
       const total = Number(
         this.db.scalar<number>(
-          'select count(*) as c from users where username like ? or display_name like ?',
+          'select count(*) as c from users where username like ? or display_name like ? or email like ?',
+          like,
           like,
           like,
         ) ?? 0,

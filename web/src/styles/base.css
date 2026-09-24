@@ -1163,6 +1163,11 @@ dt + dd {
   font-family: var(--font-mono);
   overflow-wrap: anywhere;
 }
+/* 表格里的"空值"占位（未绑定 / 未测得 / 未记录）：与 cell-sub 同一档，但不用等宽字体 */
+.cell-void {
+  font-size: var(--fs-xs);
+  color: var(--paper-faint);
+}
 
 /* ------------------------------------------------------------ 状态列表
  * 「在线/离线/待审核」这类计数，用发丝线分成格子，而不是一排小卡片。 */

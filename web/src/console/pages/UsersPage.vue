@@ -170,7 +170,7 @@ function usagePercent(user: AdminUser): number | null {
             v-model="filters.search"
             class="input"
             type="search"
-            placeholder="用户名 / 显示名"
+            placeholder="用户名 / 显示名 / 邮箱"
             @keyup.enter="applyFilters"
           />
         </div>
@@ -199,6 +199,11 @@ function usagePercent(user: AdminUser): number | null {
             <thead>
               <tr>
                 <th>用户名</th>
+                <!--
+                  邮箱必须在这里看得到：玩家报问题时给的就是邮箱，公告能发到谁
+                  也取决于「有没有绑 + 验没验」。只显示用户名的话，管理员还得去翻库。
+                -->
+                <th>邮箱</th>
                 <th>显示名</th>
                 <th>角色</th>
                 <th>状态</th>
@@ -212,8 +217,17 @@ function usagePercent(user: AdminUser): number | null {
             <tbody>
               <tr v-for="u in users" :key="u.id">
                 <td>
-                  <div class="mono">{{ u.username }}</div>
-                  <div class="cell-sub">{{ u.id }}</div>
+                  <div class="mono nowrap">{{ u.username }}</div>
+                  <div class="cell-sub nowrap">{{ u.id }}</div>
+                </td>
+                <td>
+                  <template v-if="u.email">
+                    <div class="mono cell-mail truncate" :title="u.email">{{ u.email }}</div>
+                    <div class="cell-sub">
+                      <Badge :tone="u.emailVerified ? 'ok' : 'warn'">{{ u.emailVerified ? '已验证' : '未验证' }}</Badge>
+                    </div>
+                  </template>
+                  <span v-else class="cell-void nowrap">未绑定</span>
                 </td>
                 <td>
                   <div class="name-line">
@@ -228,8 +242,8 @@ function usagePercent(user: AdminUser): number | null {
                   <Badge :tone="u.banned ? 'danger' : 'ok'" dot>{{ u.banned ? '已封禁' : '正常' }}</Badge>
                 </td>
                 <td>
-                  <div class="mono quota-line">{{ u.quotaBytes === null ? '不限' : formatBytes(u.quotaBytes) }}</div>
-                  <div class="cell-sub">最多房间 {{ u.maxRooms === null ? '平台默认' : u.maxRooms }}</div>
+                  <div class="mono quota-line nowrap">{{ u.quotaBytes === null ? '不限' : formatBytes(u.quotaBytes) }}</div>
+                  <div class="cell-sub nowrap">最多房间 {{ u.maxRooms === null ? '平台默认' : u.maxRooms }}</div>
                 </td>
                 <td class="table-num">
                   <div class="mono">{{ formatBytes(u.usedBytes) }}</div>
@@ -238,7 +252,7 @@ function usagePercent(user: AdminUser): number | null {
                   </div>
                 </td>
                 <td class="table-num">{{ u.hostedRooms }}</td>
-                <td class="cell-sub">{{ formatDateTime(u.createdAt) }}</td>
+                <td class="cell-sub nowrap">{{ formatDateTime(u.createdAt) }}</td>
                 <td>
                   <div class="row-actions">
                     <button class="btn btn-sm" type="button" :disabled="busyId === u.id" @click="openQuota(u)">配额</button>
@@ -350,6 +364,17 @@ function usagePercent(user: AdminUser): number | null {
   flex-wrap: wrap;
 }
 .quota-line {
+  font-size: var(--fs-sm);
+}
+/**
+ * 邮箱列。
+ *
+ * 加了这一列之后表格共 10 列，实测 1168px 内容宽时其它列会被挤到换行
+ * （用户 id 折成两行、"未绑定"折成"未绑/定"）。地址长了给省略号、
+ * 全量在 title 里，列宽就有上限了。
+ */
+.cell-mail {
+  max-width: 14rem;
   font-size: var(--fs-sm);
 }
 .col-actions {
