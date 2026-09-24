@@ -45,6 +45,19 @@ interface RoomDetail {
   aclToml: string;
 }
 
+/**
+ * 延迟单元格的副标题：这条链路到底是直连还是经中继。
+ *
+ * `p2p` 由服务端按 EasyTier 的 `cost` 判定（成员↔房主那一条）。以前服务端把「有延迟」当直连，
+ * 于是走中继的成员也显示 P2P —— 玩家一眼就能看出是假的。现在只有真的直连才写 P2P。
+ * 房主那一行没有「到房主」的链路，显示的是它看到的最快成员，因此单独标注。
+ */
+function linkNote(m: RoomMember): string {
+  if (m.role === 'host') return '成员最快';
+  if (m.latencyMs === null) return '';
+  return m.p2p ? 'P2P 直连' : '经中继';
+}
+
 const rooms = ref<RoomWithUsage[]>([]);
 const total = ref(0);
 const loading = ref(true);
@@ -437,7 +450,7 @@ async function recomputeAcl(): Promise<void> {
                     <td v-else class="cell-void">未知设备</td>
                     <td class="table-num">
                       {{ m.latencyMs === null ? '未测得' : `${m.latencyMs} ms` }}
-                      <div v-if="m.p2p" class="cell-sub">P2P</div>
+                      <div v-if="linkNote(m)" class="cell-sub">{{ linkNote(m) }}</div>
                     </td>
                     <td class="table-num cell-sub">
                       {{ formatBitrate(m.rxBps) }} / {{ formatBitrate(m.txBps) }}
