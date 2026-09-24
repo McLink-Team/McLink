@@ -2,7 +2,7 @@
  * WebSocket 实时通道：自动重连 + 话题订阅。
  * 落地页用它获取在线人数/流量，控制台用它刷新节点与房间状态。
  */
-import { WS_PATH, Topics, type ServerEvent } from '@mclink/shared';
+import { WS_PATH, Topics, reconnectDelayMs, type ServerEvent } from '@mclink/shared';
 import { getToken } from './api.ts';
 
 export type RealtimeStatus = 'connecting' | 'open' | 'closed';
@@ -111,7 +111,11 @@ export class RealtimeClient {
   #scheduleReconnect(): void {
     if (this.#reconnectTimer !== null) return;
     this.#attempts += 1;
-    const delay = Math.min(15_000, 800 * 1.7 ** Math.min(this.#attempts, 6));
+    /**
+     * 退避必须带抖动（`reconnectDelayMs` 里 0.5–1.5x 随机）：
+     * 主控重启后所有控制台页面同时回来，会把刚起来的单线程主控再打满一次。
+     */
+    const delay = reconnectDelayMs(this.#attempts);
     this.#reconnectTimer = window.setTimeout(() => {
       this.#reconnectTimer = null;
       this.connect();

@@ -88,7 +88,16 @@ async function main(): Promise<void> {
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
-    server.listen(app.config.port, app.config.host, () => resolve());
+    /**
+     * backlog 显式调大（Node 默认 511）。
+     *
+     * 主控是单线程的：事件循环一旦被占住，内核只能靠 accept 队列顶住新连接；
+     * 队列满就直接丢 SYN，客户端重试到 proxy_connect_timeout 就是
+     * `upstream timed out (110) while connecting to upstream`。
+     * 调大队列能多扛一次"断线重连风暴"，但真正要配的是客户端的重连抖动
+     * （packages/shared/src/backoff.ts）—— 让这一波不要挤在同一毫秒回来。
+     */
+    server.listen({ port: app.config.port, host: app.config.host, backlog: 2048 }, () => resolve());
   });
 
   const base = app.config.publicBaseUrl || `http://${app.config.host}:${app.config.port}`;
@@ -316,7 +325,14 @@ async function main(): Promise<void> {
    * 单次阻塞降到毫秒级，清理进度也不会因为一次跑不完而丢掉（下一小时继续）。
    */
   const purgeOldData = async (): Promise<void> => {
-    const sessions = app.users.purgeExpiredSessions();
+    // 会话也一样分批：上限 100 批（20 万行）纯属防御，正常每小时只有几百行过期
+    let sessions = 0;
+    for (let i = 0; i < 100; i += 1) {
+      const removed = app.users.pruneExpiredSessions(2000);
+      sessions += removed;
+      if (removed < 2000) break;
+      await new Promise((resolve) => setImmediate(resolve));
+    }
     let samples = 0;
     // 上限 400 批（200 万行）纯粹是防御：正常每小时只会有几千行过期
     for (let i = 0; i < 400; i += 1) {
@@ -336,6 +352,15 @@ async function main(): Promise<void> {
     if (sessions > 0 || samples > 0 || chat > 0) {
       log.debug('定期清理完成', { sessions, samples, chat });
     }
+    /**
+     * 维护窗口里做一次显式 checkpoint：把 WAL 累积的页写回主库并截断文件。
+     *
+     * 特意放在这里而不是让 SQLite 在某个请求里自动做 —— 自动 checkpoint 会同步落在
+     * 触发它的那次写入上，那一次卡顿正好会打在正在处理的请求上（见 db/index.ts 的
+     * wal_autocheckpoint 说明）。这里的耗时也记下来，便于观察它是否开始变慢。
+     */
+    const ckpt = app.db.checkpoint('TRUNCATE');
+    if (ckpt.ms >= 200) log.warn('WAL checkpoint 偏慢', ckpt);
   };
   timers.push(
     setInterval(() => {

@@ -303,8 +303,21 @@ export class UserRepo {
     this.db.run('delete from sessions where user_id = ?', userId);
   }
 
-  purgeExpiredSessions(): number {
-    const res = this.db.run('delete from sessions where expires_at < ?', nowIso());
+  /**
+   * 分批清理过期会话，返回本批删除的行数。
+   *
+   * 以前是一条无界的 `delete from sessions where expires_at < ?`：sessions 表一大，
+   * 这一条就会在**单次同步调用**里删完所有过期行，事件循环被按住几秒到几十秒 ——
+   * 期间主控连新 TCP 连接都排不进 accept 队列，nginx 侧报
+   * `upstream timed out (110) while connecting to upstream`（线上实测到过这个现象）。
+   * 现在与 traffic/chat 的清理保持一致：调用方循环、批间让出事件循环。
+   */
+  pruneExpiredSessions(limit = 2000): number {
+    const res = this.db.run(
+      'delete from sessions where rowid in (select rowid from sessions where expires_at < ? limit ?)',
+      nowIso(),
+      Math.max(1, Math.trunc(limit)),
+    );
     return Number(res.changes ?? 0);
   }
 }

@@ -4,5 +4,6 @@ export * from './regions.ts';
 export * from './format.ts';
 export * from './virtualnet.ts';
 export * from './link.ts';
+export * from './backoff.ts';
 export * from './validation.ts';
 export * from './design/theme.ts';

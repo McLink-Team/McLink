@@ -20,7 +20,7 @@ import {
   type UserSelf,
   type RegionDef,
 } from '@mclink/shared';
-import { REGIONS } from '@mclink/shared';
+import { REGIONS, reconnectDelayMs } from '@mclink/shared';
 import { api, friendlyError, getDeviceName, getMasterUrl, getToken, setDeviceName, setToken } from './api.ts';
 import type { CoreLogEntry, CoreStatus } from './core-types.ts';
 import { recordRecent } from './shortcuts.ts';
@@ -129,6 +129,8 @@ let heartbeatTimer: number | null = null;
 let ws: WebSocket | null = null;
 let wsReconnect: number | null = null;
 let wsClosedByUs = false;
+/** WS 连续重连次数：退避时长随它递增（连上就归零），避免全网客户端整齐地一起回来 */
+let wsAttempts = 0;
 /** 新版本复查的定时器（bootstrap 里起，退出时清掉） */
 let updateTimer: number | null = null;
 /** 房间详情刷新定时器（心跳期内的 30 秒轮询） */
@@ -817,6 +819,7 @@ function connectRealtime(): void {
     return;
   }
   ws.addEventListener('open', () => {
+    wsAttempts = 0;
     ws?.send(JSON.stringify({ type: 'subscribe', topics: [Topics.platform] }));
     if (state.session) subscribeRoom(state.session.room.id);
     // 断线期间的消息只能靠 HTTP 补：通知聊天面板做一次 sinceId 增量补齐
@@ -828,7 +831,16 @@ function connectRealtime(): void {
   ws.addEventListener('close', () => {
     ws = null;
     if (wsClosedByUs) return;
-    wsReconnect = window.setTimeout(() => connectRealtime(), 4000);
+    /**
+     * 重连退避必须**带抖动 + 递增**。
+     *
+     * 原来是写死的 4 秒：主控重启（或一次卡顿）后，所有玩家的客户端会在同一秒
+     * 一起回来。主控是单线程的，刚恢复就被这一波打满，新连接的 SYN 排不进
+     * accept 队列 —— nginx 侧看到的就是同一秒里一批不同 IP 的 /ws
+     * "upstream timed out while connecting"（线上日志实测），掉线 → 一起重连 → 再掉线。
+     */
+    wsAttempts += 1;
+    wsReconnect = window.setTimeout(() => connectRealtime(), reconnectDelayMs(wsAttempts));
   });
 }
 
