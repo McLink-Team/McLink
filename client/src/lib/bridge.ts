@@ -23,10 +23,15 @@ export interface AppInfo {
   exeDir?: string;
   /** 启动时是否自动请求管理员权限（默认 true） */
   autoElevate: boolean;
+  /** 关闭窗口时的行为：ask（默认）/ tray / quit */
+  closeAction?: CloseAction;
   /** true = 正在用软件渲染（此前观测到 GPU 进程异常，或设了 MCLINK_DISABLE_GPU=1） */
   softwareRendering?: boolean;
   hostname: string;
 }
+
+/** 关闭窗口时的行为：询问 / 最小化到托盘 / 彻底退出 */
+export type CloseAction = 'ask' | 'tray' | 'quit';
 
 export interface MclinkBridge {
   info(): Promise<AppInfo>;
@@ -40,6 +45,17 @@ export interface MclinkBridge {
   openExternal(url: string): Promise<void>;
   relaunchElevated(): Promise<{ ok: boolean; error?: string }>;
   setAutoElevate(enabled: boolean): Promise<{ ok: boolean; autoElevate: boolean }>;
+  /** 设置页里改"关闭窗口时的默认行为" */
+  setCloseAction(value: CloseAction): Promise<{ ok: boolean; closeAction: CloseAction }>;
+  /** 主进程问"彻底退出还是最小化"时的回调（返回取消订阅的函数） */
+  onAskClose(handler: () => void): () => void;
+  /** 询问框已经弹出（撤掉主进程的 8 秒兜底） */
+  closeAskOpened(): Promise<{ ok: boolean }>;
+  /** 回答主进程的选择；remember=true 时把它记成默认 */
+  closeDecision(payload: {
+    action: 'tray' | 'quit' | 'cancel';
+    remember: boolean;
+  }): Promise<{ ok: boolean; action?: string; error?: string }>;
   confirm(payload: { title?: string; message?: string; detail?: string }): Promise<boolean>;
   /**
    * 自绘标题栏的窗口控制。

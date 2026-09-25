@@ -14,6 +14,18 @@ contextBridge.exposeInMainWorld('mclink', {
   relaunchElevated: () => ipcRenderer.invoke('app:relaunchElevated'),
   setAutoElevate: (enabled) => ipcRenderer.invoke('app:setAutoElevate', enabled),
   confirm: (payload) => ipcRenderer.invoke('dialog:confirm', payload),
+  /** 关闭窗口时的默认行为：ask / tray / quit */
+  setCloseAction: (value) => ipcRenderer.invoke('app:setCloseAction', value),
+  /** 主进程询问"彻底退出还是最小化"时回调（见 components/CloseConfirm.vue） */
+  onAskClose: (handler) => {
+    const listener = () => handler();
+    ipcRenderer.on('app:ask-close', listener);
+    return () => ipcRenderer.removeListener('app:ask-close', listener);
+  },
+  /** 告诉主进程：询问框已经弹出来了（撤掉它的 8 秒兜底） */
+  closeAskOpened: () => ipcRenderer.invoke('app:closeAskOpened'),
+  /** 回答主进程：tray / quit / cancel，以及要不要记住 */
+  closeDecision: (payload) => ipcRenderer.invoke('app:closeDecision', payload),
 
   /**
    * 自绘标题栏的窗口控制。

@@ -9,7 +9,7 @@ import { onMounted, ref } from 'vue';
 import { currentTheme, setThemeChoice, themeChoice, type ThemeChoice } from '@mclink/shared';
 import { clientState, openUpdatePage, relaunchElevated, setDevice, logout } from '../lib/store.ts';
 import { reopenOnboarding } from '../lib/onboarding.ts';
-import type { AppInfo } from '../lib/bridge.ts';
+import type { AppInfo, CloseAction } from '../lib/bridge.ts';
 
 const info = ref<AppInfo | null>(null);
 const device = ref(clientState.deviceName);
@@ -21,6 +21,22 @@ const autoElevate = ref(true);
 async function saveAutoElevate(): Promise<void> {
   const res = await window.mclink.setAutoElevate(autoElevate.value);
   autoElevate.value = res.autoElevate;
+}
+
+/**
+ * 关闭窗口时的行为。默认 ask（关的时候问一次）——
+ * 以前是无条件收进托盘且没有任何提示，玩家以为退出了、其实还在后台跑。
+ */
+const CLOSE_OPTIONS: ReadonlyArray<{ value: CloseAction; label: string }> = [
+  { value: 'ask', label: '每次都问我' },
+  { value: 'tray', label: '最小化到托盘（保持联机）' },
+  { value: 'quit', label: '彻底退出' },
+];
+const closeAction = ref<CloseAction>('ask');
+
+async function saveCloseAction(): Promise<void> {
+  const res = await window.mclink.setCloseAction(closeAction.value);
+  closeAction.value = res.closeAction;
 }
 
 /* ------------------------------------------------------------------ 外观 */
@@ -42,6 +58,7 @@ function pickTheme(choice: ThemeChoice): void {
 onMounted(async () => {
   info.value = await window.mclink.info();
   autoElevate.value = info.value.autoElevate !== false;
+  closeAction.value = (info.value.closeAction ?? 'ask') as CloseAction;
 });
 
 function save(): void {
@@ -92,6 +109,22 @@ function openDataDir(): void {
           </span>
         </span>
       </label>
+    </div>
+
+    <div v-if="info" class="card stack">
+      <div class="section-head">
+        <span class="title">关闭窗口时</span>
+      </div>
+      <div class="field">
+        <select v-model="closeAction" class="select" @change="saveCloseAction()">
+          <option v-for="opt in CLOSE_OPTIONS" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+        </select>
+        <span class="hint">
+          点右上角关闭时做什么。<b>最小化到托盘</b>不会断开局域网（托盘图标右键可退出）；
+          <b>彻底退出</b>会断开连接、房间里的朋友会掉线。选「每次都问我」时，
+          关窗口会弹一次询问框，那里勾了「记住我的选择」也会写进这个设置。
+        </span>
+      </div>
     </div>
 
     <div class="card stack">
