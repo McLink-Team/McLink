@@ -442,6 +442,33 @@ update settings
  where key = 'platform'
    and json_extract(value, '$.clientDownloadUrl') = '/downloads/McLink-Setup-1.0.2-x64.exe';
 `;
+
+/**
+ * V17：客户端版本 1.0.3 → 1.0.4。
+ *
+ * 1.0.3 修的是"管理员判定"（不再只看完整性级别，改成问 IsInRole），但用户装上后复测发现
+ * **「以管理员身份重启」按钮点了没反应**：打包版没有额外参数，命令被拼成
+ * `Start-Process -FilePath '…' -ArgumentList  -Verb RunAs`（空值），PowerShell 直接报
+ * `Missing an argument for parameter 'ArgumentList'` 并以 1 退出 —— 既不弹授权框也没有任何提示。
+ * 开发版带着入口参数，所以这条路径一直没被走到，之前的验证也就没发现。
+ *
+ * 1.0.4 = 1.0.3 的全部内容 + 这个修复，并且这条路径现在**按打包形态做了真点击实测**。
+ * 纪律同前：只动"还停在上一版默认值"的部署，管理员手改过的一律不碰；
+ * 从更老的版本升上来会依次跑 V15 → V16 → V17，最终都落在 1.0.4。
+ */
+const V17_CLIENT_1_0_4 = `
+update settings
+   set value = json_set(value, '$.clientVersion', '1.0.4'),
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ where key = 'platform'
+   and json_extract(value, '$.clientVersion') = '1.0.3';
+
+update settings
+   set value = json_set(value, '$.clientDownloadUrl', '/downloads/McLink-Setup-1.0.4-x64.exe'),
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ where key = 'platform'
+   and json_extract(value, '$.clientDownloadUrl') = '/downloads/McLink-Setup-1.0.3-x64.exe';
+`;
 export const MIGRATIONS: readonly string[] = [
   V1_INITIAL,
   V2_RELAY_ROOM_MAP,
@@ -459,6 +486,7 @@ export const MIGRATIONS: readonly string[] = [
   V14_ROOM_TTL,
   V15_CLIENT_1_0_2,
   V16_CLIENT_1_0_3,
+  V17_CLIENT_1_0_4,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
