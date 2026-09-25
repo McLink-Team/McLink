@@ -15,6 +15,7 @@ import { bootstrap, clearError, clearKicked, clientState, hasRoom, isOnline, mus
 import { onboardingVisible } from './lib/onboarding.ts';
 import TitleBar from './components/TitleBar.vue';
 import ElevationBanner from './components/ElevationBanner.vue';
+import CloseConfirm from './components/CloseConfirm.vue';
 import LoginPage from './pages/LoginPage.vue';
 import CreateJoin from './components/CreateJoin.vue';
 import RoomPage from './pages/RoomPage.vue';
@@ -102,6 +103,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown));
       （也不能插在链中间：v-else-if 必须紧跟上一个分支，否则整条链会断。）
     -->
     <ElevationBanner />
+    <!-- 关闭窗口时问"彻底退出还是最小化"（主进程发 app:ask-close 触发，见 CloseConfirm.vue） -->
+    <CloseConfirm />
 
     <div v-if="booting" class="boot">
       <span class="spinner" />

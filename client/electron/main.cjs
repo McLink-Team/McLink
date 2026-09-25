@@ -17,6 +17,7 @@ const path = require('node:path');
 const net = require('node:net');
 const os = require('node:os');
 const { decideElevation, buildElevateCommand } = require('./elevation.cjs');
+const { normalizeCloseAction, resolveCloseChoice } = require('./close-action.cjs');
 
 const isDev = !app.isPackaged;
 /** 只有显式设置了该变量（scripts/dev.mjs 会设置）才去连开发服务器 */
@@ -511,6 +512,35 @@ function requestElevation() {
   });
 }
 
+/* ---------------------------------------------- 关闭窗口时的询问（ask 模式） */
+
+/**
+ * 正在等界面答复的关闭请求。
+ *
+ * 为什么要有这层状态：close 事件是同步的，而"问用户"要异步等答复 ——
+ * 所以先 preventDefault 拦下来，再让渲染进程弹窗，等它通过 IPC 回话。
+ * 8 秒兜底：界面卡住/窗口没了就按"最小化到托盘"处理，
+ * 绝不把用户锁在"点了 X 但什么都没发生"。界面弹出后会立刻回一个 ack，
+ * 我们会撤掉这个兜底计时器（否则用户盯着弹窗看 8 秒会被莫名其妙收进托盘）。
+ */
+let closeAsk = null;
+
+function askCloseAction() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    // 连窗口都没有，问不了 —— 直接退出，别留一个看不见的进程
+    quitting = true;
+    app.quit();
+    return;
+  }
+  if (closeAsk) return; // 已经在问了，别重复弹
+  const timer = setTimeout(() => {
+    closeAsk = null;
+    mainWindow?.hide();
+  }, 8000);
+  closeAsk = { timer };
+  mainWindow.webContents.send('app:ask-close');
+}
+
 /* ------------------------------------------------------------ 核心进程 */
 
 /**
@@ -957,11 +987,34 @@ function createWindow() {
   mainWindow.on('unmaximize', pushMaximized);
 
   mainWindow.on('close', (event) => {
-    // 关闭窗口时收进托盘，除非用户显式退出
-    if (!quitting) {
-      event.preventDefault();
-      mainWindow?.hide();
+    /**
+     * 关闭窗口的行为由偏好决定（`closeAction`）：
+     *   · ask（默认）—— 拦下来，让界面弹「彻底退出 / 最小化到托盘」（可记住选择）
+     *   · tray        —— 直接收进托盘（老行为）
+     *   · quit        —— 直接退出
+     * 以前是无条件收进托盘、**没有任何提示**：玩家以为退出了，其实进程还在后台跑、联机也没断。
+     */
+    if (quitting) return;
+    const action = normalizeCloseAction(readPrefs().closeAction);
+    if (action === 'quit') {
+      /**
+       * 这里必须显式 app.quit()。
+       * `window-all-closed` 被我们改成了空实现（为了"关掉窗口后留在托盘"），
+       * 所以只让窗口关掉的话，进程会**继续留在托盘里**——用户以为彻底退出了，
+       * 其实还有一个看不见的 McLink 在后台，正是这次要修的那种毛病。
+       * （实测：打包版 closeAction=quit 时窗口没了、进程仍在，测试就是这么抓到的。）
+       * 用 setImmediate 让当前这次 close 先走完，避免在 close 处理里重入 quit。
+       */
+      quitting = true;
+      setImmediate(() => app.quit());
+      return;
     }
+    event.preventDefault();
+    if (action === 'tray') {
+      mainWindow?.hide();
+      return;
+    }
+    askCloseAction();
   });
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -975,8 +1028,7 @@ function createWindow() {
  * 优先级：显式开发服务器 > 已构建的 dist/index.html > 开发默认端口。
  * 之前用 `!app.isPackaged` 当判据是错的：直接 `electron .` 跑未打包代码时
  * 也会被当成开发模式，结果去连根本没有启动的 Vite，白屏。
- */
-function loadRenderer(win) {
+ */function loadRenderer(win) {
   if (DEV_URL) {
     win.loadURL(DEV_URL);
     return;
@@ -1094,6 +1146,42 @@ function registerIpc() {
   ipcMain.handle('win:hide', withMain((w) => (w.hide(), true)));
   ipcMain.handle('win:hideToTray', withMain((w) => (w.hide(), true)));
 
+  /* ------------------------------------------------ 关闭窗口时的询问 */
+  /**
+   * 界面已经弹出了询问框 → 撤掉主进程那边的兜底计时器。
+   * 不撤的话：用户盯着弹窗看超过 8 秒，窗口会被莫名收进托盘。
+   */
+  ipcMain.handle('app:closeAskOpened', () => {
+    if (closeAsk?.timer) {
+      clearTimeout(closeAsk.timer);
+      closeAsk.timer = null;
+    }
+    return { ok: Boolean(closeAsk) };
+  });
+
+  /** 用户在询问框里做出的选择 */
+  ipcMain.handle('app:closeDecision', (_e, payload) => {
+    if (!closeAsk) return { ok: false, error: '没有待处理的关闭请求' };
+    if (closeAsk.timer) clearTimeout(closeAsk.timer);
+    closeAsk = null;
+    const { action, persist } = resolveCloseChoice(payload?.action, payload?.remember === true);
+    if (persist) writePrefs({ closeAction: persist });
+    if (action === 'quit') {
+      quitting = true;
+      app.quit();
+    } else if (action === 'tray') {
+      mainWindow?.hide();
+    }
+    // action === 'cancel'：什么都不做，窗口保持原样
+    return { ok: true, action, closeAction: normalizeCloseAction(readPrefs().closeAction) };
+  });
+
+  /** 设置页里直接改默认的关闭行为 */
+  ipcMain.handle('app:setCloseAction', (_e, value) => {
+    const action = normalizeCloseAction(value);
+    writePrefs({ closeAction: action });
+    return { ok: true, closeAction: action };
+  });
   /**
    * GPU 子进程挂掉时写标记：下一次启动就会走软件渲染。
    * 注意这个事件在**致命退出之前**也会触发，所以标记能在本次就落盘。
@@ -1123,6 +1211,8 @@ function registerIpc() {
     exeDir: path.dirname(process.execPath),
     /** 启动时是否会自动请求管理员权限（设置页的开关读它） */
     autoElevate: readPrefs().autoElevate !== false,
+    /** 关闭窗口时的行为：ask（默认，关的时候问一次）/ tray（收进托盘）/ quit（直接退出） */
+    closeAction: normalizeCloseAction(readPrefs().closeAction),
     /** true = 正在用软件渲染（此前观测到 GPU 进程异常，或设了 MCLINK_DISABLE_GPU=1） */
     softwareRendering,
     hostname: os.hostname(),
