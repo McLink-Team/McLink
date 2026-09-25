@@ -16,6 +16,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const net = require('node:net');
 const os = require('node:os');
+const { decideElevation } = require('./elevation.cjs');
 
 const isDev = !app.isPackaged;
 /** 只有显式设置了该变量（scripts/dev.mjs 会设置）才去连开发服务器 */
@@ -195,10 +196,16 @@ let elevationCache = null;
  * 提权状态：要回答的是"**能不能建虚拟网卡**"，而不是"像不像管理员"。
  *
  * 用户实测踩到的坑：`runas /trustlevel:0x20000` 启动时，进程的完整性级别**仍是 High**
- * （`whoami /groups` 里能看到 S-1-16-12288），但令牌是**受限令牌**
- * （多出 S-1-5-12，Administrators 变成 deny-only）—— 建虚拟网卡照样失败（核心退出码 1），
- * 而界面显示的是"已以管理员身份运行，虚拟网卡可用"，把人引到完全错误的方向。
- * 所以这里同时看两个 SID：High 只是必要条件，受限令牌直接判不合格。
+ * （`whoami /groups` 里能看到 S-1-16-12288），但令牌是**受限令牌**：Administrators 组
+ * 变成 deny-only，建 wintun 虚拟网卡照样失败（核心退出码 1）。
+ *
+ * **第一版修错了方向**：我去 `whoami /groups` 里找 RESTRICTED(S-1-5-12) —— 但受限 SID
+ * 属于令牌的"受限 SID 列表"，`whoami` 根本不列它，于是判定依旧返回"已提权"、弹窗不出现
+ * （用户复测反馈"还是不行，没有提示无权限"）。
+ *
+ * 所以现在改成**直接问 Windows 权威答案**：`WindowsPrincipal.IsInRole(Administrator)`。
+ * UAC 过滤后的令牌与 runas 受限令牌都会返回 false —— 这正是"我能不能行使管理员权限"。
+ * whoami 那份输出只用来**解释原因**（是受限令牌、还是被 UAC 过滤、还是压根没提权）。
  */
 function elevationStatus() {
   /**
@@ -222,7 +229,7 @@ function elevationStatus() {
   }
   let groups = '';
   try {
-    // whoami /groups 里能看到完整性级别与"受限"标记
+    // 只用来解释"为什么没权限"，判定本身不依赖它
     const res = spawnSync('whoami', ['/groups'], { encoding: 'utf8', windowsHide: true });
     groups = res.stdout || '';
   } catch {
@@ -230,14 +237,58 @@ function elevationStatus() {
   }
   const restricted = /S-1-5-12\b/.test(groups);
   const high = /S-1-16-12288/.test(groups);
-  let reason = null;
-  if (restricted) {
-    reason = '当前进程是受限令牌（例如用 runas /trustlevel 启动）：无法创建虚拟网卡，请直接用「以管理员身份重启」';
-  } else if (!high) {
-    reason = '未以管理员身份运行：创建虚拟网卡需要管理员权限，请用「以管理员身份重启」';
+  /**
+   * 判定本身是纯函数（`electron/elevation.cjs`）：四种令牌组合都能离线断言，
+   * 不必再靠"在真机上碰运气" —— 这条判定的前两版都错在这里。
+   */
+  const adminIsInRole = realAdminRights();
+  const verdict = decideElevation({ adminIsInRole, high, restricted });
+  elevationCache = { ok: verdict.ok, restricted, reason: verdict.reason };
+  /**
+   * 判定依据写进应用日志（结果会缓存，所以只写一次）。
+   * 这条日志是给"玩家说没提示权限"这类反馈准备的：日志里能直接看到
+   * IsInRole 问了什么、答案是什么、完整性级别如何，而不必远程猜。
+   */
+  try {
+    logLine(
+      `权限判定：IsInRole(Administrator)=${adminIsInRole ?? '探测失败'} · 完整性级别=${high ? 'High' : '非 High'} · 受限标记=${restricted ? '有' : '无'} → ${verdict.ok ? '可用' : `不可用（${verdict.reason}）`}`,
+      verdict.ok ? 'info' : 'stderr',
+    );
+  } catch {
+    /* 日志失败不影响判定 */
   }
-  elevationCache = { ok: reason === null, restricted, reason };
   return elevationCache;
+}
+
+/**
+ * 权威判定：当前进程**能不能行使管理员权限**。
+ *
+ * 返回 true / false / null（探测失败）。用 .NET 的 WindowsPrincipal 而不是解析 whoami：
+ *   · 提权进程       → true
+ *   · 普通用户       → false
+ *   · UAC 过滤的令牌 → false（Administrators 是 deny-only）
+ *   · runas 受限令牌 → false（同上）
+ * 慢一点（一次性 ~300ms，结果会缓存）但结论可靠：这正是"能不能建网卡"的答案。
+ */
+function realAdminRights() {
+  try {
+    const res = spawnSync(
+      'powershell',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        '[bool](New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)',
+      ],
+      { encoding: 'utf8', windowsHide: true, timeout: 10_000 },
+    );
+    const out = (res.stdout || '').trim().toLowerCase();
+    if (out === 'true') return true;
+    if (out === 'false') return false;
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 function isElevated() {
