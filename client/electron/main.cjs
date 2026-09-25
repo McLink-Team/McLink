@@ -179,6 +179,8 @@ function coreStatus() {
     args: core.args,
     rpcPortal: core.rpcPortal,
     elevated: isElevated(),
+    /** 不够权限时的可读原因（受限令牌 / 未提权）；够权限时为 null */
+    elevationReason: elevationStatus().reason,
     coreBin: CORE_BIN,
     coreBinExists: fs.existsSync(CORE_BIN),
     cliBinExists: fs.existsSync(CLI_BIN),
@@ -187,9 +189,18 @@ function coreStatus() {
 
 /* -------------------------------------------------------------- 提权检测 */
 
-let elevatedCache = null;
+let elevationCache = null;
 
-function isElevated() {
+/**
+ * 提权状态：要回答的是"**能不能建虚拟网卡**"，而不是"像不像管理员"。
+ *
+ * 用户实测踩到的坑：`runas /trustlevel:0x20000` 启动时，进程的完整性级别**仍是 High**
+ * （`whoami /groups` 里能看到 S-1-16-12288），但令牌是**受限令牌**
+ * （多出 S-1-5-12，Administrators 变成 deny-only）—— 建虚拟网卡照样失败（核心退出码 1），
+ * 而界面显示的是"已以管理员身份运行，虚拟网卡可用"，把人引到完全错误的方向。
+ * 所以这里同时看两个 SID：High 只是必要条件，受限令牌直接判不合格。
+ */
+function elevationStatus() {
   /**
    * macOS/Linux：判断"当前是不是 root"。
    * 原来是 `return true`（当作"非 Windows 不需要提权"），但 macOS 上创建 utun
@@ -197,18 +208,72 @@ function isElevated() {
    * 实际却没权限，玩家看到的是核心起不来又没有任何提示。
    */
   if (process.platform !== 'win32') {
-    if (typeof process.getuid === 'function') return process.getuid() === 0;
-    return true;
+    const ok = typeof process.getuid !== 'function' || process.getuid() === 0;
+    return { ok, restricted: false, reason: ok ? null : '需要以 root 运行：macOS/Linux 创建虚拟网卡要 root 权限' };
   }
-  if (elevatedCache !== null) return elevatedCache;
+  if (elevationCache !== null) return elevationCache;
+  /**
+   * 调试开关：本机（开发/验证环境）常常本来就是管理员，这条 UI 路径没法自然复现。
+   * `MCLINK_FORCE_UNELEVATED=1` 让判定结果假装"没有权限"，用来验证弹窗与文案。
+   */
+  if (process.env.MCLINK_FORCE_UNELEVATED === '1') {
+    elevationCache = { ok: false, restricted: false, reason: '（调试）MCLINK_FORCE_UNELEVATED=1：模拟未提权' };
+    return elevationCache;
+  }
+  let groups = '';
   try {
-    // whoami /groups 里出现 High Mandatory Level 即视为已提权
+    // whoami /groups 里能看到完整性级别与"受限"标记
     const res = spawnSync('whoami', ['/groups'], { encoding: 'utf8', windowsHide: true });
-    elevatedCache = /S-1-16-12288/.test(res.stdout || '');
+    groups = res.stdout || '';
   } catch {
-    elevatedCache = false;
+    groups = '';
   }
-  return elevatedCache;
+  const restricted = /S-1-5-12\b/.test(groups);
+  const high = /S-1-16-12288/.test(groups);
+  let reason = null;
+  if (restricted) {
+    reason = '当前进程是受限令牌（例如用 runas /trustlevel 启动）：无法创建虚拟网卡，请直接用「以管理员身份重启」';
+  } else if (!high) {
+    reason = '未以管理员身份运行：创建虚拟网卡需要管理员权限，请用「以管理员身份重启」';
+  }
+  elevationCache = { ok: reason === null, restricted, reason };
+  return elevationCache;
+}
+
+function isElevated() {
+  return elevationStatus().ok;
+}
+
+/**
+ * 取核心日志末尾最有价值的一行。
+ *
+ * 核心退出时我们只拿得到退出码，真正的原因（wintun 建网卡失败、端口被占、密钥无效…）
+ * 只写在它自己的 `core-*.log` 里 —— 玩家报"退出码 1"时，光看码是没法排查的。
+ * 优先取最后一条 ERROR/panic，其次取最后一行非空文本。
+ */
+function lastCoreLogLine(logFile, maxBytes = 8192) {
+  try {
+    const size = fs.statSync(logFile).size;
+    const start = Math.max(0, size - maxBytes);
+    const len = size - start;
+    if (len <= 0) return '';
+    const buf = Buffer.alloc(len);
+    const fd = fs.openSync(logFile, 'r');
+    try {
+      fs.readSync(fd, buf, 0, len, start);
+    } finally {
+      fs.closeSync(fd);
+    }
+    const lines = buf
+      .toString('utf8')
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+    const errorLine = [...lines].reverse().find((l) => /ERROR|error|panic|failed|拒绝/i.test(l));
+    return (errorLine ?? lines[lines.length - 1] ?? '').slice(0, 300);
+  } catch {
+    return '';
+  }
 }
 
 /* ------------------------------------------------- 提权偏好（自动请求 UAC） */
@@ -536,7 +601,15 @@ async function startCoreInner(payload, attempt) {
     }
     // 主动重启期间（端口重试）既不该报「意外退出」，也不该再排队一次自动重启
     if (coreRestarting) return;
-    setState('error', `easytier-core 意外退出（退出码 ${code}）`);
+    /**
+     * 报错要带"原因"，不能只给退出码：
+     * 核心把真正的原因写在自己的日志里（wintun 建网卡失败、端口被占…），
+     * 而权限不足时我们也知道该怎么办 —— 一并写进这条消息，玩家不用去翻日志。
+     */
+    const tail = lastCoreLogLine(logFile);
+    const elevation = elevationStatus();
+    const hint = elevation.ok ? '' : `。${elevation.reason}`;
+    setState('error', `easytier-core 意外退出（退出码 ${code}）${tail ? `：${tail}` : ''}${hint}`);
     // 崩溃后自动重试一次，避免网络因为偶发问题一直断着
     if (replay) {
       setTimeout(() => {
@@ -943,6 +1016,8 @@ function registerIpc() {
     coreBin: CORE_BIN,
     cliBin: CLI_BIN,
     elevated: isElevated(),
+    /** 不够权限时的可读原因：让界面能说清"为什么起不来"，而不是只报一个退出码 */
+    elevationReason: elevationStatus().reason,
     /** 启动时是否会自动请求管理员权限（设置页的开关读它） */
     autoElevate: readPrefs().autoElevate !== false,
     /** true = 正在用软件渲染（此前观测到 GPU 进程异常，或设了 MCLINK_DISABLE_GPU=1） */
