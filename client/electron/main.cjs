@@ -16,7 +16,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const net = require('node:net');
 const os = require('node:os');
-const { decideElevation } = require('./elevation.cjs');
+const { decideElevation, buildElevateCommand } = require('./elevation.cjs');
 
 const isDev = !app.isPackaged;
 /** 只有显式设置了该变量（scripts/dev.mjs 会设置）才去连开发服务器 */
@@ -182,6 +182,9 @@ function coreStatus() {
     elevated: isElevated(),
     /** 不够权限时的可读原因（受限令牌 / 未提权）；够权限时为 null */
     elevationReason: elevationStatus().reason,
+    /** 可执行文件路径与所在目录：提权失败时界面要能带用户去"右键 → 以管理员身份运行" */
+    exePath: process.execPath,
+    exeDir: path.dirname(process.execPath),
     coreBin: CORE_BIN,
     coreBinExists: fs.existsSync(CORE_BIN),
     cliBinExists: fs.existsSync(CLI_BIN),
@@ -437,27 +440,73 @@ function requestElevation() {
   if (process.platform !== 'win32') return Promise.resolve({ ok: false, error: '该平台不需要提权' });
   const exe = process.execPath;
   const args = app.isPackaged ? [] : [path.join(__dirname, '..')];
-  const command = `Start-Process -FilePath '${exe}' -ArgumentList ${args
-    .map((a) => `'${a}'`)
-    .join(',')} -Verb RunAs`;
+  /**
+   * 组装 Start-Process 参数。
+   *
+   * 踩过的坑（用户实测："以管理员身份重启这个按钮按了没用"）：
+   * 打包版没有额外参数，而老代码**无条件**拼了 `-ArgumentList `（后面空着），
+   * PowerShell 直接报 `Missing an argument for parameter 'ArgumentList'` 并以 1 退出 ——
+   * 于是点了按钮既不弹 UAC、界面上也毫无反应（错误只写进了 state.lastError，弹窗里看不到）。
+   * 开发版因为带着入口参数，这条路一直没被走到，所以之前的验证也没发现。
+   */
+  const command = buildElevateCommand(exe, args);
   // 记下这次请求的时间：玩家点了「否」也不会每次都再弹
   writePrefs({ elevationAskedAt: Date.now() });
 
   return new Promise((resolve) => {
+    let settled = false;
+    const done = (result) => {
+      if (settled) return;
+      settled = true;
+      try {
+        logLine(`提权请求：${result.ok ? '已启动管理员实例，本进程退出' : `失败 —— ${result.error}`}`, result.ok ? 'info' : 'stderr');
+      } catch {
+        /* 日志失败不影响结果 */
+      }
+      resolve(result);
+    };
     try {
-      const child = spawn('powershell.exe', ['-NoProfile', '-Command', command], { windowsHide: true });
+      const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
+        windowsHide: true,
+      });
+      let stderr = '';
+      child.stderr?.on('data', (d) => {
+        stderr += String(d);
+      });
+      // 兜底超时：授权框没弹出来时不能让按钮永远停在"正在重启…"
+      const timer = setTimeout(() => {
+        try {
+          child.kill();
+        } catch {
+          /* 可能已退出 */
+        }
+        done({ ok: false, error: '提权请求超时（系统授权框没有出现）' });
+      }, 60_000);
       child.on('close', (code) => {
+        clearTimeout(timer);
         if (code === 0) {
           quitting = true;
           app.releaseSingleInstanceLock();
           app.quit();
-          resolve({ ok: true });
-        } else {
-          resolve({ ok: false, error: `提权启动被取消或失败（退出码 ${code}）` });
+          done({ ok: true });
+          return;
         }
+        const text = stderr.replace(/\s+/g, ' ').trim();
+        // 玩家在授权框上点「否」时说"已取消"：这是正常选择，不该显示成故障
+        const canceled = /canceled|cancelled|取消/i.test(text);
+        done({
+          ok: false,
+          error: canceled
+            ? '你在系统授权框里点了取消：客户端继续以普通权限运行，联机不可用'
+            : `提权启动失败（退出码 ${code}）${text ? `：${text.slice(0, 200)}` : ''}`,
+        });
+      });
+      child.on('error', (err) => {
+        clearTimeout(timer);
+        done({ ok: false, error: err.message });
       });
     } catch (err) {
-      resolve({ ok: false, error: err.message });
+      done({ ok: false, error: err.message });
     }
   });
 }
@@ -1069,6 +1118,9 @@ function registerIpc() {
     elevated: isElevated(),
     /** 不够权限时的可读原因：让界面能说清"为什么起不来"，而不是只报一个退出码 */
     elevationReason: elevationStatus().reason,
+    /** 可执行文件位置：自动提权失败时，界面要能带用户去"右键 → 以管理员身份运行" */
+    exePath: process.execPath,
+    exeDir: path.dirname(process.execPath),
     /** 启动时是否会自动请求管理员权限（设置页的开关读它） */
     autoElevate: readPrefs().autoElevate !== false,
     /** true = 正在用软件渲染（此前观测到 GPU 进程异常，或设了 MCLINK_DISABLE_GPU=1） */

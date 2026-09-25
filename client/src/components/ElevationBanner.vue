@@ -20,6 +20,8 @@ import type { AppInfo } from '../lib/bridge.ts';
 const info = ref<AppInfo | null>(null);
 const popupOpen = ref(false);
 const busy = ref(false);
+/** 提权失败的原因：就地显示在弹窗里（用户实测"按了没用"就是因为这里什么都不显示） */
+const elevateError = ref<string | null>(null);
 
 onMounted(async () => {
   try {
@@ -41,16 +43,26 @@ const reason = computed(() => info.value?.elevationReason ?? '');
 
 async function elevate(): Promise<void> {
   busy.value = true;
+  elevateError.value = null;
   try {
-    /**
-     * 这个 store 函数返回 void：失败时它自己把原因写进 state.lastError，
-     * 而 App.vue 顶部的错误条已经在显示它。所以这里不再弹 window.alert
-     * （两处提示同一件事只会让人以为出了两个错）。
-     */
-    await relaunchElevated();
+    const res = await relaunchElevated();
+    // ok = 已拉起管理员实例、本进程即将退出；失败时把原因留在这里说清楚
+    if (!res.ok) elevateError.value = res.error ?? '提权失败';
+  } catch (err) {
+    elevateError.value = err instanceof Error ? err.message : String(err);
   } finally {
     busy.value = false;
   }
+}
+
+/**
+ * 兜底：打开客户端所在的文件夹，让用户**右键 → 以管理员身份运行**。
+ * 自动提权在某些环境里本来就会被拒（例如受限令牌不允许再提权），
+ * 这时"带用户到文件所在处"比一句"请右键运行"有用得多。
+ */
+function openExeDir(): void {
+  const dir = info.value?.exeDir;
+  if (dir) void window.mclink.openPath(dir);
 }
 </script>
 
@@ -70,11 +82,17 @@ async function elevate(): Promise<void> {
         <div class="hint">也可以直接点下面的按钮：会弹系统授权框，本窗口退出后以管理员身份重新打开。</div>
       </div>
 
+      <!-- 提权失败就地说明：不要只把错误丢到顶部错误条（用户实测"按了没用"） -->
+      <div v-if="elevateError" class="alert alert-danger">{{ elevateError }}</div>
+
       <div class="row-between">
         <button class="btn" type="button" :disabled="busy" @click="popupOpen = false">稍后再说</button>
-        <button class="btn btn-primary" type="button" :disabled="busy" @click="elevate">
-          {{ busy ? '正在重启…' : '以管理员身份重启' }}
-        </button>
+        <div class="row" style="gap: var(--s-2)">
+          <button v-if="info?.exeDir" class="btn" type="button" @click="openExeDir">打开所在文件夹</button>
+          <button class="btn btn-primary" type="button" :disabled="busy" @click="elevate">
+            {{ busy ? '正在重启…' : '以管理员身份重启' }}
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -84,10 +102,14 @@ async function elevate(): Promise<void> {
       未以管理员身份运行：建不了虚拟网卡，<b>联机不可用</b>。请右键客户端图标 →
       「以管理员身份运行」，或点右侧按钮重启（会弹系统授权框）。
       <span v-if="reason" class="hint">{{ reason }}</span>
+      <span v-if="elevateError" class="hint">{{ elevateError }}</span>
     </span>
-    <button class="btn btn-sm" type="button" :disabled="busy" @click="elevate">
-      {{ busy ? '正在重启…' : '以管理员身份重启' }}
-    </button>
+    <div class="row" style="gap: var(--s-2)">
+      <button v-if="info?.exeDir" class="btn btn-sm" type="button" @click="openExeDir">打开所在文件夹</button>
+      <button class="btn btn-sm" type="button" :disabled="busy" @click="elevate">
+        {{ busy ? '正在重启…' : '以管理员身份重启' }}
+      </button>
+    </div>
   </div>
 </template>
 
