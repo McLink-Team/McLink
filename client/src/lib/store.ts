@@ -975,9 +975,16 @@ export async function openLogsFolder(): Promise<void> {
   await window.mclink.openPath(info.logDir);
 }
 
-export async function relaunchElevated(): Promise<void> {
+/**
+ * 以管理员身份重启。
+ *
+ * 返回结果（而不只是写进 state.lastError）：调用处要能**就地**显示失败原因 ——
+ * 用户实测"按了没用"就是因为失败原因只出现在顶部错误条，弹窗里什么都没变。
+ */
+export async function relaunchElevated(): Promise<{ ok: boolean; error?: string }> {
   const res = await window.mclink.relaunchElevated();
   if (!res.ok) state.lastError = res.error ?? '提权失败';
+  return res;
 }
 
 export function clearError(): void {

@@ -52,4 +52,20 @@ function decideElevation({ adminIsInRole, high, restricted }) {
   return { ok: true, reason: null };
 }
 
-module.exports = { decideElevation };
+/**
+ * 组装"以管理员身份重启"用的 PowerShell 命令。
+ *
+ * 为什么必须抽出来单独测：用户实测"以管理员身份重启这个按钮按了没用" ——
+ * 打包版**没有额外参数**，而老代码无条件拼了 `-ArgumentList `（后面空着），
+ * PowerShell 直接报 `Missing an argument for parameter 'ArgumentList'` 并以 1 退出，
+ * 既不弹授权框也没有任何提示。开发版带着入口参数，所以怎么点都是好的 ——
+ * 这条路径**必须按打包形态断言**，不能只在开发版上点一下就算验过。
+ */
+function buildElevateCommand(exe, args = []) {
+  const quote = (s) => `'${String(s).replace(/'/g, "''")}'`;
+  // 没有参数时**完全不要出现** -ArgumentList（空值会让 PowerShell 报参数缺失）
+  const argList = args.length > 0 ? ` -ArgumentList @(${args.map(quote).join(',')})` : '';
+  return `Start-Process -FilePath ${quote(exe)}${argList} -Verb RunAs`;
+}
+
+module.exports = { decideElevation, buildElevateCommand };

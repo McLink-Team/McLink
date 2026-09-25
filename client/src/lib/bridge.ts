@@ -18,6 +18,9 @@ export interface AppInfo {
    * 例如用 `runas /trustlevel` 启动时完整性级别仍是 High，但令牌是受限的。
    */
   elevationReason?: string | null;
+  /** 可执行文件路径与其所在目录：自动提权失败时，引导用户"右键 → 以管理员身份运行" */
+  exePath?: string;
+  exeDir?: string;
   /** 启动时是否自动请求管理员权限（默认 true） */
   autoElevate: boolean;
   /** true = 正在用软件渲染（此前观测到 GPU 进程异常，或设了 MCLINK_DISABLE_GPU=1） */
