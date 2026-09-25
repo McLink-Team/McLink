@@ -414,6 +414,34 @@ update settings
  where key = 'platform'
    and json_extract(value, '$.clientDownloadUrl') = '/downloads/McLink-Setup-1.0.1-x64.exe';
 `;
+
+/**
+ * V16：客户端版本 1.0.2 → 1.0.3。
+ *
+ * 1.0.2 是"本地编译好、还没上线"的那一版，1.0.3 在它基础上加了两处**客户端**改动：
+ *   · 未以管理员身份启动时**直接弹窗**（文案写明「右键 → 以管理员身份运行」），
+ *     关掉后保留常驻横幅；
+ *   · 权限判定不再只看完整性级别：`runas /trustlevel:0x20000` 这类**受限令牌**下
+ *     级别仍是 High，但建不出虚拟网卡 —— 以前界面会显示"已以管理员身份运行，虚拟网卡可用"，
+ *     把人引到完全错误的方向；现在会明确说出原因。
+ *   · 核心异常退出时，错误信息里带上核心日志的最后一行（以前只有一个退出码，没法排查）。
+ *
+ * 纪律同 V8/V9/V15：只动"还停在上一版默认值"的部署，管理员手改过的一律不碰。
+ * 从更老的版本升上来的实例会依次跑 V15 → V16，最终都落在 1.0.3。
+ */
+const V16_CLIENT_1_0_3 = `
+update settings
+   set value = json_set(value, '$.clientVersion', '1.0.3'),
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ where key = 'platform'
+   and json_extract(value, '$.clientVersion') = '1.0.2';
+
+update settings
+   set value = json_set(value, '$.clientDownloadUrl', '/downloads/McLink-Setup-1.0.3-x64.exe'),
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ where key = 'platform'
+   and json_extract(value, '$.clientDownloadUrl') = '/downloads/McLink-Setup-1.0.2-x64.exe';
+`;
 export const MIGRATIONS: readonly string[] = [
   V1_INITIAL,
   V2_RELAY_ROOM_MAP,
@@ -430,6 +458,7 @@ export const MIGRATIONS: readonly string[] = [
   V13_NODE_CAPACITY_BPS,
   V14_ROOM_TTL,
   V15_CLIENT_1_0_2,
+  V16_CLIENT_1_0_3,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
