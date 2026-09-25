@@ -12,6 +12,12 @@ export interface AppInfo {
   coreBin: string;
   cliBin: string;
   elevated: boolean;
+  /**
+   * 权限不足时的可读原因（受限令牌 / 未提权）；够权限时为 null。
+   * 存在的意义：光看 `elevated` 说不清"为什么建不了虚拟网卡"，
+   * 例如用 `runas /trustlevel` 启动时完整性级别仍是 High，但令牌是受限的。
+   */
+  elevationReason?: string | null;
   /** 启动时是否自动请求管理员权限（默认 true） */
   autoElevate: boolean;
   /** true = 正在用软件渲染（此前观测到 GPU 进程异常，或设了 MCLINK_DISABLE_GPU=1） */

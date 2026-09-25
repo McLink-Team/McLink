@@ -1,42 +1,43 @@
 <script setup lang="ts">
 /**
- * 「未以管理员身份运行」的常驻横幅。
+ * 「不是管理员」的提示：**启动就弹窗**，关掉后留一条常驻横幅。
  *
- * 为什么需要它（真实事故）
- * ----------------------
- * Windows 上创建 wintun 虚拟网卡必须管理员。客户端本来会在启动时自动请求提权，
- * 但**玩家点过一次「否」之后 7 天内不再自动弹**（避免骚扰）。于是那位玩家以普通
- * 权限启动 → 虚拟网卡建不起来 → 核心直接退出 → 房间页只显示一句「连接异常」，
- * 诊断卡再抛一段 EasyTier 的 Rust 原始报错（`failed to connect 127.0.0.1:52389`,
- * os error 10061）。玩家完全不知道原因是"权限"，客服也得排查半天。
+ * 为什么从"只挂横幅"改成"先弹窗"（用户实测反馈）
+ * ----------------------------------------------
+ * 1) 横幅挂在设置页/顶部，玩家不一定会看到；而这件事的后果是**联机完全不可用**；
+ * 2) 更糟的是判定曾经会误报：用 `runas /trustlevel:0x20000` 启动时完整性级别仍是
+ *    High，界面显示"已以管理员身份运行，虚拟网卡可用"，而令牌其实是受限的 ——
+ *    核心建不出虚拟网卡、以退出码 1 挂掉，玩家被引到完全错误的方向。
+ * 现在主进程会同时看"受限令牌"这一项，并把原因（elevationReason）交给界面显示。
  *
- * 之前唯一的提示藏在「新手引导」和「设置 → 权限」里 —— 找不到就等于没有。
- * 所以这里把它放到**最外层**：不弹窗、不拦截（选的是方案 A，不是硬门禁），
- * 但每一页顶部都看得到，而且一键就能修（复用现成的 relaunchElevated）。
- *
- * 只在自己确实没提权时出现：`app:info` 给的 elevated 是主进程实测值
- * （Windows 查 whoami 的 High Mandatory Level，macOS/Linux 查 getuid）。
+ * 两个入口都给「以管理员身份重启」：那是复用现成的 relaunchElevated（走系统授权框），
+ * 比让玩家自己找右键菜单更省事；弹窗文案里也写明了右键那条路。
  */
 import { computed, onMounted, ref } from 'vue';
 import { relaunchElevated } from '../lib/store.ts';
 import type { AppInfo } from '../lib/bridge.ts';
 
 const info = ref<AppInfo | null>(null);
+const popupOpen = ref(false);
 const busy = ref(false);
 
 onMounted(async () => {
   try {
     info.value = await window.mclink.info();
+    // 只在"确实没权限"时弹：拿不到 info 就当不知道，宁可少提示也不误报
+    if (NEEDS_ADMIN.has(info.value.platform) && info.value.elevated === false) popupOpen.value = true;
   } catch {
-    /* 拿不到就不显示横幅：宁可少提示，也不要误报"你没提权" */
+    /* 拿不到就不显示：宁可少提示，也不要误报"你没提权" */
   }
 });
 
 /** 需要管理员才能建虚拟网卡的平台 */
 const NEEDS_ADMIN = new Set(['win32', 'darwin']);
-const visible = computed(
+const notElevated = computed(
   () => info.value !== null && NEEDS_ADMIN.has(info.value.platform) && info.value.elevated === false,
 );
+/** 主进程给出的具体原因（受限令牌 / 未提权）；没有就不显示这一行 */
+const reason = computed(() => info.value?.elevationReason ?? '');
 
 async function elevate(): Promise<void> {
   busy.value = true;
@@ -54,9 +55,35 @@ async function elevate(): Promise<void> {
 </script>
 
 <template>
-  <div v-if="visible" class="alert alert-warn elevation-banner">
+  <!-- 启动弹窗：一次启动只弹一次，关掉后由下面的横幅继续提醒 -->
+  <div v-if="popupOpen" class="modal-mask elevation-popup">
+    <div class="card modal-card stack">
+      <div>
+        <div class="popup-title">需要管理员权限</div>
+        <div class="hint">未以管理员身份运行，建不了虚拟网卡 —— <b>联机不可用</b>（登录、建房都正常）。</div>
+      </div>
+
+      <div v-if="reason" class="alert alert-warn">{{ reason }}</div>
+
+      <div class="stack">
+        <div><b>怎么解决：</b>右键客户端图标 → 点「以管理员身份运行」。</div>
+        <div class="hint">也可以直接点下面的按钮：会弹系统授权框，本窗口退出后以管理员身份重新打开。</div>
+      </div>
+
+      <div class="row-between">
+        <button class="btn" type="button" :disabled="busy" @click="popupOpen = false">稍后再说</button>
+        <button class="btn btn-primary" type="button" :disabled="busy" @click="elevate">
+          {{ busy ? '正在重启…' : '以管理员身份重启' }}
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div v-if="notElevated && !popupOpen" class="alert alert-warn elevation-banner">
     <span class="grow">
-      未以管理员身份运行：建不了虚拟网卡，<b>联机不可用</b>。请点右侧按钮重启（会弹系统授权框）。
+      未以管理员身份运行：建不了虚拟网卡，<b>联机不可用</b>。请右键客户端图标 →
+      「以管理员身份运行」，或点右侧按钮重启（会弹系统授权框）。
+      <span v-if="reason" class="hint">{{ reason }}</span>
     </span>
     <button class="btn btn-sm" type="button" :disabled="busy" @click="elevate">
       {{ busy ? '正在重启…' : '以管理员身份重启' }}
@@ -66,9 +93,28 @@ async function elevate(): Promise<void> {
 
 <style scoped>
 /*
- * 只加一条：让长句在窄窗里正常折行。
- * 颜色/边框/内边距全部走 .alert 与 .alert-warn 的既有令牌，不另起一套。
+ * 颜色/边框/内边距全部走既有令牌与 .card/.alert 的样式，不另起一套。
+ * 与 OnboardingWizard 用同一套 modal 形态（同一处设计语言，别再造一个）。
  */
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  background: var(--scrim);
+  display: grid;
+  place-items: center;
+  padding: var(--s-5);
+  z-index: 420;
+}
+.modal-card {
+  width: min(520px, 100%);
+  max-height: 88vh;
+  overflow: auto;
+}
+.popup-title {
+  font-weight: 650;
+  font-size: var(--fs-lg);
+}
+/* 让长句在窄窗里正常折行 */
 .elevation-banner {
   align-items: flex-start;
 }
