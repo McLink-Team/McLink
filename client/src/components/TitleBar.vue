@@ -1,20 +1,20 @@
 <script setup lang="ts">
 /**
- * 自绘标题栏。
+ * 自绘标题栏（新外壳版）。
  *
- * 窗口是无边框的（frame: false），所以这条栏同时承担三件事：
- *   1. 拖动区域（-webkit-app-region: drag，按钮上要显式关掉）
- *   2. 连接状态（一个信号灯 + 一行字，玩家最关心"现在通不通"）
- *   3. 窗口控制（最小化 / 最大化-还原 / 关闭），图标是手绘 SVG，不用 Unicode 符号
+ * 无边框窗口下这条栏承担三件事：拖动区域、窗口控制、以及"现在通不通"那一行状态。
+ * 「暖纸台」世界里它**不是一条深色横带**：底色与页面同为 --ground，靠留白与
+ * 右侧的窗口按钮区分层次 —— 参考稿也是这么处理的（顶部没有分隔线）。
  *
- * 关闭按钮的行为是**收进托盘**而不是退出：退出会把正在跑的房间网络一起关掉，
- * 误点代价太大；真正的退出放在托盘菜单里。
+ * 关闭按钮仍然是**收进托盘**而不是退出（行为由偏好决定，见 SettingsPage 的
+ * 「关闭窗口时」）：退出会把正在跑的房间网络一起关掉，误点代价太大。
  */
 import { onMounted, onUnmounted, ref } from 'vue';
-import BrandMark from './BrandMark.vue';
 
 const props = defineProps<{
-  /** 连接状态，决定信号灯的语义色 */
+  /** 当前页面名，显示在左侧（参考稿那里放的是应用名） */
+  title: string;
+  /** 连接状态，决定状态点的语义色 */
   state: 'stopped' | 'starting' | 'running' | 'error';
   /** 状态文案 */
   label: string;
@@ -25,11 +25,11 @@ let offMaximized: (() => void) | null = null;
 
 const toneClass = () =>
   props.state === 'running'
-    ? 'led-ok led-live'
+    ? 'led-ok'
     : props.state === 'starting'
       ? 'led-signal'
       : props.state === 'error'
-        ? 'led-danger'
+        ? 'led-fault'
         : '';
 
 async function minimize(): Promise<void> {
@@ -60,10 +60,7 @@ onUnmounted(() => offMaximized?.());
 
 <template>
   <header class="titlebar" @dblclick="onDoubleClick">
-    <div class="tb-brand">
-      <BrandMark :size="14" />
-      <span class="tb-name">McLink</span>
-    </div>
+    <h1 class="tb-title">{{ title }}</h1>
 
     <div class="tb-status" :title="label">
       <span class="led" :class="toneClass()" />
@@ -89,7 +86,13 @@ onUnmounted(() => offMaximized?.());
           <path d="M4.5 4V3.2a1 1 0 0 1 1-1h3.3a1 1 0 0 1 1 1v3.3a1 1 0 0 1-1 1H8" />
         </svg>
       </button>
-      <button class="tb-btn tb-close" type="button" title="收进托盘（退出请用托盘菜单）" aria-label="收进托盘" @click="close">
+      <button
+        class="tb-btn tb-close"
+        type="button"
+        title="收进托盘（退出请用托盘菜单）"
+        aria-label="收进托盘"
+        @click="close"
+      >
         <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3.2 3.2l5.6 5.6M8.8 3.2l-5.6 5.6" /></svg>
       </button>
     </div>
@@ -101,11 +104,10 @@ onUnmounted(() => offMaximized?.());
   display: flex;
   align-items: center;
   gap: var(--s-3);
-  height: 36px;
+  height: 52px;
   flex: none;
-  padding-left: var(--s-3);
-  background: var(--ink-950);
-  border-bottom: 1px solid var(--rule);
+  padding-left: var(--s-5);
+  background: var(--ground);
   -webkit-app-region: drag;
   user-select: none;
 }
@@ -114,17 +116,13 @@ onUnmounted(() => offMaximized?.());
   -webkit-app-region: no-drag;
 }
 
-.tb-brand {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-.tb-name {
+.tb-title {
+  margin: 0;
   font-family: var(--font-display);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-lg);
   font-weight: 600;
-  letter-spacing: var(--track-display);
-  color: var(--paper);
+  letter-spacing: var(--track-tight);
+  color: var(--ink);
 }
 
 .tb-status {
@@ -132,33 +130,37 @@ onUnmounted(() => offMaximized?.());
   align-items: center;
   gap: 7px;
   margin-left: auto;
-  padding-right: var(--s-2);
   font-size: var(--fs-xs);
-  color: var(--paper-dim);
+  color: var(--ink-2);
   min-width: 0;
 }
 .tb-status-text {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 190px;
+  max-width: 300px;
 }
 
 .tb-controls {
   display: flex;
-  align-items: stretch;
-  align-self: stretch;
+  align-items: center;
+  gap: 2px;
+  padding-right: 6px;
 }
-/* 窗口按钮：28px 见方的命中区，图标 1px 描边，风格与全站一致 */
+/* 窗口按钮：40px 见方的命中区，图标 1.1 描边；hover 用一层浅底而不是改边框 */
 .tb-btn {
-  width: 34px;
+  width: 40px;
+  height: 40px;
   display: grid;
   place-items: center;
   border: 0;
+  border-radius: var(--r-xs);
   background: transparent;
-  color: var(--paper-dim);
+  color: var(--ink-2);
   cursor: pointer;
-  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
 }
 .tb-btn svg {
   width: 12px;
@@ -169,11 +171,11 @@ onUnmounted(() => offMaximized?.());
   stroke-linecap: round;
 }
 .tb-btn:hover {
-  background: var(--surface-hair-strong);
-  color: var(--paper);
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
+  color: var(--ink);
 }
 .tb-close:hover {
   background: var(--fault);
-  color: var(--on-signal);
+  color: #fff;
 }
 </style>

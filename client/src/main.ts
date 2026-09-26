@@ -2,6 +2,8 @@ import { createApp } from 'vue';
 import { applyAutoTheme } from '@mclink/shared';
 import App from './App.vue';
 import './styles.css';
+// 「暖纸台」世界：覆盖共享令牌的取值（只作用于客户端，官网/控制台不受影响）
+import './theme-warm.css';
 
 /*
  * 亮/暗跟随系统。
