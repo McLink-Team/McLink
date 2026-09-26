@@ -46,7 +46,6 @@ type View = RailKey | 'logs';
 const view = ref<View>('home');
 const booting = ref(true);
 const appVersion = ref('');
-const osDetail = ref('');
 
 const loggedIn = computed(() => clientState.user !== null);
 const coreState = computed(() => clientState.coreStatus?.state ?? 'stopped');
@@ -78,12 +77,8 @@ const statusLabel = computed(() => {
   return '未联机';
 });
 
-/** 底部左侧：版本 + 系统（参照稿那个位置放的就是这两样） */
-const bottomMeta = computed(() => {
-  const parts = [`McLink v${appVersion.value}`];
-  if (osDetail.value) parts.push(osDetail.value);
-  return parts.join(' · ');
-});
+/** 底部左侧只留版本号：系统信息属于排查时才需要的东西，不该常驻在人眼前（用户要求） */
+const bottomMeta = computed(() => `McLink v${appVersion.value}`);
 
 /** 图标栏高亮：日志页挂在「设置」上（它是排查用的，属于设置那一族） */
 const railActive = computed<RailKey>(() => (view.value === 'logs' ? 'settings' : view.value));
@@ -117,7 +112,6 @@ onMounted(async () => {
   window.addEventListener('keydown', onKeydown);
   const info = await window.mclink.info();
   appVersion.value = info.version;
-  osDetail.value = info.osDetail ?? '';
   await bootstrap();
   booting.value = false;
 });

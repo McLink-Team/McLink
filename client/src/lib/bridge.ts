@@ -28,8 +28,6 @@ export interface AppInfo {
   /** true = 正在用软件渲染（此前观测到 GPU 进程异常，或设了 MCLINK_DISABLE_GPU=1） */
   softwareRendering?: boolean;
   hostname: string;
-  /** 系统版本一行字（`Windows 11 Pro · Build 22631`），显示在底部左下角 */
-  osDetail?: string;
 }
 
 /** 关闭窗口时的行为：询问 / 最小化到托盘 / 彻底退出 */
