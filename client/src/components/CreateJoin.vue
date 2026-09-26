@@ -125,7 +125,8 @@ async function probeNodes(): Promise<void> {
   try {
     /**
      * 测的是**中继链接端口的 TCP 握手**（tcping，不是 ICMP）：DNS + 路由 + 端口放行 + 握手
-     * 全算在内，与真正建房走的是同一条路径。
+     * 全算在内，与真正建房走的是同一条路径；每个节点连打 3 次取最快的一次，
+     * 免得偶发丢包让整行显示「—」（见 electron/tcping.cjs）。
      */
     const targets = nodeList.value.map(probeTargetOf).filter((t): t is ProbeTarget => t !== null);
     latency.value = targets.length > 0 ? await window.mclink.tcping(targets) : {};

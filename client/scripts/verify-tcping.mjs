@@ -45,7 +45,23 @@ const key = `127.0.0.1:${alive.port}`;
 const hit = await tcpPingAll([{ host: '127.0.0.1', port: alive.port }]);
 eq(Object.keys(hit), [key], '返回的键是 `host:port`');
 check(Number.isInteger(hit[key]) && hit[key] >= 1, '本机监听：取到整数毫秒且下限为 1', `实际 ${JSON.stringify(hit[key])}`);
-check(alive.srv.seen === 2, '默认采样 2 次 = 中继上看到 2 次「连上就断」（tcping 的固有代价）', `实际 ${alive.srv.seen} 次`);
+check(alive.srv.seen === 3, '默认连打 3 次 = 中继上看到 3 次「连上就断」（tcping 的固有代价）', `实际 ${alive.srv.seen} 次`);
+
+/**
+ * 用户提出的场景：**偶发丢包不该让整行显示「—」**。
+ * 这里把"3 次里只成功 1 次"做成确定性的：第一个连接一进来就把监听关掉，
+ * 于是第 2、3 次必然 ECONNREFUSED —— 结果仍然必须是一个数字（取那唯一一次成功的值）。
+ */
+const flaky = await listen();
+const flakyAnswer = tcpPingAll([{ host: '127.0.0.1', port: flaky.port }]);
+flaky.srv.once('connection', () => flaky.srv.close()); // 只放行第一次握手
+const flakyResult = await flakyAnswer;
+check(
+  Number.isInteger(flakyResult[`127.0.0.1:${flaky.port}`]),
+  '3 次里只成功 1 次 → 仍然给出延迟（不是 null）',
+  JSON.stringify(flakyResult),
+);
+console.log(`     （对照：服务端实际接受了 ${flaky.srv.seen} 次握手；1 = 后两次被拒，3 = close 慢了一步）`);
 
 // DNS 名也要能测：玩家看到的是域名，解析时间本来就该算进去
 const byName = await tcpPingAll([{ host: 'localhost', port: alive.port }]);
@@ -75,7 +91,7 @@ const blackholeStart = Date.now();
 const blackhole = await tcpPingAll([{ host: '192.0.2.1', port: 11010 }], { timeoutMs: 300 });
 const blackholeMs = Date.now() - blackholeStart;
 eq(blackhole['192.0.2.1:11010'], null, '黑洞地址 → null');
-check(blackholeMs < 1300, '黑洞不会拖死界面（2 次采样 × 300ms 超时 + 余量）', `实际 ${blackholeMs}ms`);
+check(blackholeMs < 1300, '黑洞不会拖死界面（3 次采样 × 300ms 超时 + 余量）', `实际 ${blackholeMs}ms`);
 
 /* ------------------------------------------------------------ 目标并行 */
 console.log('\n== 目标之间并行（界面只等最慢的那一个）==');
@@ -126,10 +142,12 @@ const empty = await tcpPingAll([]);
 eq(empty, {}, '空列表 → 空对象（界面留空显示 —）');
 eq(await tcpPingAll(undefined), {}, 'undefined → 空对象，不抛异常');
 
-/* ------------------------------------------------------------ 采样取最小值 */
-console.log('\n== 多次采样取最小值 ==');
-const sampled = await tcpPingAll([{ host: '127.0.0.1', port: alive.port }], { attempts: 3 });
-check(Number.isInteger(sampled[key]), '采样 3 次仍然给出一个数', JSON.stringify(sampled));
+/* ------------------------------------------------------------ 采样次数可调 */
+console.log('\n== 采样次数可调（给测试/排障用）==');
+const sampled = await tcpPingAll([{ host: '127.0.0.1', port: alive.port }], { attempts: 1 });
+check(Number.isInteger(sampled[key]), 'attempts: 1 也照常给出一个数（选项没有写死成常量）', JSON.stringify(sampled));
+const defaultAttempts = await tcpPingAll([{ host: '127.0.0.1', port: alive.port }]);
+check(Number.isInteger(defaultAttempts[key]), '不传选项时走默认（3 次取最快）', JSON.stringify(defaultAttempts));
 
 await close(alive.srv);
 
