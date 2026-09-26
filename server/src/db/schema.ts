@@ -495,6 +495,35 @@ update settings
  where key = 'platform'
    and json_extract(value, '$.clientDownloadUrl') = '/downloads/McLink-Setup-1.0.4-x64.exe';
 `;
+/**
+ * V19：客户端版本 1.0.5 → 1.0.6。
+ *
+ * 1.0.6 只有一个主题：**把「P2P 直连质量差」这件事从看不见变成能处理**。
+ * 打洞成功不等于链路可用 —— 家里宽带到对端那一段拥塞时延迟看着正常（20ms），
+ * 但丢包会让游戏里人物回弹。EasyTier 一直在算这个数（`peer list` 的 `loss_rate`），
+ * 客户端以前只是没读它。这一版：
+ *   · 房间页「连接路径」每一行、连接诊断的每个节点行都显示丢包率（拿不到显示「—」）；
+ *   · 丢包 >5% 时房间里给一句话提示 + 一个「强制走中继」按钮；
+ *   · 打开开关 = 往票据 TOML 注入 `disable_p2p = true` 并重启本地核心（**不动主控**，
+ *     这是本机偏好，按房间存在客户端本地，重启客户端后仍生效）；
+ *   · 设置里可选「P2P 丢包时自动切到中继」（**默认关**，带迟滞、A/B 对照与指数退避重试）。
+ *
+ * 纪律同前：只动"还停在上一版默认值"的部署，管理员手改过的一律不碰；
+ * 从更老的版本升上来会依次跑 V15 → V16 → V17 → V18 → V19，最终都落在 1.0.6。
+ */
+const V19_CLIENT_1_0_6 = `
+update settings
+   set value = json_set(value, '$.clientVersion', '1.0.6'),
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ where key = 'platform'
+   and json_extract(value, '$.clientVersion') = '1.0.5';
+
+update settings
+   set value = json_set(value, '$.clientDownloadUrl', '/downloads/McLink-Setup-1.0.6-x64.exe'),
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ where key = 'platform'
+   and json_extract(value, '$.clientDownloadUrl') = '/downloads/McLink-Setup-1.0.5-x64.exe';
+`;
 export const MIGRATIONS: readonly string[] = [
   V1_INITIAL,
   V2_RELAY_ROOM_MAP,
@@ -514,6 +543,7 @@ export const MIGRATIONS: readonly string[] = [
   V16_CLIENT_1_0_3,
   V17_CLIENT_1_0_4,
   V18_CLIENT_1_0_5,
+  V19_CLIENT_1_0_6,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
