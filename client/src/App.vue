@@ -5,10 +5,12 @@
  * 结构取自用户指定的参照（一个 Flutter 桌面启动器）：
  *   左侧 76px 图标栏 ｜ 右侧一列：标题条 → 页面 → 底部一行（版本/系统 + 动作胶囊）
  *
- * 两处按 McLink 的事实做的改动：
- *   · 参照的"服务器"这一栏在我们这里是**公开大厅**（用户明确指的那一项）；
- *   · 图标栏只有四个去处（联机/大厅/收藏/设置）。房间**不是**一栏 —— 开好房就直接
- *     把房间内容铺在「联机」这一屏里（用户的要求），退房再回到开房前的那一屏。
+ * **图标栏从一开始就在**：没登录时它照样显示，因为「公开大厅」是匿名接口所能提供的
+ * 内容 —— 把"先看看有哪些公共房间"藏在登录页里（原来是这么做的）等于让玩家先注册
+ * 才能看见这里有人玩。登录卡本身只是「联机」那一屏在未登录时的样子。
+ *
+ * 房间不占一栏：开好房就把房间内容铺在「联机」这一屏里（用户的要求），
+ * 退房再回到开房前的那一屏。
  *
  * 底部那一行右侧留了一个传送点 `#deck-actions`：主页把「创建 / 加入」胶囊送到那里，
  * 于是无论哪个页面在渲染，动作都在同一个位置、同一只手上。
@@ -57,13 +59,16 @@ const PAGE_TITLE: Record<View, string> = {
   logs: '日志',
 };
 
-/** 标题条左边那行字：房间在的时候它就是房间名（用户最想确认"我在哪个房"） */
-const pageTitle = computed(() =>
-  hasRoom.value && view.value === 'home' ? (clientState.session?.room.name ?? '联机') : PAGE_TITLE[view.value],
-);
+/** 标题条左边那行字：未登录时是产品名；进房后是房间名（玩家最想确认"我在哪个房"） */
+const pageTitle = computed(() => {
+  if (!loggedIn.value) return view.value === 'plaza' ? PAGE_TITLE.plaza : 'McLink';
+  if (hasRoom.value && view.value === 'home') return clientState.session?.room.name ?? PAGE_TITLE.home;
+  return PAGE_TITLE[view.value];
+});
 
 /** 标题条右边那行状态：玩家最关心"现在通不通" */
 const statusLabel = computed(() => {
+  if (!loggedIn.value) return '未登录';
   if (clientState.session) {
     if (coreState.value === 'running') return `已联机 · ${clientState.session.room.code}`;
     if (coreState.value === 'error') return '连接异常';
@@ -84,6 +89,8 @@ const bottomMeta = computed(() => {
 const railActive = computed<RailKey>(() => (view.value === 'logs' ? 'settings' : view.value));
 
 function goto(next: View): void {
+  // 未登录时「收藏」「设置」没有内容可给（都要账号），图标栏里它们是禁用的
+  if (!loggedIn.value && (next === 'bookmarks' || next === 'settings' || next === 'logs')) return;
   view.value = next;
 }
 
@@ -126,19 +133,10 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown));
     -->
     <ElevationBanner />
 
-    <div v-if="booting" class="splash">
-      <span class="spinner" />
-      <span class="hint">正在初始化…</span>
-    </div>
-
-    <LoginPage v-else-if="!loggedIn" :version="appVersion" />
-
-    <!-- 平台要求验证邮箱时先过这一关：服务端会拒绝未验证账号建房/进房 -->
-    <VerifyEmail v-else-if="mustVerifyEmail" />
-
-    <div v-else class="deck">
+    <div class="deck">
       <AppRail
         :active="railActive"
+        :signed-in="loggedIn"
         :in-room="hasRoom"
         :online="isOnline"
         :update-available="Boolean(clientState.update)"
@@ -150,47 +148,60 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown));
         <TitleBar :title="pageTitle" :state="coreState" :label="statusLabel" />
 
         <div class="deck-scroll">
-          <!-- 常驻的"正在联机"条：离开「联机」那一屏后依然知道自己还在房间里 -->
-          <button
-            v-if="hasRoom && view !== 'home'"
-            class="room-strip"
-            type="button"
-            @click="goto('home')"
-          >
-            <span class="led" :class="isOnline ? 'led-ok' : 'led-signal'" />
-            <span class="truncate">{{ clientState.session?.room.name }}</span>
-            <span class="mono faint">{{ clientState.session?.room.code }}</span>
-            <span class="grow" />
-            <span class="faint nowrap">回到房间</span>
-          </button>
-
-          <div v-if="clientState.kickedReason" class="alert alert-danger">
-            <span class="grow">{{ clientState.kickedReason }}</span>
-            <button class="btn btn-sm btn-ghost" type="button" @click="clearKicked()">知道了</button>
-          </div>
-          <div v-if="clientState.lastError" class="alert alert-warn">
-            <span class="grow">{{ clientState.lastError }}</span>
-            <button class="btn btn-sm btn-ghost" type="button" @click="clearError()">关闭</button>
+          <div v-if="booting" class="splash">
+            <span class="spinner" />
+            <span class="hint">正在初始化…</span>
           </div>
 
-          <!-- 开好房就直接铺房间内容；没房才是"开房前的那一屏" -->
-          <RoomPage v-if="view === 'home' && hasRoom" />
-          <CreateJoin v-else-if="view === 'home'" @open-settings="goto('settings')" />
+          <!-- 未登录：「联机」是登录卡，「大厅」照样能看（/rooms/public 是匿名接口） -->
+          <template v-else-if="!loggedIn">
+            <section v-if="view === 'plaza'" class="card pane stack">
+              <PublicPlaza :can-join="false" />
+            </section>
+            <LoginPage v-else />
+          </template>
 
-          <section v-else-if="view === 'plaza'" class="card pane stack">
-            <PublicPlaza />
-          </section>
-          <section v-else-if="view === 'bookmarks'" class="card pane stack">
-            <RoomShortcuts />
-          </section>
-          <SettingsPage v-else-if="view === 'settings'" />
-          <LogPanel v-else :logs="clientState.coreLogs" @copy="copy" />
+          <!-- 平台要求验证邮箱时先过这一关：服务端会拒绝未验证账号建房/进房 -->
+          <VerifyEmail v-else-if="mustVerifyEmail" />
+
+          <template v-else>
+            <!-- 常驻的"正在联机"条：离开「联机」那一屏后依然知道自己还在房间里 -->
+            <button v-if="hasRoom && view !== 'home'" class="room-strip" type="button" @click="goto('home')">
+              <span class="led" :class="isOnline ? 'led-ok' : 'led-signal'" />
+              <span class="truncate">{{ clientState.session?.room.name }}</span>
+              <span class="mono faint">{{ clientState.session?.room.code }}</span>
+              <span class="grow" />
+              <span class="faint nowrap">回到房间</span>
+            </button>
+
+            <div v-if="clientState.kickedReason" class="alert alert-danger">
+              <span class="grow">{{ clientState.kickedReason }}</span>
+              <button class="btn btn-sm btn-ghost" type="button" @click="clearKicked()">知道了</button>
+            </div>
+            <div v-if="clientState.lastError" class="alert alert-warn">
+              <span class="grow">{{ clientState.lastError }}</span>
+              <button class="btn btn-sm btn-ghost" type="button" @click="clearError()">关闭</button>
+            </div>
+
+            <!-- 开好房就直接铺房间内容；没房才是"开房前的那一屏" -->
+            <RoomPage v-if="view === 'home' && hasRoom" />
+            <CreateJoin v-else-if="view === 'home'" @open-settings="goto('settings')" />
+
+            <section v-else-if="view === 'plaza'" class="card pane stack">
+              <PublicPlaza />
+            </section>
+            <section v-else-if="view === 'bookmarks'" class="card pane stack">
+              <RoomShortcuts />
+            </section>
+            <SettingsPage v-else-if="view === 'settings'" />
+            <LogPanel v-else :logs="clientState.coreLogs" @copy="copy" />
+          </template>
         </div>
 
         <footer class="deck-foot">
           <span class="deck-meta mono">{{ bottomMeta }}</span>
           <button
-            v-if="view !== 'logs'"
+            v-if="loggedIn && view !== 'logs'"
             class="btn btn-sm btn-ghost deck-logs"
             type="button"
             @click="goto('logs')"
@@ -224,6 +235,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown));
   place-items: center;
   gap: var(--s-3);
   grid-auto-flow: row;
+  min-height: 240px;
 }
 
 /* 横向骨架：图标栏 + 右侧一列 */

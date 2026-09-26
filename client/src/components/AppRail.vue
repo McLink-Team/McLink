@@ -16,6 +16,8 @@ export type RailKey = 'home' | 'plaza' | 'bookmarks' | 'settings';
 
 const props = defineProps<{
   active: RailKey;
+  /** 是否已登录：未登录时「收藏」「设置」要账号才有内容，置灰但**不隐藏**（看得见去处） */
+  signedIn?: boolean;
   /** 房间在时，「联机」那一项带一个状态点 —— 返回房间的入口就是它 */
   inRoom?: boolean;
   online?: boolean;
@@ -33,6 +35,10 @@ const items: Array<{ key: RailKey; label: string }> = [
   { key: 'settings', label: '设置' },
 ];
 
+/** 未登录时这两项没有内容可给（收藏要账号、设置里大半要账号） */
+const locked = (key: RailKey): boolean =>
+  props.signedIn === false && (key === 'bookmarks' || key === 'settings');
+
 /** 头像里那一个字：显示名的首字符（中文取第一个字，英文取首字母） */
 const initial = computed(() => (props.userName ?? '').trim().slice(0, 1).toUpperCase() || '·');
 </script>
@@ -40,7 +46,7 @@ const initial = computed(() => (props.userName ?? '').trim().slice(0, 1).toUpper
 <template>
   <nav class="rail" aria-label="主导航">
     <div class="rail-brand" title="McLink">
-      <BrandMark />
+      <BrandMark :size="36" />
     </div>
 
     <ul class="rail-list">
@@ -49,6 +55,8 @@ const initial = computed(() => (props.userName ?? '').trim().slice(0, 1).toUpper
           class="rail-item"
           :class="{ active: active === item.key }"
           type="button"
+          :disabled="locked(item.key)"
+          :title="locked(item.key) ? `${item.label}：登录后可用` : item.label"
           :aria-current="active === item.key ? 'page' : undefined"
           @click="emit('select', item.key)"
         >
@@ -96,7 +104,9 @@ const initial = computed(() => (props.userName ?? '').trim().slice(0, 1).toUpper
 <style scoped>
 .rail {
   flex: none;
-  width: 76px;
+  /* 80 = 64（品牌块）+ 左右各 8 的内边距：品牌块是这一栏的视觉锚点，
+   * 做小了整条栏会看着没有"头部"（用户实测反馈：原来 56 太小）。 */
+  width: 80px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -105,10 +115,10 @@ const initial = computed(() => (props.userName ?? '').trim().slice(0, 1).toUpper
   background: var(--ground-deep);
 }
 
-/* 品牌块：56×56 的白卡 + 一点柔和投影（参考里唯一带投影的固定元素） */
+/* 品牌块：64×64 的白卡 + 一点柔和投影（参考里唯一带投影的固定元素） */
 .rail-brand {
-  width: 56px;
-  height: 56px;
+  width: 64px;
+  height: 64px;
   display: grid;
   place-items: center;
   border-radius: var(--r-md);
@@ -146,9 +156,17 @@ const initial = computed(() => (props.userName ?? '').trim().slice(0, 1).toUpper
     background var(--dur-fast) var(--ease),
     color var(--dur-fast) var(--ease);
 }
-.rail-item:hover {
+.rail-item:hover:not(:disabled) {
   background: color-mix(in srgb, var(--surface) 55%, transparent);
   color: var(--ink);
+}
+/* 未登录时锁住的两项：看得见去处，但灰掉 —— 比藏起来更好懂 */
+.rail-item:disabled {
+  color: var(--ink-faint);
+  cursor: not-allowed;
+}
+.rail-item:disabled .rail-label {
+  opacity: 0.7;
 }
 /* 选中态：整块浅色指示底 + 强调色图标与文字。
  * 指示底用 --accent-soft 的 wash（非文字），文字用 --accent（过 AA 的那一档）。 */
