@@ -102,6 +102,9 @@
   --rule-hover: rgba(61, 56, 53, 0.24);
   --surface-hair: rgba(61, 56, 53, 0.04);
   --surface-hair-strong: rgba(61, 56, 53, 0.07);
+
+  /* 状态灯的绿：比文字绿更饱和一档，8px 的小圆点上要一眼看出"通着" */
+  --led-ok: #2f8f43;
 }
 
 /* ============================================================================
@@ -155,6 +158,9 @@
   --rule-hover: rgba(242, 238, 233, 0.26);
   --surface-hair: rgba(242, 238, 233, 0.04);
   --surface-hair-strong: rgba(242, 238, 233, 0.07);
+
+  /* 深底上的"通着"：更亮一档的绿，同样要在一枚 8px 圆点上看得出来 */
+  --led-ok: #57c46b;
 }
 
 /* ============================================================================
@@ -487,16 +493,19 @@ textarea.input:focus {
   color: var(--fault-text);
 }
 
-/* 状态灯：新世界里它不是"发光的小灯"，而是一枚实色圆点 + 文字说明 */
+/* 状态灯：新世界里它不是"发光的小灯"，而是一枚实色圆点 + 文字说明。
+ * 「一切正常」这一类（已联机 / 已连接 / 直连成功）**统一用绿**：用户明确要求提示灯全绿，
+ * 而且绿色在暖纸底与暖墨底上都比强调色（摩卡）更一眼可辨 —— 状态灯不该和品牌色抢注意力。
+ * 故障仍然是红的：把故障也涂绿等于骗人。 */
 .led {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--ink-4);
+  background: var(--ink-faint);
   flex: none;
 }
 .led-ok {
-  background: var(--ok);
+  background: var(--led-ok);
 }
 .led-warn {
   background: var(--warn);
@@ -505,7 +514,7 @@ textarea.input:focus {
   background: var(--fault);
 }
 .led-signal {
-  background: var(--accent);
+  background: var(--led-ok);
 }
 
 /* ------------------------------------------------------------ 列表 / 提示 */

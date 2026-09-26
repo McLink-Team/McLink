@@ -23,14 +23,9 @@ const props = defineProps<{
 const maximized = ref(false);
 let offMaximized: (() => void) | null = null;
 
+/** 状态点：正常/连接中都是绿的（用户要求提示灯全绿），只有真出错才红 */
 const toneClass = () =>
-  props.state === 'running'
-    ? 'led-ok'
-    : props.state === 'starting'
-      ? 'led-signal'
-      : props.state === 'error'
-        ? 'led-fault'
-        : '';
+  props.state === 'error' ? 'led-fault' : props.state === 'stopped' ? '' : 'led-ok';
 
 async function minimize(): Promise<void> {
   await window.mclink.win.minimize();

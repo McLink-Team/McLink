@@ -204,7 +204,7 @@ const initial = computed(() => (props.userName ?? '').trim().slice(0, 1).toUpper
   border-radius: 50%;
 }
 .dot-ok {
-  background: var(--ok);
+  background: var(--led-ok);
 }
 .dot-warn {
   background: var(--warn);
