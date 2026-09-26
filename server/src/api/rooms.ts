@@ -2,7 +2,7 @@
 import { Routes, isKnownRegion, type RoomAccess, type RoomVisibility } from '@mclink/shared';
 import type { App } from '../app.ts';
 import type { Router } from '../http/kit.ts';
-import { optBool, optInt, optStr, paging, parsePolicy, req, requireAuth } from './helpers.ts';
+import { optBool, optInt, optStr, paging, parseLatencyHints, parsePolicy, req, requireAuth } from './helpers.ts';
 import { HttpError } from '../util/errors.ts';
 import { logger } from '../logger.ts';
 import { toPublicRoom, toRoom, toRoomForUser } from '../db/rooms.ts';
@@ -35,6 +35,14 @@ export function registerRoomRoutes(router: Router, app: App): void {
       ? [...new Set(body.nodeIds.filter((v): v is string => typeof v === 'string' && v.length > 0))].slice(0, 3)
       : [];
 
+    /**
+     * 客户端建房前测到的节点延迟（**可选**，老客户端不发）：
+     * 只用来在合格候选之间排序（自动调度选谁 + 兜底挑哪台），
+     * 不会让不合格节点进入候选池，也不影响手选节点的优先级。
+     * 解析规则见 parseLatencyHints。
+     */
+    const latencyHints = parseLatencyHints(body);
+
     const access = (optStr(body, 'access', 16) ?? 'open') as RoomAccess;
     if (!['open', 'password', 'approval'].includes(access)) {
       throw HttpError.badRequest('access 必须是 open/password/approval 之一');
@@ -49,6 +57,7 @@ export function registerRoomRoutes(router: Router, app: App): void {
       name,
       zone,
       nodeIds,
+      latencyHints,
       access,
       visibility,
       password: optStr(body, 'password', 64) ?? null,

@@ -19,6 +19,7 @@ import {
   type RoomTicket,
   type UserSelf,
   type RegionDef,
+  type RelayLatencyHint,
 } from '@mclink/shared';
 import { REGIONS, reconnectDelayMs } from '@mclink/shared';
 import { api, friendlyError, getDeviceName, getMasterUrl, getToken, setDeviceName, setToken } from './api.ts';
@@ -567,6 +568,14 @@ export async function createRoom(input: {
   maxPlayers?: number;
   /** 用户手选的中继节点（空 = 自动调度）；区域 zone 只是默认/筛选 */
   nodeIds?: string[];
+  /**
+   * 建房前本机测到的节点延迟（可选，见 `RelayLatencyHint`）。
+   *
+   * 主控用它把**已经合格的**候选排个序：自动模式决定"选谁"，手动模式决定"先挑哪台当兜底"。
+   * 手选的 nodeIds 仍然优先；传空数组（或干脆不传）＝ 主控完全按负载打分，老行为不变。
+   * 延迟是这一刻测的，之后会变 —— 主控不做过期判断，只当排序偏好用。
+   */
+  latencyHints?: RelayLatencyHint[];
 }): Promise<Room> {
   state.busy = true;
   state.lastError = null;
@@ -585,6 +594,7 @@ export async function createRoom(input: {
       name: input.name,
       zone: input.zone,
       nodeIds: input.nodeIds ?? [],
+      latencyHints: input.latencyHints ?? [],
       access: input.access,
       password: input.password,
       visibility: input.visibility ?? 'public',

@@ -327,21 +327,44 @@ MTU 固定 **1380**（`ticket().mtu`，写入票据 `mtu` 字段），为 EasyTi
 
 ## 6. 子节点调度策略
 
-实现在 `services/rooms.ts` 的 `scheduleRelays(zone, max = 2)`：
+实现在 `services/rooms.ts`：先用硬条件筛出候选池，再交给 `scheduleRelays(zone, latencyHints, max = 2)`
+里的纯函数 `selectRelays(candidates, hints, max)` 排序（有单测：`test/unit.test.ts` 的
+「延迟优先调度」一组）。
 
-```ts
-const score = (n) => {
-  const headroom = Math.max(0, n.capacity_peers - n.peers) / Math.max(1, n.capacity_peers);
-  const loadPenalty = n.status === 'degraded' ? 0.5 : 0;
-  return n.weight * headroom - loadPenalty * 100;
-};
-```
+**硬条件（延迟提示一条都不放松）**：
 
 * 候选集由 `nodes.listSchedulable()` 给出：`status in ('online','degraded')` **且** `disabled = 0`
   **且** `weight > 0`。
-* `zone = 'auto'`：全局按 score 降序取前 2 个（冗余：一个挂了还有另一个）。
-* `zone = <具体区域>`：只用该区域节点；**该区域无可用节点时回退到全局**并打 `warn` 日志，
+* 带宽利用率 ≥ 90%（`UTIL_SHED`）的节点**这一轮不再接新房间**；只有所有候选都吃紧时才回退全量并打 `warn`
+  （宁可挤一点，也别把房间挤没了）。
+* `zone` 是硬筛选：只用该区域的节点；**该区域无可用节点时回退到全局**并打 `warn` 日志，
   避免玩家因为某个区域没部署节点而完全无法联机。
+* 人数满员（`peers ≥ capacity_peers`）的节点按现状仍然留在候选池里（打分恒 ≤ 0，排在最后兜底），
+  但它的延迟提示**不算数** —— 提示只用于"在合格节点之间排序"，不能把没有余量的节点拉到队伍最前面。
+
+**排序规则（延迟优先）**：
+
+```ts
+// 打分（relayScore，改造前就有）：weight × min(人数余量, 带宽余量) − degraded 罚分
+// 排序：有延迟提示且真的还有余量的节点按 ms 升序排在最前，
+//       差 ≤ LATENCY_TIE_BAND_MS(20ms) 视为同一档 → 档内用 relayScore 决胜，
+//       没有提示的节点排在所有有提示的之后（它们之间仍按 relayScore 降序 → peers 升序）
+```
+
+* `latencyHints` 是建房请求（`POST /rooms`）里的**可选**字段（`RelayLatencyHint`）：
+  客户端对中继**链接端口**做 tcping（3 次取最快）后按 nodeId 上报。主控自己不下场测延迟，
+  所以这是它唯一的延迟来源。
+* 并列带取 20ms：客户端测得的抖动有 ±5–15ms（公网路由/家宽调度），不带带子等于让测量噪声决定选谁；
+  而跨区域的真实差距（华东↔华南/华北 30–60ms，出境 100ms 起）明显更大，不会被吞掉。
+* **不传这个字段（老客户端）＝ 完全按 relayScore，行为与改造前逐位一致**；
+  提示里的 nodeId 不在候选池里（被停用、权重 0、离线、别区域）时该条提示自然无效。
+* 提示是**建房那一刻**测的值，之后会过时（路由变化、节点换线）；这里**刻意不做**过期逻辑 ——
+  过期与否都只影响"先挑谁"，而真正失效的节点由 status/心跳/容量这些硬条件挡住。
+* **刻意不做防伪**（用户拍板的取舍）：提示只能决定"选谁"、决定不了"能不能选"，
+  谎报最坏就是让自己的房间落到一台更差的节点上；而平台本来就提供自选节点（`nodeIds`），
+  真想挑哪台直接指定即可，谎报没有额外收益 —— 加签名/回执/二次探测只会增加复杂度与失败面。
+* `create()` 真正写进房间的是「手选节点 + **一个**兜底」：兜底 = 自动序列里第一个没被手选的节点。
+  所以自动模式下房间拿到 1 个（提示决定它是谁），手动模式下提示只决定兜底挑哪台，手选始终优先。
 * 没有子节点时：只要 `MCLINK_AUTOSTART_RELAY=true` 且 `MCLINK_RELAY_PORT > 0`
   （`masterRelayAvailable()`），主控自身中继就是兜底入口，房间仍可创建；否则报
   「当前没有可用的中继节点，请联系管理员」。
