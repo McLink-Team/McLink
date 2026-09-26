@@ -52,10 +52,17 @@ const masterHost = computed(() => {
   }
 });
 
-/** 可用中继：有在线节点的区域数 + 节点总数（都来自 /regions 的真数据） */
+/**
+ * 可用中继：有在线节点的区域数 + 节点总数（都来自 /regions 的真数据）。
+ *
+ * **必须排掉 `auto` 这个伪区域**：它的 onlineNodes 本身就是"所有真实区域的合计"
+ * （见 server/src/api/public.ts 的 Routes.regions），一起加进来会正好翻倍 ——
+ * 实测线上 7 个在线中继被显示成 14 个（用户一眼看出来不对）。
+ */
 const relaySummary = computed(() => {
-  const withNodes = clientState.regions.filter((r) => r.onlineNodes > 0);
-  const nodes = clientState.regions.reduce((sum, r) => sum + r.onlineNodes, 0);
+  const real = clientState.regions.filter((r) => r.id !== 'auto');
+  const withNodes = real.filter((r) => r.onlineNodes > 0);
+  const nodes = real.reduce((sum, r) => sum + r.onlineNodes, 0);
   if (nodes === 0) return '暂无在线中继，主控自带中继兜底';
   return `${withNodes.length} 个区域 · ${nodes} 个中继节点在线`;
 });
