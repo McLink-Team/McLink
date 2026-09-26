@@ -100,9 +100,21 @@
   /* ---------------------------------------------------------------- 字体
    * UI 与正文用与参考一致的系统栈（它自带字体只有图标，中文走微软雅黑）；
    * 展示层继续用仓库里已自托管的 Archivo —— craft floor 不允许"系统字体当展示声音"，
-   * 而客户端离线可用，不能引 CDN 字体。 */
-  --font-ui: 'Noto Sans', 'Noto Sans SC', 'Microsoft YaHei UI', 'Microsoft YaHei', system-ui,
-    -apple-system, 'Segoe UI', sans-serif;
+   * 而客户端离线可用，不能引 CDN 字体。
+   *
+   * 中文回退必须**两个平台各一档**，否则 macOS 上会掉进"苹方缺席 → 拿 -apple-system
+   * 去凑"的兜底路径，宋体/日文字形的中文会出现（同一个界面两种字形，一眼看出不是原生应用）：
+   *   · Windows：Microsoft YaHei UI → Microsoft YaHei（微软雅黑）
+   *   · macOS  ：PingFang SC（苹方，系统中文默认）→ Hiragino Sans GB（旧系统的黑体）
+   * 写成一条链而不是按平台分叉 `--font-ui`：字体栈本来就是"谁有谁上"，
+   * 分叉反而会让两套主题里的值不一致。顺序也不改：Windows 用户机器上可能装了 Noto，
+   * 保持既有优先级，macOS 上那几个名字不存在，浏览器会自然跳过。
+   *
+   * `-apple-system` / `BlinkMacSystemFont` 是拉丁字形那一档（macOS 上是 SF Pro），
+   * 它们必须排在苹方**之后** —— 否则中文也会去问 SF Pro，再回落到系统默认中文字体。
+   */
+  --font-ui: 'Noto Sans', 'Noto Sans SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'PingFang SC',
+    'Hiragino Sans GB', 'Heiti SC', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 
   /* 浏览器原生面（选区、光标、滚动条、焦点环）—— 它们也属于这套世界 */
   --scrim: rgba(45, 38, 32, 0.42);

@@ -26,12 +26,20 @@ import {
   type PeerView,
 } from '../lib/easytier-parse.ts';
 import type { AppInfo } from '../lib/bridge.ts';
+import { isMac, needsAdmin, tunName } from '../lib/platform.ts';
 import { LOSS_THRESHOLD, formatLoss, hostLinkQuality } from '../lib/relay-fallback.ts';
 
 interface Advice {
   level: 'ok' | 'warn' | 'danger' | 'info';
   text: string;
 }
+
+/**
+ * 防火墙在两个平台上是两个东西：Windows 是"Windows 防火墙 + 入站规则"，
+ * macOS 是「系统设置 → 网络 → 防火墙」+ 首次运行时那次"是否允许接受传入连接"。
+ * 建议里点名具体位置，玩家才知道去哪儿点。
+ */
+const firewallName = isMac ? 'macOS 的「网络 → 防火墙」里' : ' Windows 防火墙里';
 
 const peers = ref<PeerView[]>([]);
 const facts = ref<NodeFacts | null>(null);
@@ -106,10 +114,10 @@ const advice = computed<Advice[]>(() => {
       text: '本地 EasyTier 核心当前不是「运行中」。先回到房间页点「刷新状态」；如果一直起不来，去「日志」标签看 easytier-core 的报错。',
     });
   }
-  if (info.value && !info.value.elevated) {
+  if (needsAdmin && info.value && !info.value.elevated) {
     list.push({
       level: 'warn',
-      text: '当前不是以管理员身份运行。Windows 上创建虚拟网卡（wintun）需要管理员权限，否则成员之间连不通 —— 可以在「设置」里点「以管理员身份重启」。',
+      text: `当前不是以管理员身份运行。${isMac ? 'macOS' : 'Windows'} 上创建虚拟网卡（${tunName}）需要管理员权限，否则成员之间连不通 —— 可以在「设置」里点「以管理员身份重启」。`,
     });
   }
   if (remotePeers.value.length === 0) {
@@ -120,7 +128,7 @@ const advice = computed<Advice[]>(() => {
   } else if (directPeers.value.length === 0) {
     list.push({
       level: 'warn',
-      text: `现在 ${remotePeers.value.length} 个节点全部经中继转发：说明 NAT 较严格或被防火墙拦住。可以让房主在「房间规则」里把「允许 P2P 直连」打开，并在 Windows 防火墙里放行 easytier-core 的 UDP。`,
+      text: `现在 ${remotePeers.value.length} 个节点全部经中继转发：说明 NAT 较严格或被防火墙拦住。可以让房主在「房间规则」里把「允许 P2P 直连」打开，并在${firewallName}里放行 easytier-core 的 UDP。`,
     });
   } else {
     list.push({
@@ -300,7 +308,8 @@ onMounted(async () => {
         </div>
         <div>
           <div class="faint" style="font-size: var(--fs-xs)">权限</div>
-          <div class="mono">{{ info ? (info.elevated ? '已提权' : '未提权') : '未知' }}</div>
+          <!-- 「已提权」只在需要提权的平台上有意义，别的平台显示"不需要"而不是"未提权"（后者像故障） -->
+          <div class="mono">{{ !needsAdmin ? '不需要' : info ? (info.elevated ? '已提权' : '未提权') : '未知' }}</div>
         </div>
       </div>
 

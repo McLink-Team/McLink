@@ -12,8 +12,13 @@
  *   主进程收到 close → preventDefault → 发 `app:ask-close` → 这里弹窗；
  *   弹窗出现后先回一个 `closeAskOpened`（撤掉主进程 8 秒兜底，免得盯久了被收进托盘），
  *   用户选完再回 `closeDecision({action, remember})`。
+ *
+ * 平台差异：两个动作在 macOS 上叫「隐藏窗口 / 退出 McLink」，在 Windows 上是
+ * 「最小化到托盘 / 彻底退出」—— 语义对得上，但 mac 用户看到"托盘"两个字会愣一下。
+ * 说法统一从 lib/platform.ts 取，别在这里再写一遍。
  */
 import { onMounted, onUnmounted, ref } from 'vue';
+import { closeHideHint, closeHideLabel, isMac } from '../lib/platform.ts';
 
 const visible = ref(false);
 const remember = ref(false);
@@ -50,9 +55,9 @@ async function decide(action: 'tray' | 'quit' | 'cancel'): Promise<void> {
   <div v-if="visible" class="modal-mask close-confirm">
     <div class="card modal-card stack">
       <div>
-        <div class="popup-title">要退出 McLink 吗？</div>
+        <div class="popup-title">{{ isMac ? '关闭窗口，还是退出 McLink？' : '要退出 McLink 吗？' }}</div>
         <div class="hint">
-          <b>最小化到托盘</b>：窗口收起来，房间与联机保持不变（托盘图标右键可退出）。<br />
+          <b>{{ closeHideLabel }}</b>：{{ closeHideHint }}<br />
           <b>彻底退出</b>：关闭客户端并断开局域网连接，房间里的朋友会掉线。
         </div>
       </div>
@@ -67,7 +72,7 @@ async function decide(action: 'tray' | 'quit' | 'cancel'): Promise<void> {
         <span class="grow" />
         <button class="btn" type="button" :disabled="busy" @click="decide('quit')">彻底退出</button>
         <button class="btn btn-primary" type="button" :disabled="busy" @click="decide('tray')">
-          最小化到托盘
+          {{ closeHideLabel }}
         </button>
       </div>
     </div>

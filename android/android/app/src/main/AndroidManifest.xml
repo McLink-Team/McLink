@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/AppTheme">
+
+        <!--
+            android:windowSoftInputMode="adjustResize"
+            Capacitor 模板没有设这一项，于是软键盘的行为由系统按 adjustUnspecified
+            自行决定，在部分 ROM 上会挑 adjustPan，表现为"键盘弹起来把整个界面往上推，
+            输入框还是被挡住"。聊天输入框在窄屏上一定会遇到这个问题。
+            显式设成 adjustResize：键盘占掉的高度由系统从 Activity 里扣掉，
+            于是 WebView 变矮、visualViewport.height 变小，mobile-keyboard.ts
+            就能算出键盘高度并收起底部导航（见那个文件）。
+            注意：XML 注释里不能出现连续两个减号，所以下面提到 CSS 变量时省略了前缀，
+            它实际的名字是 keyboard-inset（由 mobile-keyboard.ts 写在 :root 上）。
+        -->
+        <activity
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation"
+            android:name=".MainActivity"
+            android:label="@string/title_activity_main"
+            android:theme="@style/AppTheme.NoActionBarLaunch"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize"
+            android:exported="true">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+        </activity>
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths"></meta-data>
+        </provider>
+    </application>
+
+    <!-- Permissions -->
+
+    <uses-permission android:name="android.permission.INTERNET" />
+</manifest>

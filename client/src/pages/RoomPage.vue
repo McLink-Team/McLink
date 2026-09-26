@@ -23,7 +23,7 @@
  *     房主身份在别人那行才有信息量。
  *   · 头像用暖色单调圆 + 首字母（参照稿的形态）：不需要任何素材，也不假装有插画。
  */
-import { computed, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { formatBitrate, formatBytes, regionLabel } from '@mclink/shared';
 import {
   applyHostAclIfNeeded,
@@ -50,6 +50,8 @@ import { friendlyError } from '../lib/api.ts';
 import { copyText } from '../lib/clipboard.ts';
 import { confirmInApp } from '../lib/confirm.ts';
 import { isFavorite, shortcutsRevision, toggleFavorite } from '../lib/shortcuts.ts';
+import { isMac, platform, supportsLanBroadcast } from '../lib/platform.ts';
+import { setRoomOnScreen } from '../lib/store.ts';
 import ChatPanel from '../components/ChatPanel.vue';
 import ConnectionDiagnostic from '../components/ConnectionDiagnostic.vue';
 import GameQuickConnect from '../components/GameQuickConnect.vue';
@@ -85,6 +87,9 @@ const room = computed(() => session.value?.room ?? null);
 const members = computed(() => session.value?.members ?? []);
 const pending = computed(() => members.value.filter((m) => m.status === 'pending'));
 
+/** 平台名字：用在"本平台不支持某功能"的说明里，免得只写"当前平台"让人不知道自己在哪 */
+const platformLabel = isMac ? 'macOS' : platform === 'win32' ? 'Windows' : 'Linux';
+
 /* ------------------------------------------------------- 成员"在线"判定 */
 
 /**
@@ -107,6 +112,17 @@ const clockTimer = window.setInterval(() => {
   nowMs.value = Date.now();
 }, 15_000);
 onUnmounted(() => window.clearInterval(clockTimer));
+
+/**
+ * 「正看着这个房间」由本页的存在本身来表达：RoomPage 只在 `view === 'home' && hasRoom`
+ * 时被 App.vue 渲染，所以挂载 = 玩家眼前就是聊天面板，卸载 = 他离开了这一屏。
+ *
+ * 为什么不让通知模块自己去问主进程窗口状态：窗口聚焦与"看着房间"是两件事 ——
+ * 聚焦着停在设置页时消息是看不见的（该弹），收进托盘但页面还挂着时也看不见（该弹）。
+ * 只有这里知道后者，所以由这里写、别处只读（store 的 roomOnScreen）。
+ */
+onMounted(() => setRoomOnScreen(true));
+onUnmounted(() => setRoomOnScreen(false));
 
 const isStale = (m: { lastSeenAt: string | null }): boolean => {
   if (!m.lastSeenAt) return true;
@@ -485,7 +501,14 @@ async function savePolicy(): Promise<void> {
         .filter(Boolean),
       strictPorts: policy.value.strictPorts,
       allowP2p: policy.value.allowP2p,
-      allowBroadcast: policy.value.allowBroadcast,
+      /**
+       * 「局域网广播直通」只在本平台支持时才提交。
+       *
+       * 为什么不是"不支持就提交 false"：那等于用一次无关的保存动作**悄悄关掉别人（Windows 成员）
+       * 还能用的能力**。字段整个不带过去，房间保持服务端现有的值，mac 房主只是改不了它 ——
+       * 与界面上置灰的那个下拉框语义一致（见下面 v-if="!supportsLanBroadcast" 的说明）。
+       */
+      ...(supportsLanBroadcast ? { allowBroadcast: policy.value.allowBroadcast } : {}),
     });
     policyOpen.value = false;
   } catch (err) {
@@ -1081,14 +1104,23 @@ async function doLeave(): Promise<void> {
           EasyTier 自己也是默认关的 —— 它靠 WinDivert 内核网络过滤驱动去抓物理网卡的
           UDP 广播，而驱动路径就是我们 vendored 的那份，实测会让部分机器上其它软件断网。
           所以这是个"要就自己开"的能力，代价必须写在开关下面，而不是藏在文档里。
+
+          **Windows 专属**：WinDivert 是 Windows 的驱动，macOS 上这套抓包/重放根本不存在。
+          所以非 Windows 上这个下拉框直接置灰 —— 置灰而不是隐藏：玩家看得见"平台没有这个能力"，
+          比到处找不到这个选项更好懂；说明文字也写清了替代做法（直接连接 + 房间地址）。
         -->
         <div class="field">
           <label class="label">局域网广播直通</label>
-          <select v-model="policy.allowBroadcast" class="select">
+          <select v-model="policy.allowBroadcast" class="select" :disabled="!supportsLanBroadcast">
             <option :value="false">关闭（推荐）</option>
             <option :value="true">开启（局域网列表可见）</option>
           </select>
-          <div class="hint">
+          <div v-if="!supportsLanBroadcast" class="hint">
+            当前平台不支持（{{ platformLabel }}）：它靠 Windows 的 WinDivert 内核驱动抓物理网卡的 UDP 广播，
+            macOS 上没有这个驱动，所以这一项在这里既不能开、也不会被这次保存改动。
+            用「直接连接 + 房间地址」照常联机 —— 房间卡上的地址可以一键复制。
+          </div>
+          <div v-else class="hint">
             开启后 Minecraft「多人游戏」列表能直接看到房间，不用手输 IP。代价：Windows 上会安装一个系统级网络过滤驱动（WinDivert）来抓 UDP
             广播，部分软件（如网易云音乐）可能因此上不了网。关闭时用「直接连接 + 虚拟地址」照常联机。
           </div>

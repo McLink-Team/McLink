@@ -45,6 +45,8 @@ import {
   type RelaySource,
   type RouteSample,
 } from './relay-fallback.ts';
+import { isMac, supportsLanBroadcast, tunName } from './platform.ts';
+import { handleIncomingMessage } from './notify.ts';
 
 export type { PeerView } from './easytier-parse.ts';
 export { parsePeers } from './easytier-parse.ts';
@@ -172,6 +174,19 @@ export const isOnline = computed(() => state.coreStatus?.state === 'running');
 export const hasRoom = computed(() => state.session !== null);
 export const isHost = computed(() => state.session?.isHost === true);
 export const shareAddress = computed(() => state.session?.ticket.hostVirtualIp ?? null);
+
+/**
+ * 「房间页此刻是不是真的在屏幕上」—— **只读状态**，房间页挂载/卸载时写。
+ *
+ * 为什么要它（而不是让通知模块自己去猜）：通知的第一条规则是"正看着那个房间就别弹"，
+ * 而"正看着"在渲染层等于**房间内容挂在 DOM 上**（App.vue 只在 view==='home' && hasRoom
+ * 时渲染 RoomPage）。窗口聚焦还不够：聚焦着停在设置页时消息是看不到的，那必须弹。
+ * 由真正知道这件事的人（RoomPage）写，别处只读 —— 所以它没有 setter 之外的出口。
+ */
+export const roomOnScreen = ref(false);
+export function setRoomOnScreen(value: boolean): void {
+  roomOnScreen.value = value === true;
+}
 
 /**
  * 房主的虚拟地址（裸地址，不带 /24）——「到房主那条链路」的**唯一匹配键**。
@@ -785,11 +800,18 @@ function describeCoreError(message: string | null): string {
   if (/10049|AddrNotAvailable|bind/i.test(message)) {
     return '虚拟网络启动失败：网卡绑定被拒绝。请尝试「以管理员身份重启」后再连接。';
   }
-  if (/Access is denied|permission|拒绝访问/i.test(message)) {
+  if (/Access is denied|permission|拒绝访问|not permitted|Operation not permitted/i.test(message)) {
     return '虚拟网络启动失败：权限不足，创建虚拟网卡需要管理员权限。请使用「以管理员身份重启」。';
   }
-  if (/wintun|TUN|adapter/i.test(message)) {
-    return '虚拟网络启动失败：无法创建虚拟网卡（wintun）。请确认已安装 wintun.dll 并以管理员运行。';
+  /**
+   * 建网卡失败那一类。
+   * Windows 上的关键词是 wintun/TUN adapter，macOS 上是 utun；文案里的那个名字
+   * 也必须跟着平台走 —— 在 mac 上让玩家"确认已安装 wintun.dll"是没有意义的指引。
+   */
+  if (/wintun|utun|TUN|adapter/i.test(message)) {
+    return isMac
+      ? `虚拟网络启动失败：无法创建虚拟网卡（${tunName}）。请点「以管理员身份重启」后重试（utun 需要 root）。`
+      : `虚拟网络启动失败：无法创建虚拟网卡（${tunName}）。请确认已安装 wintun.dll 并以管理员运行。`;
   }
   return `虚拟网络启动失败：${message}`;
 }
@@ -1241,6 +1263,22 @@ export async function rotateSecret(): Promise<void> {
 export async function updateRoomPolicy(patch: Record<string, unknown>): Promise<void> {
   const session = state.session;
   if (!session) return;
+
+  /**
+   * 「局域网广播直通」在非 Windows 上不可用 —— 这是**第二道闸**（第一道在界面上：
+   * RoomPage 的下拉框已置灰）。
+   *
+   * 为什么还要拦一次：房间可能是别的平台建的（策略里 allowBroadcast 本来就是 true），
+   * 或者将来多出别的调用点。为什么**抛错而不是悄悄改成 false**：
+   * 悄悄改会让玩家以为开关生效了，然后在 Minecraft 的「多人游戏」列表里干等 ——
+   * 这正是「不要静默失败」要消灭的那种体验。错误会被 RoomPage 就地显示出来。
+   */
+  if (!supportsLanBroadcast && patch.allowBroadcast === true) {
+    throw new Error(
+      `「局域网广播直通」在当前平台不可用：它依赖 Windows 的 WinDivert 内核驱动。请用「直接连接 + 房间地址」联机。`,
+    );
+  }
+
   const roomId = session.room.id;
   const result = await api.patch<{ room: Room; aclToml: string; revision: number }>(Routes.room(roomId), patch);
   session.room = result.room;
@@ -1360,7 +1398,10 @@ async function handleServerEvent(raw: string): Promise<void> {
       // 只处理当前房间：订阅的是 room:<id> 话题，理论上不会串房间，仍然显式过滤
       if (!state.session || String(event.roomId) !== state.session.room.id) break;
       const message = toChatMessage(event.message);
-      if (message) emitRoomChat({ type: 'message', message });
+      if (message) {
+        emitRoomChat({ type: 'message', message });
+        notifyIfNeeded(message);
+      }
       break;
     }
     case 'room.messageDeleted': {
@@ -1406,6 +1447,50 @@ function emitRoomChat(event: RoomChatEvent): void {
       /* 单个订阅者出错不应该影响其它订阅者与 WS 主循环 */
     }
   }
+}
+
+/* ------------------------------------------------- 发消息提醒（系统通知） */
+
+/**
+ * 「有人在房间里说话 → 要不要弹系统通知」的**唯一判定点**。
+ *
+ * 为什么放在这里（而不是 ChatPanel 或某个 watcher）：
+ *   · 这是消息**从 WS 进来**的唯一入口（上面 handleServerEvent 的 room.message 分支），
+ *     判定挂在这里就天然保证"只有真的收到别人的消息才可能弹" ——
+ *     界面重渲染、历史补齐（GET messages）、自己发言的回显都绕不到它，
+ *     不会出现"刚进房间哗地弹一串通知"那种事故；
+ *   · 「看着那个房间吗」（RoomPage 写的 roomOnScreen）、「窗口在前台吗」
+ *     （渲染进程自己的 document.hasFocus）、「开关开着吗」（用户偏好）
+ *     三件事在这里汇合成完整上下文，规则本身是纯函数（lib/notify-policy.ts），
+ *     能在 node 里逐条断言，不必靠"在真机上碰运气"。
+ *
+ * 为什么不做成"发送时顺手弹"：那是**自己**发的消息 —— 界面里已经有回显，
+ * 提醒自己说过什么毫无意义（判定里的 'self' 分支就是钉这件事的）。
+ *
+ * 真正"弹"的动作在主进程（Electron Notification）：点通知要把窗口叫回来、
+ * 再让渲染层跳到房间，那是主进程才做得到的事。
+ */
+function notifyIfNeeded(message: ChatMessage): void {
+  try {
+    handleIncomingMessage(message, {
+      sessionRoomId: state.session?.room.id ?? null,
+      selfUserId: state.user?.id ?? null,
+      roomName: state.session?.room.name ?? '',
+    });
+    // 进批之后由 notify.ts 的合并窗口决定什么时候真的发出去（几秒内的连发合并成一条）
+  } catch {
+    /* 提醒失败绝不能影响聊天本身：这条链路上的任何异常都在这里咽掉 */
+  }
+}
+
+/**
+ * 仅供自动化测试：把一条"服务器推来的"原始事件喂进**同一条**处理链。
+ *
+ * 它调用的就是 WS 用的那个 handleServerEvent —— 不是另写一条测试旁路，
+ * 所以断言到的东西与线上是同一条路径（见 .cache/verify-notify-cdp.mjs）。
+ */
+export function handleServerEventForTest(raw: string): Promise<void> {
+  return handleServerEvent(raw);
 }
 
 /** 把 WS 下发的未知结构收敛成 ChatMessage；缺关键字段时返回 null（宁可丢一条也不崩界面） */

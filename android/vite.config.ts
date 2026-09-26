@@ -17,13 +17,27 @@ import { readFileSync } from 'node:fs';
  *      `app.getVersion()`，版本号只能从构建时带进来（否则外壳底部的版本永远空白）。
  */
 const here = fileURLToPath(new URL('.', import.meta.url));
+const webRoot = fileURLToPath(new URL('./web', import.meta.url));
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string };
 
 /** 与 client/src/lib/api.ts 的 DEV_FALLBACK_MASTER 同形，但默认值换成线上主控 */
 const master = (process.env.VITE_MCLINK_MASTER ?? 'https://cnnic.link').trim().replace(/\/+$/, '');
 
+/**
+ * 两条路一起铺，且**写的是同一个值**，所以无论哪条生效结果都一样：
+ *   · 写回 process.env —— Vite 的 loadEnv() 会把带前缀的 process.env 变量并进 import.meta.env；
+ *   · 再显式 define —— 即使顺序有变，静态成员访问也会被替换成这个字面量。
+ * 手机上没有 devtools，主控地址打错只能靠"连不上"这三个字去猜，所以这里不留悬念。
+ */
+process.env.VITE_MCLINK_MASTER = master;
+
 export default defineConfig({
-  root: here,
+  /*
+   * root 指到 web/（index.html 在那里），产物落回 android/dist ——
+   * 与 capacitor.config.ts 的 `webDir: 'dist'` 对着，两者必须一致，
+   * 不一致的表现是"cap sync 成功但 App 里是上一版界面"（拷了空目录）。
+   */
+  root: webRoot,
   // Capacitor 用 WebViewLocalServer 从本地资源根加载 index.html，相对路径即可
   base: './',
   plugins: [vue()],
@@ -40,7 +54,9 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: 'dist',
+    // 相对 root（web/）解析 → android/dist，与 capacitor.config.ts 的 webDir 一致
+    outDir: '../dist',
+    // outDir 在 root 之外，必须显式声明才允许清空（否则会残留上一次的 hash 文件）
     emptyOutDir: true,
     sourcemap: false,
     // Android WebView 版本跨度大（Android 8 起仍是 Chromium 58+）。

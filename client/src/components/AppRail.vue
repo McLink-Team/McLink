@@ -11,10 +11,17 @@
  *
  * 图标本身住在 RailIcon.vue —— 因为 Android 端的底部导航用的是**同一批去处**，
  * 路径数据只允许有一份（理由见那个文件的注释）。
+ *
+ * macOS 上这一栏的**顶部要空出来**：系统红黄绿按钮固定在窗口左上角
+ * （x≈14–68 / y≈11–23），正好压在品牌块的位置上。所以 mac 分支在顶部插一段
+ * 30px 的空白并顺带把它做成拖动区（无边框窗口里，侧栏顶部是用户会去拖的地方）。
+ * 其余一律不动：栏宽、品牌块尺寸、条目样式与 Windows 版**逐像素一致** ——
+ * 平台差异只体现在"顶部让位"和"窗口控制交给系统"这两件真正属于平台的事上。
  */
 import { computed } from 'vue';
 import BrandMark from './BrandMark.vue';
 import RailIcon from './RailIcon.vue';
+import { isMac } from '../lib/platform.ts';
 
 export type RailKey = 'home' | 'plaza' | 'bookmarks' | 'settings';
 
@@ -49,6 +56,9 @@ const initial = computed(() => (props.userName ?? '').trim().slice(0, 1).toUpper
 
 <template>
   <nav class="rail" aria-label="主导航">
+    <!-- macOS：给系统红黄绿让位的那段空白，同时是整个侧栏的拖动把手 -->
+    <div v-if="isMac" class="rail-mac-inset" aria-hidden="true" />
+
     <div class="rail-brand" title="McLink">
       <BrandMark :size="36" />
     </div>
@@ -90,6 +100,25 @@ const initial = computed(() => (props.userName ?? '').trim().slice(0, 1).toUpper
   gap: var(--s-2);
   padding: 14px 8px 12px;
   background: var(--ground-deep);
+}
+
+/*
+ * macOS：顶部的拖动空白。
+ *
+ * 高度 26px 是这么定的：红黄绿按钮直径 12px、纵向中心约 y=17，即占掉 y≈11–23；
+ * 加上这一栏本身的 14px 上内边距与 8px 的 flex gap，品牌块落在 y=48 处 ——
+ * 与三个按钮之间留出 25px。再小就会显得系统按钮贴着品牌块，
+ * 再大就会把下面四个去处挤下去（这套骨架是给 580px 高的窗口算的）。
+ *
+ * 用**真实高度的元素**而不是 padding：只有元素才能挂 `-webkit-app-region: drag`，
+ * 让这 26px 成为拖动把手 —— 无边框窗口里，侧栏顶部不该是"点不动的死区"。
+ * 颜色跟着 .rail 的背景走，所以看起来仍然是侧栏的一部分（与 Windows 版第一眼一致）。
+ */
+.rail-mac-inset {
+  flex: none;
+  width: 100%;
+  height: 26px;
+  -webkit-app-region: drag;
 }
 
 /* 品牌块：64×64 的白卡 + 一点柔和投影（参考里唯一带投影的固定元素） */

@@ -38,6 +38,8 @@ import {
 } from '../lib/store.ts';
 import { friendlyError } from '../lib/api.ts';
 import { reopenOnboarding } from '../lib/onboarding.ts';
+import { adminAuthPrompt, closeActionLabel, isMac, needsAdmin, trayName, tunName } from '../lib/platform.ts';
+import { applyMessagesEnabled, messagesEnabled } from '../lib/notify.ts';
 import type { AppInfo, CloseAction } from '../lib/bridge.ts';
 
 const info = ref<AppInfo | null>(null);
@@ -53,12 +55,29 @@ async function saveAutoElevate(): Promise<void> {
 }
 
 /**
+ * 「有人发消息时提醒我」（默认开）。
+ *
+ * 写入走 client-prefs.json（与 autoElevate / closeAction 同一套 readPrefs/writePrefs），
+ * 但**不能只写主进程**：判定发生在 WS 消息到手的那一瞬间、必须是同步的，
+ * 所以真正生效的是渲染层那份（lib/notify.ts），applyMessagesEnabled 负责两边一起更新
+ * —— 这里必须调它，而不是直接调 window.mclink.setNotifyMessages。
+ */
+const notifyMessages = ref(true);
+
+async function saveNotifyMessages(): Promise<void> {
+  await applyMessagesEnabled(notifyMessages.value);
+  // 以真实生效值为准：主进程把它归一成布尔（enabled !== false）
+  notifyMessages.value = messagesEnabled();
+}
+
+/**
  * 关闭窗口时的行为。默认 ask（关的时候问一次）——
  * 以前是无条件收进托盘且没有任何提示，玩家以为退出了、其实还在后台跑。
+ * 选项文案按平台取（mac 上是「隐藏窗口」，不是「最小化到托盘」）。
  */
 const CLOSE_OPTIONS: ReadonlyArray<{ value: CloseAction; label: string }> = [
   { value: 'ask', label: '每次都问我' },
-  { value: 'tray', label: '最小化到托盘（保持联机）' },
+  { value: 'tray', label: closeActionLabel('tray') },
   { value: 'quit', label: '彻底退出' },
 ];
 const closeAction = ref<CloseAction>('ask');
@@ -287,6 +306,7 @@ async function verifyEmailCode(): Promise<void> {
 onMounted(async () => {
   info.value = await window.mclink.info();
   autoElevate.value = info.value.autoElevate !== false;
+  notifyMessages.value = info.value.notifyMessages !== false;
   closeAction.value = (info.value.closeAction ?? 'ask') as CloseAction;
   nickname.value = clientState.user?.displayName ?? nickname.value;
   // 邮箱状态以主控为准（可能刚在别处验过），顺带把冷却期接着算
@@ -321,20 +341,24 @@ function openDataDir(): void {
   <div class="view settings-page">
     <div v-if="saved" class="alert alert-ok">设置已保存。</div>
 
-    <!-- 权限状态：Windows 上创建虚拟网卡必须提权。通栏，不进下面的栅格 -->
-    <div v-if="info && !info.elevated" class="alert alert-warn">
+    <!--
+      权限状态：Windows 与 macOS 上创建虚拟网卡必须提权。通栏，不进下面的栅格。
+      判定必须**按平台**：只有这两个平台"没提权"才意味着联机不可用，
+      其它平台（例如 Linux 用户态建网卡）显示这条横幅就是误报。
+    -->
+    <div v-if="info && needsAdmin && !info.elevated" class="alert alert-warn">
       <div class="grow">
         <div style="font-weight: 600">当前未以管理员身份运行</div>
         <div class="hint">
-          EasyTier 需要管理员权限才能创建虚拟网卡（wintun）。不提权的话可以登录、建房，但成员之间无法真正连通。
+          EasyTier 需要管理员权限才能创建虚拟网卡（{{ tunName }}）。不提权的话可以登录、建房，但成员之间无法真正连通。
         </div>
       </div>
       <button class="btn btn-primary btn-sm" @click="relaunchElevated()">以管理员身份重启</button>
     </div>
-    <div v-else-if="info" class="alert alert-ok">已以管理员身份运行，虚拟网卡可用。</div>
+    <div v-else-if="info && needsAdmin" class="alert alert-ok">已以管理员身份运行，虚拟网卡可用。</div>
 
     <div class="settings-grid">
-      <section v-if="info" class="card stack">
+      <section v-if="info && needsAdmin" class="card stack">
         <div class="section-head">
           <span class="title">权限</span>
         </div>
@@ -343,8 +367,34 @@ function openDataDir(): void {
           <span>
             启动时自动请求管理员权限
             <span class="hint" style="display: block">
-              开始联机需要管理员权限创建虚拟网卡。关掉后不再自动弹 UAC，可以手动点上面的按钮。
-              在 UAC 上点了「否」的话，7 天内也不会再自动弹。
+              开始联机需要管理员权限创建虚拟网卡（{{ tunName }}）。关掉后不再自动弹{{ adminAuthPrompt }}，可以手动点上面的按钮。
+              <template v-if="!isMac">
+                在 {{ adminAuthPrompt }} 上点了「否」的话，7 天内也不会再自动弹。
+              </template>
+              <template v-else>
+                在系统授权框上点了「取消」的话，7 天内也不会再自动弹。
+              </template>
+            </span>
+          </span>
+        </label>
+      </section>
+
+      <section v-if="info" class="card stack">
+        <div class="section-head">
+          <span class="title">消息提醒</span>
+        </div>
+        <label class="check-row">
+          <input v-model="notifyMessages" type="checkbox" @change="saveNotifyMessages()" />
+          <span>
+            有人发消息时提醒我
+            <span class="hint" style="display: block">
+              房间里有人说话时弹一条{{ isMac ? '通知中心' : '系统通知' }}。
+              <b>正看着那个房间、窗口也在前台时不会弹</b>（消息就在眼前）；
+              窗口收在{{ trayName }}里、最小化、或停在别的页面时才提醒；自己发的消息不提醒。
+              同一个房间几秒内的连发会合并成一条。关掉之后一条都不弹。
+              <span v-if="info.notificationsSupported === false" style="color: var(--warn)">
+                当前系统报告不支持通知 —— 开了也不会弹，请检查系统通知设置。
+              </span>
             </span>
           </span>
         </label>
@@ -359,9 +409,15 @@ function openDataDir(): void {
             <option v-for="opt in CLOSE_OPTIONS" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
           </select>
           <span class="hint">
-            点右上角关闭时做什么。<b>最小化到托盘</b>不会断开局域网（托盘图标右键可退出）；
-            <b>彻底退出</b>会断开连接、房间里的朋友会掉线。选「每次都问我」时，
-            关窗口会弹一次询问框，那里勾了「记住我的选择」也会写进这个设置。
+            {{ isMac ? '点窗口左上角的红点（或按 ⌘W）时做什么。' : '点右上角关闭时做什么。' }}
+            <b>{{ closeActionLabel('tray') }}</b>不会断开局域网（{{ trayName }}图标可退出）；
+            <b>彻底退出</b>会断开连接、房间里的朋友会掉线。
+            <template v-if="isMac">
+              注意 ⌘Q 是<b>退出应用</b>，不受这里影响 —— 与系统上其它应用一致。
+            </template>
+            <template v-else>
+              选「每次都问我」时，关窗口会弹一次询问框，那里勾了「记住我的选择」也会写进这个设置。
+            </template>
           </span>
         </div>
       </section>

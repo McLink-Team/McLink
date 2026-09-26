@@ -14,9 +14,15 @@ name: 构建客户端（Windows / macOS）
 #
 # 产物说明：
 #   · Windows：McLink-Setup-<版本>-x64.exe（NSIS 安装包）
-#   · macOS  ：McLink-<版本>-arm64.dmg/.zip（Apple 芯片）、McLink-<版本>-x64.dmg/.zip（Intel）
-#   · macOS 包是**未签名**的（没有 Apple 开发者证书）：electron-builder 会做 ad-hoc 签名，
-#     玩家首次打开需要绕过 Gatekeeper —— 见 docs/build-clients.md。
+#   · macOS  ：McLink-<版本>-macos-arm64.dmg/.zip（Apple 芯片）、McLink-<版本>-macos-x64.dmg/.zip（Intel）
+#     （文件名里的 macos 是官网识别平台用的，别改：server/src/api/public.ts 按文件名分流）
+#   · macOS 包是**未签名**的（没有 Apple 开发者证书）：electron-builder 会**跳过**签名，
+#     由 deploy/sign-macos-app.sh 补 ad-hoc 签名并重新生成 dmg —— 不补这一步，
+#     Apple 芯片上双击就是「已损坏，无法打开」。玩家首次打开还需要绕过 Gatekeeper，
+#     见 docs/build-clients.md。
+#
+# 补充：本仓库的主路线是 **GitLab CI**（.gitlab-ci.yml 的 build:macos）；这个工作流是
+# 给"镜像到 GitHub 也能出包"用的备份路线，两条路线的脚本步骤保持一致。
 
 on:
   workflow_dispatch:
@@ -91,10 +97,16 @@ jobs:
       - name: 生成图标（含 macOS 需要的 1024 尺寸）
         run: pnpm icons
 
-      - name: 打包 dmg + zip（两个架构）
+      - name: 打包 macOS（两个架构；dmg 留到签名之后生成）
         env:
           VITE_MCLINK_MASTER: ${{ inputs.master || 'https://cnnic.link' }}
         run: pnpm --filter @mclink/client exec node scripts/dist.mjs --mac zip --arm64 --x64
+
+      # 与 GitLab 的 build:macos 同一步骤、同一个理由：没有证书时 electron-builder 出的是
+      # 未签名的 .app，而它做 dmg 是在签名之前 —— dmg 里会装未签名副本，Apple 芯片起不来。
+      # 所以：先出 zip → ad-hoc 签名 → 用签名后的 .app 重新打 zip 并生成 dmg。
+      - name: ad-hoc 签名并生成 dmg
+        run: bash deploy/sign-macos-app.sh
 
       - name: 列出产物（体积核对）
         run: ls -lh client/release/ | grep -Ei '\.(dmg|zip)$' || true

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      viewport-fit=cover 是**必需**的，不是可选优化：
+      Android 15（targetSdk 35）起系统强制 edge-to-edge，内容和手势条会重叠。
+      mobile-shell.css 里的 env(safe-area-inset-*) 只有在带上它之后才非零。
+      同时开启 user-scalable —— 不禁用缩放：设计约束只要求正文 ≥12.5px，
+      而"禁止缩放"会连带挡掉系统字号放大，那是可访问性回退。
+    -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+
+    <!--
+      theme-color 的 content 由 main.ts 在运行时从 `--ground` 令牌读出来填上，
+      这里**故意留空**：写死一个十六进制等于在 HTML 里开了一个不受令牌管辖的颜色，
+      换世界时状态栏不会跟着变（而且不会有人想起来改）。
+    -->
+    <meta name="theme-color" content="" />
+
+    <title>McLink</title>
+
+    <!--
+      这里没有内联样式，也没有加载动画 —— 这是刻意的。
+
+      Vite 构建时会把 CSS 以 <link rel="stylesheet"> 注入 <head>，而外链样式表是
+      **阻塞渲染**的：浏览器在它加载完之前不会画第一帧。所以首帧就已经带着
+      --ground 的页面底色，不存在"白闪一下"的问题，
+      也就不需要在 HTML 里塞一个用十六进制写死的兜底背景。
+    -->
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

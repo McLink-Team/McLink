@@ -4,10 +4,14 @@
  *
  * 只在第一次启动时自动弹出（localStorage 标记由 lib/onboarding.ts 管理），
  * 「跳过」只关掉本次，「不再显示」才会写标记；设置页里可以重新打开。
+ *
+ * 第 ① 步的措辞按平台走：Windows 是"管理员权限 / wintun"，macOS 上是
+ * "系统授权框 / utun" —— 同一件事，两个平台的说法完全不同（见 lib/platform.ts）。
  */
 import { computed, onMounted, ref } from 'vue';
 import { closeOnboarding } from '../lib/onboarding.ts';
 import { relaunchElevated } from '../lib/store.ts';
+import { isMac, needsAdmin, tunName } from '../lib/platform.ts';
 import type { AppInfo } from '../lib/bridge.ts';
 
 const STEP_TITLES = ['管理员权限', '建房 / 进房', '在游戏里怎么连'];
@@ -42,18 +46,23 @@ function finish(persist: boolean): void {
       <!-- ① 管理员权限 -->
       <div v-if="step === 0" class="stack">
         <div>
-          McLink 会在本机拉起 EasyTier 核心来建一张虚拟局域网。Windows 上创建虚拟网卡（wintun）需要管理员权限，
+          McLink 会在本机拉起 EasyTier 核心来建一张虚拟局域网。
+          {{ isMac ? 'macOS' : 'Windows' }} 上创建虚拟网卡（{{ tunName }}）需要{{ isMac ? ' root ' : '管理员' }}权限，
           没有权限的话你能登录、能建房，但成员之间连不通。
         </div>
-        <div v-if="info && info.elevated" class="alert alert-ok">当前已以管理员身份运行，无需额外操作。</div>
-        <div v-else-if="info" class="alert alert-warn">
+        <div v-if="info && needsAdmin && info.elevated" class="alert alert-ok">当前已以管理员身份运行，无需额外操作。</div>
+        <div v-else-if="info && needsAdmin" class="alert alert-warn">
           <div class="grow">
             <div style="font-weight: 600">当前未以管理员身份运行</div>
-            <div class="hint">点下面的按钮会重新以管理员身份打开客户端（当前窗口会退出）。</div>
+            <div class="hint">
+              {{ isMac
+                ? '点下面的按钮会弹出系统授权框，输入登录密码后客户端会以管理员身份重新打开（当前窗口会退出）。'
+                : '点下面的按钮会重新以管理员身份打开客户端（当前窗口会退出）。' }}
+            </div>
           </div>
           <button class="btn btn-primary btn-sm" @click="relaunchElevated()">以管理员身份重启</button>
         </div>
-        <div v-else class="hint">正在读取权限状态…</div>
+        <div v-else-if="!info" class="hint">正在读取权限状态…</div>
         <div class="hint">也可以之后在「设置」标签里再提权，随时都来得及。</div>
       </div>
 

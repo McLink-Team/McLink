@@ -1,0 +1,30 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["vite/client"],
+    "paths": {
+      "@/*": ["./web/src/*"],
+      "@mclink/shared": ["../packages/shared/src/index.ts"]
+    }
+  },
+  /*
+   * 刻意**不设 rootDir**。
+   *
+   * 桌面 client/tsconfig.json 设了 `rootDir: "."`，因为它的整条依赖图都在 client/ 里。
+   * Android 端不一样：它刻意 import 了 `../client/src/**`（那些页面就是"不要重写一套 UI"
+   * 的落点）。一旦设了 rootDir，这些文件全部报 TS6059「not under rootDir」——
+   * 也就是**复用现有页面这件事本身**会变成类型错误。
+   * rootDir 只在需要 emit 时才有意义，而这里是 noEmit（tsconfig.base.json 里定的）。
+   */
+  /*
+   * 只检查 web/src。
+   *
+   * 为什么不把 vite.config.ts / capacitor.config.ts 一起收进来：它们 import 的是
+   * `node:url`、`node:fs`、`process` —— 要过检查就得引 @types/node，
+   * 而这两个文件**本来就在构建时被执行**（vite build 会加载它们），
+   * 真写错了构建当场就失败，比类型检查更早也更准。
+   * 桌面客户端（client/tsconfig.json）是同一个取舍。
+   */
+  "include": ["web/src/**/*.ts", "web/src/**/*.vue"]
+}

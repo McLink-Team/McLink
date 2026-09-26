@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">McLink</string>
+    <string name="title_activity_main">McLink</string>
+    <string name="package_name">link.cnnic.mclink</string>
+    <string name="custom_url_scheme">link.cnnic.mclink</string>
+</resources>

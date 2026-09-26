@@ -20,6 +20,7 @@
     "start": "pnpm --filter @mclink/server start",
     "test": "pnpm --filter @mclink/server test",
     "typecheck": "pnpm -r typecheck",
+    "verify:platform": "node client/scripts/verify-platform.mjs",
     "verify:lockfile": "pnpm install --frozen-lockfile --lockfile-only",
     "check:contrast": "node scripts/check-contrast.mjs",
     "check:sh": "node scripts/check-shell-vars.mjs",
