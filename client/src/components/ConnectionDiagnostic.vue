@@ -57,7 +57,24 @@ const listenPorts = computed<string[]>(() => {
 const remotePeers = computed(() => peers.value.filter((p) => linkKind(p.cost) !== 'local'));
 const directPeers = computed(() => remotePeers.value.filter((p) => linkKind(p.cost) === 'p2p'));
 const relayPeers = computed(() => remotePeers.value.filter((p) => linkKind(p.cost) !== 'p2p'));
-const slowPeers = computed(() => remotePeers.value.filter((p) => p.latencyMs !== null && p.latencyMs > 150));
+
+/**
+ * 「换一个更近的区域」这条建议只在**所有节点都慢**时才给。
+ *
+ * 原来只要有一个节点超过 150ms 就提示，实测在真实房间里几乎必然弹出 ——
+ * 只要有一个人用的是手机热点或者离中继远，房主就被劝去换区域，而换区域
+ * 对其它节点毫无帮助（问题在那一台自己身上，不在大区）。
+ * 判据必须是"整体都慢"，而且**每个节点都得测出延迟**：有节点延迟未知时
+ * 不能声称"全都超过"。
+ */
+const allPeersSlow = computed(() => {
+  const measured = remotePeers.value.filter((p) => p.latencyMs !== null);
+  return (
+    remotePeers.value.length > 0 &&
+    measured.length === remotePeers.value.length &&
+    measured.every((p) => (p.latencyMs ?? 0) > 150)
+  );
+});
 
 const advice = computed<Advice[]>(() => {
   const list: Advice[] = [];
@@ -89,11 +106,11 @@ const advice = computed<Advice[]>(() => {
       text: `已有 ${directPeers.value.length} 个节点 P2P 直连（延迟更低，也不占用中转带宽）。`,
     });
   }
-  if (slowPeers.value.length > 0) {
-    const worst = Math.max(...slowPeers.value.map((p) => p.latencyMs ?? 0));
+  if (allPeersSlow.value) {
+    const worst = Math.max(...remotePeers.value.map((p) => p.latencyMs ?? 0));
     list.push({
       level: 'warn',
-      text: `有 ${slowPeers.value.length} 个节点延迟超过 150ms（最高 ${worst.toFixed(0)} ms）。建议换一个更近的区域：房主可以在「房间规则」里改区域，或者关掉房间后重新建房时选更近的大区。`,
+      text: `房间里 ${remotePeers.value.length} 个节点的延迟全部超过 150ms（最高 ${worst.toFixed(0)} ms）—— 这是整体偏远或线路拥塞，不是某一台的问题。房主可以在「房间规则」里换一个更近的区域，或者关掉房间后重新建房时选更近的大区。`,
     });
   }
   if (facts.value && facts.value.natUdp !== null) {
@@ -148,8 +165,20 @@ async function refresh(): Promise<void> {
   }
 }
 
+/**
+ * 进房后先等一会儿再检测。
+ *
+ * 实测：刚进房时 easytier-core 还在建隧道，这时读 peer list / node info 会报出
+ * 一堆"未知"（延迟未知、NAT Unknown、流量 0 B），看着像故障其实是还没稳定。
+ * 所以第一次检测等 5 秒，期间明说在等什么 —— 空白比"未知"更让人安心。
+ */
+const SETTLE_MS = 5000;
+const settling = ref(true);
+
 onMounted(async () => {
   info.value = await window.mclink.info().catch(() => null);
+  await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
+  settling.value = false;
   await refresh();
 });
 </script>
@@ -170,8 +199,14 @@ onMounted(async () => {
       </button>
     </div>
 
+    <!-- 三态：等核心稳定（进房后头 5 秒不查，免得显示一堆"未知"像故障） -->
+    <div v-if="settling" class="row" style="padding: var(--s-4) 0">
+      <span class="spinner" />
+      <span class="muted">正在等本地核心建好隧道…（约 5 秒）</span>
+    </div>
+
     <!-- 三态：加载中 -->
-    <div v-if="loading && checkedAt === 0" class="row" style="padding: var(--s-4) 0">
+    <div v-else-if="loading && checkedAt === 0" class="row" style="padding: var(--s-4) 0">
       <span class="spinner" />
       <span class="muted">正在查询 easytier-cli…</span>
     </div>
