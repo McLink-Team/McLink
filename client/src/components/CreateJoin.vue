@@ -15,6 +15,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { Routes, regionLabel, type Room } from '@mclink/shared';
 import { api } from '../lib/api.ts';
+import { probeKey, type ProbeTarget } from '../lib/bridge.ts';
 import { clientState, createRoom, joinRoom, loadRooms, openUpdatePage, reenterRoom } from '../lib/store.ts';
 import { friendlyError } from '../lib/api.ts';
 import RoomShortcuts from './RoomShortcuts.vue';
@@ -76,14 +77,37 @@ const relaySummary = computed(() => {
  */
 const nodeMode = ref<'auto' | 'manual'>('auto');
 const manualNodes = ref<string[]>([]);
-interface NodeOption { id: string; name: string; region: string; host: string; peers: number; capacity: number }
+interface NodeOption {
+  id: string;
+  name: string;
+  region: string;
+  host: string;
+  /** 链接端口：**客户端真正要连的端口**，由主控按票据同一套规则下发 */
+  port?: number;
+  peers: number;
+  capacity: number;
+}
 const nodeList = ref<NodeOption[]>([]);
-/** host → 最小时延（ms）；null 表示 ping 不通（不代表节点不可用） */
+/** `host:port` → 最小时延（ms）；null 表示这次 TCP 握手没成功（只用于展示，不代表节点不可用） */
 const latency = ref<Record<string, number | null>>({});
 const probing = ref(false);
 
-const latencyOf = (n: NodeOption): number | null => latency.value[n.host] ?? null;
-/** 按延迟排序；ping 不通的排在最后（但**仍然可选**） */
+/**
+ * 探测目标 = 节点的 `host:port`。
+ *
+ * 端口缺了就用 `/meta` 的平台端口兜底（只有没升级的老主控会缺这一项），
+ * 还是拿不到就返回 null —— 与其猜一个端口连出个假数字，不如让界面显示「—」。
+ */
+function probeTargetOf(n: NodeOption): ProbeTarget | null {
+  const port = n.port && n.port > 0 ? n.port : clientState.platform.relayPort;
+  return port > 0 ? { host: n.host, port } : null;
+}
+
+const latencyOf = (n: NodeOption): number | null => {
+  const target = probeTargetOf(n);
+  return target === null ? null : (latency.value[probeKey(target)] ?? null);
+};
+/** 按延迟排序；没测到的排在最后（但**仍然可选**） */
 const sortedNodes = computed(() =>
   [...nodeList.value].sort((a, b) => {
     const la = latencyOf(a);
@@ -99,7 +123,12 @@ async function probeNodes(): Promise<void> {
   if (nodeList.value.length === 0) return;
   probing.value = true;
   try {
-    latency.value = await window.mclink.ping(nodeList.value.map((n) => n.host));
+    /**
+     * 测的是**中继链接端口的 TCP 握手**（tcping，不是 ICMP）：DNS + 路由 + 端口放行 + 握手
+     * 全算在内，与真正建房走的是同一条路径。
+     */
+    const targets = nodeList.value.map(probeTargetOf).filter((t): t is ProbeTarget => t !== null);
+    latency.value = targets.length > 0 ? await window.mclink.tcping(targets) : {};
   } catch {
     /* 探测失败就整体留空，界面显示 — */
   } finally {
@@ -346,7 +375,7 @@ async function resume(room: Room): Promise<void> {
                   <span class="roster-name">{{ n.name }}</span>
                   <span class="roster-sub">{{ regionLabel(n.region) }} · 承载 {{ n.peers }}/{{ n.capacity }}</span>
                 </span>
-                <!-- ping 只用来展示与排序：超时显示 —，但仍然可选（有些节点丢 ICMP 但中继正常） -->
+                <!-- 延迟只用来展示与排序：没测到显示 —，但仍然可选（一次握手超时可能只是抖动） -->
                 <span class="badge" :class="latencyOf(n) === null ? 'badge-neutral' : 'badge-ok'">
                   {{ latencyOf(n) === null ? '—' : `${latencyOf(n)} ms` }}
                 </span>

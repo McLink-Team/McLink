@@ -33,14 +33,31 @@ export interface AppInfo {
 /** 关闭窗口时的行为：询问 / 最小化到托盘 / 彻底退出 */
 export type CloseAction = 'ask' | 'tray' | 'quit';
 
+/**
+ * TCP 延迟探测的目标：中继节点的**链接地址**（host + 端口）。
+ * 端口是客户端真正要连的那个（主控按链接端口下发，见 server/src/db/nodes.ts）。
+ */
+export interface ProbeTarget {
+  host: string;
+  port: number;
+}
+
+/** 探测结果的键：与主进程 `net:tcping` 的返回键一致（`host:port`） */
+export function probeKey(target: ProbeTarget): string {
+  return `${target.host}:${target.port}`;
+}
+
 export interface MclinkBridge {
   info(): Promise<AppInfo>;
   freePort(): Promise<number>;
   /**
-   * ICMP 延迟探测（建房页选节点用）：返回每个主机的最小时延，超时为 null。
-   * **只用于展示与排序** —— ping 不通不代表节点不可用（部分主机会丢 ICMP 但中继端口正常）。
+   * TCP 延迟探测（tcping，建房页选节点用）：对每个中继的链接端口做一次 TCP 握手，
+   * 返回 `{ "host:port": 最小时延 ms | null }`，超时或连不上是 null。
+   *
+   * 为什么不是 ICMP：量的是**真正要走的那个端口**，"连不上"因此基本等于"用不了"。
+   * 但仍然**只用于展示与排序** —— 单次超时可能只是抖动，不该让节点从选单里消失。
    */
-  ping(hosts: string[]): Promise<Record<string, number | null>>;
+  tcping(targets: ProbeTarget[]): Promise<Record<string, number | null>>;
   openPath(target: string): Promise<string>;
   openExternal(url: string): Promise<void>;
   relaunchElevated(): Promise<{ ok: boolean; error?: string }>;

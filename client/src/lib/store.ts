@@ -86,6 +86,12 @@ const state = reactive({
     requireEmailVerification: false,
     emailServiceAvailable: false,
     registrationOpen: true,
+    /**
+     * 平台默认中继端口（来自 /meta）。
+     * 建房页按「节点链接端口」做 TCP 延迟探测，只有老主控的节点列表里没有端口，
+     * 那时用它兜底；`0` = 不知道，就别去猜端口了。
+     */
+    relayPort: 0,
   },
   /** 邮箱验证状态（来自 /auth/email） */
   email: {
@@ -295,6 +301,7 @@ export async function loadPlatformInfo(): Promise<void> {
       requireEmailVerification: meta.requireEmailVerification === true,
       emailServiceAvailable: meta.emailServiceAvailable === true,
       registrationOpen: meta.registrationOpen !== false,
+      relayPort: Number.isInteger(meta.relayPort) ? meta.relayPort : 0,
     };
     // 顺手复查一次新版本：登录前后都该能发现
     void checkForUpdate(meta);

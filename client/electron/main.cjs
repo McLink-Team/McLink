@@ -9,15 +9,14 @@
  * 而虚拟网络必须一直在后台跑着。
  */
 const { app, BrowserWindow, Tray, Menu, ipcMain, shell, dialog, nativeImage, nativeTheme } = require('electron');
-const { spawn, spawnSync, execFile } = require('node:child_process');
-const { promisify } = require('node:util');
-const execFileAsync = promisify(execFile);
+const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const net = require('node:net');
 const os = require('node:os');
 const { decideElevation, buildElevateCommand } = require('./elevation.cjs');
 const { normalizeCloseAction, resolveCloseChoice } = require('./close-action.cjs');
+const { tcpPingAll } = require('./tcping.cjs');
 
 const isDev = !app.isPackaged;
 /** 只有显式设置了该变量（scripts/dev.mjs 会设置）才去连开发服务器 */
@@ -1242,42 +1241,12 @@ function registerIpc() {
   }));
 
   /**
-   * ICMP 延迟探测（建房页选节点时用）。
+   * TCP 延迟探测（建房页选节点时用）—— tcping，**不是 ICMP**。
    *
-   * 为什么直接调系统 `ping`：Node 没有原生 ICMP，引一个第三方库只为了发几个
-   * echo 请求不划算；三平台的 `ping` 普通用户就能用（Windows 走 ICMP API、
-   * macOS/Linux 的 unprivileged ICMP），所以零依赖、零提权。
-   *
-   * 结果**只用于展示与排序**：ping 不通不代表节点不能用（有些主机丢 ICMP 但中继端口正常），
-   * 所以超时返回 null，由界面显示"—"，绝不参与可用性判断。
+   * 判定与实现都放在 `electron/tcping.cjs`（纯逻辑，可离线断言，见
+   * `client/scripts/verify-tcping.mjs`）；这里只做 IPC 边界，不掺业务。
    */
-  ipcMain.handle('net:ping', async (_event, hosts) => {
-    const list = (Array.isArray(hosts) ? hosts : []).slice(0, 16).filter((h) => typeof h === 'string' && /^[A-Za-z0-9._:-]+$/.test(h));
-    const out = {};
-    await Promise.all(
-      list.map(async (host) => {
-        const args =
-          process.platform === 'win32'
-            ? ['-n', '2', '-w', '1200', host]
-            : ['-c', '2', '-W', '1', host];
-        try {
-          const res = await execFileAsync('ping', args, { timeout: 5000, windowsHide: true });
-          /**
-           * **不要匹配 "time"/"时间" 这类词**：Windows 的 ping 按系统代码页输出，
-           * 中文系统下 Node 按 UTF-8 解码会得到乱码（`时间` → `ʱ��`），
-           * 词匹配就全废了 —— 实测踩过：PowerShell 里看是好的，Node 里一个也匹配不上。
-           * 只认 `<数字>ms` / `=<数字>ms`：`ms` 在任何语言里都是 ASCII，
-           * 而 ping 输出里带 ms 的只有延迟（字节数后面跟的是「字节」/「bytes」）。
-           */
-          const matches = [...String(res.stdout ?? '').matchAll(/[=<]\s*([\d.]+)\s*ms/gi)];
-          out[host] = matches.length > 0 ? Math.min(...matches.map((m) => Number(m[1]))) : null;
-        } catch {
-          out[host] = null;
-        }
-      }),
-    );
-    return out;
-  });
+  ipcMain.handle('net:tcping', (_event, targets) => tcpPingAll(targets));
   ipcMain.handle('app:freePort', () => freePort());
   ipcMain.handle('app:openPath', (_e, target) => shell.openPath(String(target)));
   ipcMain.handle('app:openExternal', (_e, url) => shell.openExternal(String(url)));
