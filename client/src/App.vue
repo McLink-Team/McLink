@@ -126,7 +126,14 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown));
 </script>
 
 <template>
-  <div class="app-root">
+  <!--
+    根节点保留 `app-shell` 这个类名：styles.css 里那套组件样式（房间页、设置页、
+    聊天、诊断…）**大半写成 `.app-shell …` 后代选择器**。换外壳时把它改名成
+    app-root，等于让那些规则全部失效 —— 表现是文字挤成一坨、间距全丢
+    （实测：连接诊断的节点列表就是这么坏掉的）。新外壳的样式挂在 app-root 上，
+    两个类名并存，谁也不挡谁。
+  -->
+  <div class="app-shell app-root">
     <!--
       未提权横幅放在最上面：登录页、验证邮箱页、主界面每一屏都能看到 ——
       玩家没提权时最常停在登录页，放里面等于看不到。
