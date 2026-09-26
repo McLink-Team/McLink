@@ -15,6 +15,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { formatRelativeTime, Routes, type ChatMessage } from '@mclink/shared';
 import { ApiRequestError, api, friendlyError } from '../lib/api.ts';
+import { confirmInApp } from '../lib/confirm.ts';
 import { clientState, onRoomChat } from '../lib/store.ts';
 
 interface MessagesResponse {
@@ -153,10 +154,13 @@ function canDelete(message: ChatMessage): boolean {
 
 async function remove(message: ChatMessage): Promise<void> {
   const preview = message.body.length > 40 ? `${message.body.slice(0, 40)}…` : message.body;
-  const ok = await window.mclink.confirm({
+  const ok = await confirmInApp({
     title: '删除消息',
     message: `确定删除这条消息吗？（${message.displayName}：${preview}）`,
     detail: '删除后房间里的所有人都看不到这条消息了，且无法恢复。',
+    confirmText: '删除消息',
+    // 不可恢复，且对房间里所有人可见地消失：破坏性动作
+    danger: true,
   });
   if (!ok) return;
   error.value = '';
