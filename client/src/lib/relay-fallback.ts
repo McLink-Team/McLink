@@ -1,10 +1,17 @@
 /**
- * 「P2P 质量差 → 回落中继」的判据、票据改写与本机偏好。
+ * 「到房主的链路质量差 → 回落中继」的判据、票据改写与本机偏好。
  *
- * 为什么需要它：打洞成功不等于链路可用。P2P 直连走的是两个玩家各自的家宽，
+ * 为什么需要它：打洞成功不等于链路可用。到房主那条直连走的是两个玩家各自的家宽，
  * 中间任何一跳拥塞都会表现为**丢包**——延迟看着还行（20ms），但游戏里人物会回弹。
  * 这种时候绕一次中继反而更稳。EasyTier 自己一直在算丢包（`loss_rate`，
  * 最近 100 次探测的滑动窗口），`peer list` 里就有这一列，我们只需要读出来 + 决定要不要绕。
+ *
+ * ⚠️ 判据的**对象**在这一版被纠正过（用户实测指出）：
+ * `cost = p2p` 只表示"**本机到那个节点**之间是直连"，**不是**"玩家之间的 P2P"——
+ * 我们到平台下发的中继节点本来就常常是直连。上一版按 `cost = p2p` 取最大值，
+ * 于是"到中继服务器的直连"被当成了"玩家间的直连"：房间里四条连接全是中继节点，
+ * 却弹出「P2P 直连在丢包（最高 8.0%）」，而 8% 那条正是 `PublicServer_relay-sh`。
+ * 现在只认一条链路：**本机 → 房主**（房主跑着游戏服务端，它才决定游戏手感）。
  *
  * 这个文件只放**纯函数与偏好读写**（可以在没有 Electron、没有网络的情况下离线校验，
  * 见 client/scripts/verify-relay-fallback.mjs）。真正跑时钟、重启核心的状态机在
@@ -54,7 +61,7 @@ export const TRIGGER_WINDOWS = 3;
 export const AB_OBSERVE_MS = 20_000;
 
 /**
- * 中继侧自己也丢 ≥2% → 判定"问题不在 P2P 那段"。
+ * 中继侧自己也丢 ≥2% → 判定"问题不在到房主那段直连"。
  * （中继在丢，说明丢包发生在更靠上游或对端那侧，换路解决不了。）
  */
 export const AB_RELAY_LOSS_TOLERANCE = 0.02;
@@ -175,40 +182,78 @@ export function bestRoutes(peers: readonly PeerView[]): RouteSample[] {
   }));
 }
 
-export interface P2pQuality {
-  /** 测得丢包的 P2P 节点数 */
-  measured: number;
-  /** 这些节点是否**全部**超标 */
-  allOver: boolean;
-  /** 其中最高的丢包率（没测到时为 null） */
-  worstLoss: number | null;
+/** 虚拟地址可能带 /24 掩码（本机那一行就是），比较前统一剥掉 */
+function bareIp(value: string | null | undefined): string {
+  return (value ?? '').split('/')[0] ?? '';
 }
 
 /**
- * P2P 侧质量快照。
+ * 「本机 → 房主」那一条链路 —— **丢包判定唯一的对象**。
  *
- * 为什么触发条件要求"**所有**测得到的 P2P 节点都超标"，而不是"有任何一个超标"：
- * `disable_p2p` 是**本实例全局**的开关，一开就把全部直连路径一起关掉。
- * 一个三人房间里只有一个人丢包时，为了他绕中继会把另外两条好链路一起拖慢 ——
- * 净效果未必是改善。所以自动回落只在"直连整体不行"时动作；
- * 单个人劣化属于"玩家自己判断"的场景，交给房间页那个手动开关。
+ * 为什么必须是它，而不是"所有 cost = p2p 的节点里最差的那条"：
+ *   · cost = p2p 只说明**本机到那个节点**是直连，平台中继节点通常也是直连的，
+ *     把它们算进来就会出现"全是中继节点却在报 P2P 丢包"这种自相矛盾的提示；
+ *   · 玩家感知到的卡顿只来自**跑着游戏服务端的那台机器**（房主），
+ *     其它成员/中继节点的丢包是它们自己的质量，不该替玩家下结论。
+ *
+ * 归并口径与界面一致（同一虚拟地址有多条记录时 p2p 优先、其次延迟低），
+ * 这样"提示里的数字"和"连接路径里那一行"永远是同一个数。
+ *
+ * `isHost = true`（本机就是房主）时返回 null：没有"到自己的链路"这回事。
  */
-export function p2pQuality(peers: readonly PeerView[]): P2pQuality {
-  const direct = bestRoutes(peers).filter((r) => linkKind(r.cost) === 'p2p' && r.lossRate !== null);
-  if (direct.length === 0) return { measured: 0, allOver: false, worstLoss: null };
-  const losses = direct.map((r) => r.lossRate ?? 0);
+export function hostRoute(peers: readonly PeerView[], hostIp: string, isHost = false): RouteSample | null {
+  if (isHost) return null;
+  const target = bareIp(hostIp);
+  if (target.length === 0) return null;
+  return bestRoutes(peers).find((r) => bareIp(r.key) === target) ?? null;
+}
+
+export interface HostLinkQuality {
+  /** 房主的虚拟地址（裸地址）；空串 = 拿不到（不在房间 / 票据没带） */
+  hostIp: string;
+  /** 到房主那条链路（归并后）；null = 本机是房主，或 peer list 里还没有房主 */
+  route: RouteSample | null;
+  /** 到房主走的是 P2P 直连 —— 只有这种情况才谈得上"强制走中继" */
+  direct: boolean;
+  /** 到房主**直连**的丢包率；null = 这一窗没有可判断的样本 */
+  lossRate: number | null;
+  /** lossRate 是否超过阈值（lossRate 为 null 时 false） */
+  over: boolean;
+}
+
+/**
+ * 「到房主」这一条链路的质量快照 —— 房间页提示、连接诊断、自动回落**共用它**。
+ *
+ * 三处共用同一个纯函数，是为了让口径不可能漂移：上一版的毛病正是
+ * 列表按"是不是平台中继"分组、而提示按 `cost` 判定，两套口径各说各话。
+ *
+ * 有效样本（lossRate 非 null）要求三件事同时成立：
+ *   1. 本机**不是**房主 —— 本机是房主时没有"到房主"的链路，判定不适用；
+ *   2. 到房主是**直连**（cost = p2p）—— 已经走中继的人，"强制走中继"对他毫无意义；
+ *   3. 那条链路**测到了读数** —— 拿不到读数（旧版本/刚进房）时不拿未知当证据。
+ *
+ * 中继节点自己丢多少包**不进这里**：界面上照常逐行显示（那是它自己的质量），
+ * 但它不驱动任何结论、提示与回落。
+ */
+export function hostLinkQuality(peers: readonly PeerView[], hostIp: string, isHost = false): HostLinkQuality {
+  const route = hostRoute(peers, hostIp, isHost);
+  const direct = route !== null && linkKind(route.cost) === 'p2p';
+  const lossRate = direct ? route.lossRate : null;
   return {
-    measured: direct.length,
-    allOver: losses.every((loss) => loss > LOSS_THRESHOLD),
-    worstLoss: Math.max(...losses),
+    hostIp: bareIp(hostIp),
+    route,
+    direct,
+    lossRate,
+    over: lossRate !== null && lossRate > LOSS_THRESHOLD,
   };
 }
 
 /**
- * A/B 对照：切到中继之后，同一个人现在这条路是不是比刚才的直连更差。
+ * A/B 对照：切到中继之后，**到房主**现在这条路是不是比刚才的直连更差。
  *
- * 只在**同一个节点**上前后对比（key 是虚拟地址），不拿 A 的中继延迟去比 B 的直连延迟 ——
- * 不同的人在不同城市，横向比毫无意义。
+ * 只在**同一个节点**上前后对比（key 是虚拟地址）—— 自动回落的基线现在只有一条
+ * （`hostRoute` 取到的那条，也就是房主），切到中继后再取一次同一个地址，
+ * 所以比较天然落在"我到房主：直连 vs 中继"上，不会拿 A 的中继延迟去比 B 的直连延迟。
  * 返回 true 表示"中继更差，这次判断不可信，应该切回去"。
  */
 export function relayLooksWorse(baseline: readonly RouteSample[], after: readonly RouteSample[]): boolean {

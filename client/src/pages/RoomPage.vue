@@ -30,6 +30,7 @@ import {
   approveMember,
   clientState,
   closeRoom,
+  hostVirtualIp,
   isHost,
   isOnline,
   kickMember,
@@ -43,7 +44,8 @@ import {
   updateRoomPolicy,
 } from '../lib/store.ts';
 import type { PeerView } from '../lib/easytier-parse.ts';
-import { LOSS_THRESHOLD, formatLoss } from '../lib/relay-fallback.ts';
+import { linkKind } from '../lib/easytier-parse.ts';
+import { LOSS_THRESHOLD, formatLoss, hostLinkQuality } from '../lib/relay-fallback.ts';
 import { friendlyError } from '../lib/api.ts';
 import { copyText } from '../lib/clipboard.ts';
 import { confirmInApp } from '../lib/confirm.ts';
@@ -231,26 +233,78 @@ const carriesTraffic = (p: PeerView): boolean => p.rxBytes + p.txBytes > 0;
 /**
  * 丢包读数与提示。
  *
- * 判据只在 **P2P 那一侧**：经中继的路径丢包是"中继/上游的事"，
- * 劝玩家"强制走中继"对他毫无帮助（他已经在走中继了）。
+ * **判据只有一条链路：本机 → 房主**。口径由 `lib/relay-fallback.ts` 的
+ * `hostLinkQuality` 统一给出 —— 房间页、连接诊断、自动回落共用同一个纯函数，
+ * 免得三处各写一套（上一版的毛病正是列表按"是不是平台中继"分组、
+ * 而提示按 `cost` 判定，两套口径互相矛盾）。
+ *
+ * 为什么不能按 `cost = p2p` 判定（上一版的 bug，用户实测抓到）：
+ * `cost = p2p` 只说明**本机到那个节点**之间是直连 —— 我们到平台下发的中继节点
+ * 本来就常常是直连。上一版取"所有 p2p 里最大的丢包"，于是"到中继服务器的直连"
+ * 被当成了"玩家之间的 P2P"：房间里四条连接全是中继节点（`PublicServer_阿里云上海` /
+ * `广州腾讯云` / `relay-sh` / `德国9929`），顶部却报「P2P 直连在丢包（最高 8.0%）」，
+ * 而 8% 那条正是中继 `PublicServer_relay-sh`。
+ * 真正决定游戏手感的只有房主那条链路：房主跑着游戏服务端。
+ *
+ * 用户给的四条规则在下面各有一处落点：
+ *   1. 只看到房主那条（按**虚拟地址**在 peer list 里匹配，不按 cost）；
+ *   2. 本机是房主 → 值为 null、提示不出现，位置上给一句"这项不适用"的说明；
+ *   3. 中继节点自己的丢包照常逐行显示（那是它的质量），但不进这个结论；
+ *   4. 非房主但到房主走中继 → 不判定、不提示（他已经在走中继了，
+ *      "强制走中继"对他没有任何意义）。
+ *
  * 颜色只是强化 —— 数字本身（`丢包 5.3%` vs `丢包 0.0%`）就是文字通道，
- * 而且高出阈值时下面还会多出那条带动作的提示，不靠颜色单独传达任何东西。
+ * 而且高出阈值时上面还会多出那条带动作的提示，不靠颜色单独传达任何东西。
  */
 const isHighLoss = (p: PeerView): boolean => p.lossRate !== null && p.lossRate > LOSS_THRESHOLD;
 
-const p2pLoss = computed<number | null>(() => {
-  const direct = visiblePeers.value.filter((p) => p.cost.startsWith('p2p') && p.lossRate !== null);
-  if (direct.length === 0) return null;
-  return Math.max(...direct.map((p) => p.lossRate ?? 0));
-});
+/** 到房主那条链路的质量快照（本页唯一判据；房主本人的 hostVirtualIp 是自己的地址） */
+const hostLink = computed(() => hostLinkQuality(clientState.peers, hostVirtualIp.value, isHost.value));
+/** 到房主的**直连**丢包；null = 本机是房主 / 走中继 / 还没读数 —— 三种都"不判定" */
+const hostLoss = computed(() => hostLink.value.lossRate);
 
 /** 已经走中继时不再劝他走中继 —— 提示只在"还能选择"的时候出现 */
-const lossTipVisible = computed(() => relayMode.value === 'off' && p2pLoss.value !== null && p2pLoss.value > LOSS_THRESHOLD);
+const lossTipVisible = computed(() => relayMode.value === 'off' && hostLink.value.over);
 
+/**
+ * 提示条不出现时，同一个位置上的那一行说明 —— **不留空判定**。
+ *
+ * 房主看到的是"这项不适用"（而不是一个永远为空的指标）；非房主看到的是
+ * "到房主现在走的是什么路、丢多少" —— 这样"P2P 丢包只看房主那条"这条规则
+ * 在界面上是看得见的，玩家也能自己判断这条读数可不可信。
+ */
+const hostLinkNote = computed<string>(() => {
+  if (isHost.value) return '你是房主：房间里所有人都是连到你，没有「本机 → 房主」这条链路，这项不适用。';
+  const q = hostLink.value;
+  if (!q.route) return '到房主：连接路径里还没有房主的节点（等下一次刷新）。';
+  // 走中继时如实报中继链路自己的读数（规则 3），但说清它不参与 P2P 结论（规则 4）
+  if (!q.direct) return `到房主：经中继，丢包 ${formatLoss(q.route.lossRate)}（中继自身的质量，不参与 P2P 判定）。`;
+  return `到房主：P2P 直连，丢包 ${formatLoss(q.lossRate)}。`;
+});
+
+/**
+ * 行内丢包读数的 title。
+ *
+ * 「可以强制走中继」这句建议**只有到房主的那条直连**配说 —— 上一版只要
+ * `cost = p2p` 就挂上这句，而本机到中继节点往往也是直连，于是中继节点自己丢包
+ * 也会被劝"强制走中继"（他已经在走中继了，这话毫无意义）。
+ */
 function lossTitle(p: PeerView): string {
   const base = 'EasyTier 统计的丢包率（最近 100 次探测的滑动窗口）';
   if (!isHighLoss(p)) return base;
-  return p.cost.startsWith('p2p') ? `${base}：这条直连在丢包，可以强制走中继` : `${base}：这条路径在丢包`;
+  const isHostRow = (p.ipv4 || '').split('/')[0] === hostVirtualIp.value;
+  if (isHostRow) {
+    return linkKind(p.cost) === 'p2p'
+      ? `${base}：这是到房主的直连在丢包，可以强制走中继`
+      : `${base}：这是到房主的路径，走的是中继（中继自身在丢包，换路解决不了）`;
+  }
+  if (isMemberPeer(p)) {
+    return linkKind(p.cost) === 'p2p'
+      ? `${base}：这条直连在丢包，但它不是到房主的那条（判定只看房主）`
+      : `${base}：这条路径在丢包（经中继，不是直连）`;
+  }
+  // 平台中继节点：本机到它常常是直连，但那不是"玩家之间的 P2P"
+  return `${base}：这条中继路径在丢包（中继自身的质量，不参与 P2P 判定）`;
 }
 
 /* ------------------------------------------------ 「强制走中继」开关的四种状态 */
@@ -285,7 +339,8 @@ const relayTitle = computed(() => {
     case 'on':
       return '点一下切回 P2P 直连（会重启本地核心，中断几秒）';
     default:
-      return '强制走中继：所有流量经中继转发，绕开丢包的 P2P 直连（会重启本地核心，中断几秒）';
+      // 「直连」而不是「P2P 直连」：本机到中继节点也是直连，用"P2P"会把它一起说进去
+      return '强制走中继：所有流量经中继转发，绕开丢包的直连（会重启本地核心，中断几秒）';
   }
 });
 
@@ -297,11 +352,8 @@ const relayStateText = computed(() => {
   if (relayMode.value === 'policy') return '房主已关闭 P2P 直连，全房间走中继。';
   if (relayMode.value === 'switching') return '正在切换，几秒内恢复。';
   if (clientState.relayNotice) return clientState.relayNotice;
-  if (relayMode.value === 'on') {
-    return clientState.forceRelaySource === 'auto'
-      ? '已自动切到中继：P2P 直连丢包持续偏高。'
-      : '已切到中继：所有流量经中继转发。';
-  }
+  // 结果行（"是谁切的、为什么"）由 store 的 setForceRelay 给；这里只兜住它被清空之后的情况
+  if (relayMode.value === 'on') return '已切到中继：所有流量经中继转发。';
   return '';
 });
 
@@ -634,13 +686,20 @@ async function doLeave(): Promise<void> {
             放在**分组之上**：这一栏里其它东西都是"读一眼"，只有它是"要做点什么"，
             而玩家的窗口本来就常常是被切出去看一眼再切回来的（见 PRODUCT.md），
             埋在两张分组表下面等于没人看见。已经走中继时不再出现。
+
+            判据是「本机 → 房主」那条链路，**不是**"任意 cost = p2p 的节点"：
+            本机到平台中继节点往往也是直连，按 cost 判定就会在"房间里全是中继节点"时
+            误报 P2P 丢包（用户实测截图）。房主本人看不到这条提示 ——
+            他没有"到房主"的链路，同一个位置换成一句"这项不适用"的说明，
+            而不是留一个永远为空的指标。
           -->
           <div v-if="lossTipVisible" class="alert alert-warn loss-tip">
-            <span class="grow">P2P 直连在丢包（最高 {{ formatLoss(p2pLoss) }}）。</span>
+            <span class="grow">到房主的直连在丢包（{{ formatLoss(hostLoss) }}）。</span>
             <button class="btn btn-sm" type="button" :disabled="relayDisabled" @click="doToggleRelay()">
               强制走中继
             </button>
           </div>
+          <p v-else class="hint host-link-note">{{ hostLinkNote }}</p>
 
           <template v-if="visiblePeers.length > 0">
             <!-- 房间成员：这里才是"我和谁连上了、是直连还是绕路" -->
@@ -1349,6 +1408,17 @@ async function doLeave(): Promise<void> {
   align-items: center;
   flex-wrap: wrap;
   gap: var(--s-2);
+}
+
+/*
+ * 「到房主」那一行说明：提示条不出现时它就在同一个位置。
+ * 把"这一次判定看的是哪条链路"直接写出来（房主看到的是"这项不适用"），
+ * 所以它不能是一个空指标 —— 四种情况（房主本人 / 还没有房主节点 /
+ * 到房主走中继 / 到房主直连）都有各自的一句话。
+ * 尺寸与颜色沿用 .hint 那一档，只把段落外边距收掉，避免在 .stack 里多出一段空隙。
+ */
+.host-link-note {
+  margin: 0;
 }
 
 /* ------------------------------------------------------------------ 帮助入口 */

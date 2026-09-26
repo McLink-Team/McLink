@@ -14,7 +14,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { formatBytes, formatRelativeTime } from '@mclink/shared';
 import { friendlyError } from '../lib/api.ts';
-import { clientState } from '../lib/store.ts';
+import { clientState, hostVirtualIp, isHost } from '../lib/store.ts';
 import {
   extractNodeFacts,
   linkKind,
@@ -26,7 +26,7 @@ import {
   type PeerView,
 } from '../lib/easytier-parse.ts';
 import type { AppInfo } from '../lib/bridge.ts';
-import { LOSS_THRESHOLD, formatLoss } from '../lib/relay-fallback.ts';
+import { LOSS_THRESHOLD, formatLoss, hostLinkQuality } from '../lib/relay-fallback.ts';
 
 interface Advice {
   level: 'ok' | 'warn' | 'danger' | 'info';
@@ -60,17 +60,25 @@ const directPeers = computed(() => remotePeers.value.filter((p) => linkKind(p.co
 const relayPeers = computed(() => remotePeers.value.filter((p) => linkKind(p.cost) !== 'p2p'));
 
 /**
- * 丢包：只对**直连**那一侧下判断。
+ * 丢包：只看「本机 → 房主」那一条链路 —— 与房间页共用同一个纯函数
+ * （`hostLinkQuality`），两处口径不可能漂移。
  *
- * 经中继路径的丢包说明问题在中继或更上游，跟"要不要绕开直连"是两回事；
- * 混在一起提示会让玩家按一个帮不上忙的建议去操作。
+ * 语义纠正（用户实测抓到的那次误报）：`cost = p2p` 只说明**本机到那个节点**
+ * 之间是直连，**不是**"玩家之间的 P2P"—— 我们到平台下发的中继节点通常也是直连。
+ * 上一版取"所有直连里最高的丢包"，于是"到中继服务器的直连"被当成了玩家间的直连：
+ * 房间里四条连接全是中继节点，面板却在报「P2P 直连在丢包」。
+ * 现在：中继节点自己的丢包照常逐行显示（那是它自己的质量），但不参与任何结论；
+ * 只有"非房主 + 到房主是直连 + 那条链路超标"才给建议。
  */
 const isHighLoss = (p: PeerView): boolean => p.lossRate !== null && p.lossRate > LOSS_THRESHOLD;
-const badDirectPeers = computed(() => directPeers.value.filter(isHighLoss));
-const worstDirectLoss = computed<number | null>(() => {
-  if (badDirectPeers.value.length === 0) return null;
-  return Math.max(...badDirectPeers.value.map((p) => p.lossRate ?? 0));
-});
+
+/**
+ * 这里的判据用**本面板自己刚查回来的那份** `peers`（不是 store 里的心跳快照）：
+ * 下面的节点行就是它渲染的，结论与眼前的读数必须是同一份数据。
+ * 房主的虚拟地址与"我是不是房主"来自房间会话（clientState.session），
+ * 那是面板自己查不到的事实。
+ */
+const hostLink = computed(() => hostLinkQuality(peers.value, hostVirtualIp.value, isHost.value));
 
 /**
  * 「换一个更近的区域」这条建议只在**所有节点都慢**时才给。
@@ -121,13 +129,33 @@ const advice = computed<Advice[]>(() => {
     });
   }
   /*
-   * 直连在丢包：这是「打洞成功但质量极差」那一种，延迟看着正常、游戏里却回弹。
-   * 一句话结论 + 一个动作（用户明确要求不长篇解释内部机制）。
+   * 「到房主」这条链路本身的情况 —— 它是本页唯一的丢包判据，四种状态各有话说：
+   *   房主本人（不适用）/ 还没看到房主 / 到房主走中继（没有直连可判断）/
+   *   到房主的直连在丢包（给建议）。
+   * 这段取代了上一版的「P2P 直连在丢包（最高 X%），可以强制走中继」——
+   * 那句话的判据是 `cost = p2p`，而本机到中继节点往往也是直连，
+   * 于是中继自己丢包也会被算成"玩家间直连在丢包"（用户截图里的误报）。
+   * 一句话结论 + 一个动作，不在这里长篇解释内部机制。
    */
-  if (worstDirectLoss.value !== null) {
+  if (isHost.value) {
+    list.push({
+      level: 'info',
+      text: '你是房主：房间里所有人都是连到你，本机没有「到房主」这条链路，因此不做 P2P 丢包判定。',
+    });
+  } else if (hostLink.value.route === null) {
+    list.push({
+      level: 'info',
+      text: '连接路径里还没有房主的节点（刚进房时隧道还在建），等下一次刷新再看「到房主」的丢包。',
+    });
+  } else if (!hostLink.value.direct) {
+    list.push({
+      level: 'info',
+      text: `到房主当前经中继（丢包 ${formatLoss(hostLink.value.route.lossRate)}）：这条读数不参与 P2P 判定 —— 已经在走中继，没有可以再切的直连。`,
+    });
+  } else if (hostLink.value.over) {
     list.push({
       level: 'warn',
-      text: `P2P 直连在丢包（最高 ${formatLoss(worstDirectLoss.value)}），可以强制走中继。`,
+      text: `到房主的直连在丢包（${formatLoss(hostLink.value.lossRate)}），可以强制走中继。`,
     });
   }
   if (allPeersSlow.value) {
