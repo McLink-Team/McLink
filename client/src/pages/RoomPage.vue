@@ -376,7 +376,11 @@ async function doClose(): Promise<void> {
       <button class="addr-hit" type="button" title="点击复制联机地址" @click="copyAddress()">
         <span class="addr-label">联机地址</span>
         <span class="addr-value">{{ shareAddress ?? '等待分配…' }}</span>
-        <span class="addr-hint">点一下即复制；朋友在游戏里「多人游戏 → 直接连接」粘贴</span>
+        <span class="addr-hint">
+          点一下即复制。注意：<b>不少游戏要连端口</b>，写法是 <span class="mono">地址:端口</span>
+          —— 端口看游戏里的提示（Minecraft 在「对局域网开放」那一屏，泰拉瑞亚默认 7777），
+          各游戏怎么写见下面的「联机帮助」。
+        </span>
       </button>
       <button class="btn btn-primary" type="button" :disabled="!shareAddress" @click="copyAddress()">
         {{ copied === 'addr' ? '已复制' : '复制' }}
@@ -468,17 +472,6 @@ async function doClose(): Promise<void> {
               <span class="mono faint roster-sub nowrap">{{ formatBytes(p.rxBytes + p.txBytes) }}</span>
             </div>
           </div>
-          <p class="hint" style="margin-top: var(--s-2)">
-            <template v-if="relayPeers.length > 1">
-              这里有 {{ relayPeers.length }} 个中继，是刻意留的<strong>冗余</strong>：它们同时连着，用于协助打洞、
-              以及某个中继不可用时顶上，但同一时刻只有一个在转发你的流量，所以不会叠加延迟 ——
-              其余几条只有心跳流量（行尾的字节数就是证据）。
-            </template>
-            <template v-else>
-              这是平台下发的中继入口：负责协助打洞，并在直连失败时转发你的流量。
-              等两个玩家之间打通直连，数据会改走直连，它退成兜底。
-            </template>
-          </p>
         </div>
       </template>
       <p v-else class="hint">还没有发现其它节点。等成员进来后这里会显示他们。</p>

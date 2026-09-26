@@ -938,20 +938,6 @@ async function applyAcl(aclToml) {
  *   · `titleBarStyle: 'hidden'` 让系统只保留阴影与圆角，不给标题栏
  */
 /**
- * 系统版本一行字（底部左下角显示）。
- *
- * Windows 上 `os.version()` 给的是 "Windows 11 Pro"、`os.release()` 给的是
- * "10.0.22631" —— 两个拼起来才是玩家认得的说法。非 Windows 直接给原始值：
- * 客户端目前只有 Windows 发行版，不为没发行的平台编故事。
- */
-function osDetailLine() {
-  if (process.platform !== 'win32') return `${os.type()} ${os.release()}`;
-  const name = typeof os.version === 'function' ? os.version() : 'Windows';
-  const build = /^\d+\.\d+\.(\d+)/.exec(os.release())?.[1];
-  return build ? `${name} · Build ${build}` : name;
-}
-
-/**
  * 窗口默认尺寸：**横向宽窗**。
  *
  * 原来是 460×720 的窄竖窗（单列）。改成 940×580 是因为外壳换成了
@@ -1237,11 +1223,6 @@ function registerIpc() {
     /** true = 正在用软件渲染（此前观测到 GPU 进程异常，或设了 MCLINK_DISABLE_GPU=1） */
     softwareRendering,
     hostname: os.hostname(),
-    /**
-     * 系统版本一行字（形如 `Windows 11 Pro · Build 22631`），显示在底部左下角。
-     * 参照稿那个位置放的就是它 —— 排查问题时"他是什么系统"往往第一个被问。
-     */
-    osDetail: osDetailLine(),
   }));
 
   /**
