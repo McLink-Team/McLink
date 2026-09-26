@@ -224,6 +224,57 @@ function drawIcon(size) {
   return rgba;
 }
 
+/**
+ * macOS 菜单栏（托盘）用的**模板图**。
+ *
+ * 为什么不复用 icon.png：菜单栏高度只有 22px，而那个图标是"暖墨底 + 琥珀顶面"的实心方块 ——
+ * 缩到 18px 之后就是一块黑方块，深色菜单栏上直接看不见。Apple 的规矩是模板图：
+ * **只用 alpha**（纯色剪影），由系统按菜单栏明暗涂黑/涂白，点开菜单时还会反色。
+ * 所以这里画的是同一套几何的**线稿**：六边形轮廓 + 中间的 Y + 三颗信号点，
+ * 全部不透明黑；线宽按菜单栏尺寸放大（48 单位下 4.2，约等于 18px 上的 1.9px）——
+ * 1.7 的图标线宽在这个尺寸下会细到看不见。
+ *
+ * 尺寸一次出两档：22（1x）与 44（2x）。Electron 认 `xxx@2x.png` 这个命名约定，
+ * 会自动为 HiDPI 选 44 那张，所以调用方只需要指向 22 那张。
+ */
+function drawTrayTemplate(size) {
+  const SS = 4;
+  const N = size * SS;
+  const acc = new Float64Array(size * size); // 只要 alpha（模板图不带颜色）
+  // 菜单栏图标四周要留白：22px 的图里图形占 ~19px
+  const pad = N * 0.08;
+  const inner = N - pad * 2;
+  const scale = inner / ART.viewBox;
+  const strokeW = 4.2;
+
+  for (let sy = 0; sy < N; sy += 1) {
+    for (let sx = 0; sx < N; sx += 1) {
+      const ax = (sx + 0.5 - pad) / scale;
+      const ay = (sy + 0.5 - pad) / scale;
+      let cover = 0;
+      const hexEdges = ART.hex.map((p, i) => [p, ART.hex[(i + 1) % ART.hex.length]]);
+      for (const [a, b] of hexEdges) cover = Math.max(cover, Math.min(1, strokeW / 2 + 0.5 - distToSegment(ax, ay, a, b)));
+      for (const [a, b] of ART.yLines) cover = Math.max(cover, Math.min(1, strokeW / 2 + 0.5 - distToSegment(ax, ay, a, b)));
+      // 信号点画成实心：小尺寸下它们是最容易辨认的那三个"信号"
+      for (const pip of ART.pips) {
+        if (Math.hypot(ax - pip.x, ay - pip.y) <= pip.r + strokeW / 4) cover = 1;
+      }
+      // 累加到目标像素（超采样点先除以 SS 落到目标像素上，与 drawIcon 同一套做法）
+      acc[Math.floor(sy / SS) * size + Math.floor(sx / SS)] += cover * 255;
+    }
+  }
+
+  const samples = SS * SS;
+  const rgba = Buffer.alloc(size * size * 4);
+  for (let i = 0; i < size * size; i += 1) {
+    rgba[i * 4] = 0;
+    rgba[i * 4 + 1] = 0;
+    rgba[i * 4 + 2] = 0;
+    rgba[i * 4 + 3] = Math.round(acc[i] / samples);
+  }
+  return rgba;
+}
+
 /** 多尺寸 PNG 打包成 ICO（每个条目的宽度为 0 表示 256） */
 function packIco(entries) {
   const header = Buffer.alloc(6);
@@ -298,13 +349,22 @@ function main() {
   fs.writeFileSync(path.join(clientElectronAssets, 'icon.ico'), ico);
   // macOS：electron-builder 认 `icon.png` 并自己转 icns，取目录里最大的那张
   fs.writeFileSync(path.join(clientBuild, 'icon-1024.png'), macPngs[macPngs.length - 1].png);
+  /**
+   * macOS 菜单栏图标（同样只放在 electron/assets/：build/ 不进 app 包，
+   * 而托盘图标必须在运行时能读到）。
+   * 22 / 44 两档，命名用 Electron 认的 @2x 约定。
+   */
+  fs.writeFileSync(path.join(clientElectronAssets, 'tray-mac.png'), encodePng(22, 22, drawTrayTemplate(22)));
+  fs.writeFileSync(path.join(clientElectronAssets, 'tray-mac@2x.png'), encodePng(44, 44, drawTrayTemplate(44)));
   fs.writeFileSync(path.join(webPublic, 'favicon.svg'), FAVICON_SVG);
   fs.writeFileSync(path.join(webPublic, 'icon-256.png'), png256);
 
   console.log(`icon.ico   ${(ico.length / 1024).toFixed(1)} KB  ${SIZES.join('/')}  ${entries.length} 个尺寸`);
   console.log('  -> client/build/icon.ico（写进 exe / 安装器）');
-  console.log('  -> client/electron/assets/icon.ico（运行时窗口与托盘）');
+  console.log('  -> client/electron/assets/icon.ico（运行时窗口与 Windows 托盘）');
   console.log(`icon.png   ${(png256.length / 1024).toFixed(1)} KB  256x256 -> client/build/icon.png`);
+  console.log('icon-1024.png    -> client/build/icon-1024.png（macOS 的 .icns 来源，需 ≥512）');
+  console.log('tray-mac.png     -> client/electron/assets/（macOS 菜单栏模板图，22 + 44@2x）');
   console.log('favicon.svg      -> web/public/favicon.svg');
   console.log('icon-256.png     -> web/public/icon-256.png');
 }

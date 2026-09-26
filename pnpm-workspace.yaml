@@ -3,3 +3,8 @@ packages:
   - "server"
   - "web"
   - "client"
+  # Android 端（Capacitor 外壳 + 复用 client/src 的渲染层）。
+  # 作为工作区成员的理由：它能直接用 workspace:* 引 @mclink/shared，
+  # 并且 `pnpm -r typecheck` 会一并检查 android/web/src ——
+  # 否则它就是一个"没人跑的 typecheck"，迟早烂掉。
+  - "android"

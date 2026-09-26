@@ -8,8 +8,15 @@
  *
  * 关闭按钮仍然是**收进托盘**而不是退出（行为由偏好决定，见 SettingsPage 的
  * 「关闭窗口时」）：退出会把正在跑的房间网络一起关掉，误点代价太大。
+ *
+ * macOS 上这条栏**只留下拖动区与状态文字**，三个自绘按钮交给系统红黄绿：
+ *   · 位置在窗口左上角，而那一片现在是左侧图标栏（AppRail 顶部已经留出空白）；
+ *   · 系统按钮的行为（⌥ 绿灯=缩放、绿灯=全屏、VoiceOver）自绘模仿不来；
+ *   · 关窗语义在 mac 上本来就不等于退出，用系统按钮表达最不容易误解。
+ * 状态文字仍然留在右侧 —— 那是"现在通不通"，与平台无关，必须一眼看得到。
  */
 import { onMounted, onUnmounted, ref } from 'vue';
+import { isMac } from '../lib/platform.ts';
 
 const props = defineProps<{
   /** 当前页面名，显示在左侧（参考稿那里放的是应用名） */
@@ -37,14 +44,22 @@ async function close(): Promise<void> {
   await window.mclink.win.close();
 }
 
-/** 双击空白处切换最大化（系统的习惯动作，去掉原生标题栏后要自己补回来） */
+/**
+ * 双击空白处切换最大化（系统的习惯动作，去掉原生标题栏后要自己补回来）。
+ *
+ * macOS 上**不要**自己处理：那里的拖动区由系统接管双击，
+ * 行为跟随「系统设置 → 桌面与程序坞 → 双击标题栏时」的偏好（缩放/最小化），
+ * 我们再补一次 toggleMaximize 就会和系统动作打架（点一下动两次）。
+ */
 function onDoubleClick(event: MouseEvent): void {
+  if (isMac) return;
   const target = event.target as HTMLElement;
   if (target.closest('button')) return;
   void toggleMaximize();
 }
 
 onMounted(async () => {
+  if (isMac) return; // 没有自绘按钮，就不必问最大化状态（也就不会多一次 IPC）
   maximized.value = (await window.mclink.win.isMaximized()) ?? false;
   offMaximized = window.mclink.win.onMaximized((flag) => {
     maximized.value = flag;
@@ -54,7 +69,7 @@ onUnmounted(() => offMaximized?.());
 </script>
 
 <template>
-  <header class="titlebar" @dblclick="onDoubleClick">
+  <header class="titlebar" :class="{ 'titlebar-mac': isMac }" @dblclick="onDoubleClick">
     <h1 class="tb-title">{{ title }}</h1>
 
     <div class="tb-status" :title="label">
@@ -62,7 +77,8 @@ onUnmounted(() => offMaximized?.());
       <span class="tb-status-text">{{ label }}</span>
     </div>
 
-    <div class="tb-controls">
+    <!-- macOS：窗口控制由系统红黄绿担任，这里一个按钮都不画 -->
+    <div v-if="!isMac" class="tb-controls">
       <button class="tb-btn" type="button" title="最小化" aria-label="最小化" @click="minimize">
         <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 6h7" /></svg>
       </button>
@@ -109,6 +125,15 @@ onUnmounted(() => offMaximized?.());
 /* 按钮必须显式取消拖动，否则点不动 */
 .titlebar button {
   -webkit-app-region: no-drag;
+}
+
+/*
+ * macOS：右侧没有自绘按钮，状态文字就直接贴到窗口边了 ——
+ * 用与左侧同一个内边距收边（Windows 侧那 6px 是按钮容器自带的）。
+ * 高度不变（52px）：状态文字与系统红黄绿在视觉上仍是一条水平线。
+ */
+.titlebar-mac {
+  padding-right: var(--s-5);
 }
 
 .tb-title {

@@ -1,5 +1,5 @@
 /**
- * McLink Windows 客户端 —— Electron 主进程。
+ * McLink 客户端 —— Electron 主进程（Windows / macOS 共用一份）。
  *
  * 职责划分：
  *   主进程  = 唯一有权启动/停止 easytier-core、读写配置、申请提权、管理托盘的角色
@@ -7,8 +7,17 @@
  *
  * 之所以把核心进程生命周期放在主进程：渲染进程可能被回收/节流，
  * 而虚拟网络必须一直在后台跑着。
+ *
+ * 平台差异集中在这里，判定一律用 `process.platform`，绝不靠"看起来像"：
+ *   · 提权   —— Windows 走 UAC（Start-Process -Verb RunAs），macOS 走 osascript 授权框；
+ *               两者都需要，因为建虚拟网卡（wintun / utun）都要管理员/root。
+ *   · 窗口   —— Windows 用无边框 + 自绘按钮；macOS 用 hiddenInset + 系统红黄绿按钮
+ *               （见 createWindow 的注释：这是 mac 用户的肌肉记忆，自绘三个圆点会很"假"）。
+ *   · 菜单栏 —— 只有 macOS 建原生菜单（⌘Q/⌘W/⌘,/⌘R…）；Windows 侧保持原样不动。
+ *   · 托盘   —— Windows 用 icon.ico；macOS 的菜单栏要 18px 的模板图（.ico 在 mac 上读不出来）。
+ *   · 局域网广播 —— 依赖 WinDivert（Windows 内核驱动），macOS 上明确关闭并写明原因。
  */
-const { app, BrowserWindow, Tray, Menu, ipcMain, shell, dialog, nativeImage, nativeTheme } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, shell, dialog, nativeImage, nativeTheme, Notification } = require('electron');
 const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -16,9 +25,25 @@ const net = require('node:net');
 const os = require('node:os');
 const { decideElevation, buildElevateCommand } = require('./elevation.cjs');
 const { normalizeCloseAction, resolveCloseChoice } = require('./close-action.cjs');
+const { stripWindowsOnlyFlags } = require('./platform-support.cjs');
 const { tcpPingAll } = require('./tcping.cjs');
 
 const isDev = !app.isPackaged;
+/** 平台判定只认这一处：散落的 `process.platform === ...` 是分支写反的温床 */
+const isMac = process.platform === 'darwin';
+const isWin = process.platform === 'win32';
+
+/**
+ * Windows 的 toast 通知要求进程有一个 **AppUserModelId**，而且它必须与开始菜单快捷方式
+ * 上的那个一致；不一致或不设置时，`new Notification().show()` 会**静默什么都不显示**
+ * （不抛错、也不触发 failed —— 这是最容易误判成"代码没跑"的一种失败）。
+ *
+ * 取值必须与 electron-builder.yml 的 `appId` 相同：NSIS 安装器创建的快捷方式用的就是它。
+ * 也因为这个原因，**免安装的 `--win dir` 产物在没装过的情况下可能弹不出 toast**
+ * （没有那条快捷方式），装机版才稳 —— 这一点写在 docs/troubleshooting.md 里。
+ */
+const APP_USER_MODEL_ID = 'com.mclink.client';
+if (isWin) app.setAppUserModelId(APP_USER_MODEL_ID);
 /** 只有显式设置了该变量（scripts/dev.mjs 会设置）才去连开发服务器 */
 const DEV_URL = process.env.MCLINK_CLIENT_DEV_URL || '';
 const DEV_FALLBACK_URL = 'http://127.0.0.1:5174';
@@ -29,6 +54,10 @@ const DEV_FALLBACK_URL = 'http://127.0.0.1:5174';
  * 背景：早期 `client/package.json` 只有 `name: "@mclink/client"`，Electron 就拿包名当
  * 应用名，数据落在 `%APPDATA%\@mclink\client`（一个带 scope 的怪目录）。
  * 现在补了 `productName: "McLink"`，位置变成 `%APPDATA%\McLink`。
+ *
+ * 平台无关：路径全部来自 `app.getPath('appData')`，macOS 上自动是
+ * `~/Library/Application Support`（旧目录 `~/Library/Application Support/@mclink/client`），
+ * 所以这段代码在两个平台上都成立，不需要分支。
  *
  * 为什么只搬 `easytier/` 与 `logs/`，而不是整个目录改名：
  *   实测 Electron 在进入 main.js **之前**就已经把新的 userData 目录建好并打开了
@@ -73,7 +102,7 @@ const migratedDataDirs = migrateLegacyDataDir();
  * 运行时按当前架构选；Windows/Linux 继续用平铺的那份。
  */
 function platformVendorSubdir() {
-  if (process.platform !== 'darwin') return null;
+  if (!isMac) return null;
   return process.arch === 'arm64' ? 'macos-arm64' : 'macos-x64';
 }
 
@@ -97,8 +126,8 @@ function resolveVendorDir() {
 }
 
 const VENDOR_DIR = resolveVendorDir();
-const CORE_BIN = path.join(VENDOR_DIR, process.platform === 'win32' ? 'easytier-core.exe' : 'easytier-core');
-const CLI_BIN = path.join(VENDOR_DIR, process.platform === 'win32' ? 'easytier-cli.exe' : 'easytier-cli');
+const CORE_BIN = path.join(VENDOR_DIR, isWin ? 'easytier-core.exe' : 'easytier-core');
+const CLI_BIN = path.join(VENDOR_DIR, isWin ? 'easytier-cli.exe' : 'easytier-cli');
 const DATA_DIR = path.join(app.getPath('userData'), 'easytier');
 const LOG_DIR = path.join(app.getPath('userData'), 'logs');
 const MAX_LOG_LINES = 1500;
@@ -233,7 +262,7 @@ function elevationStatus() {
    * 虚拟网卡同样需要 root —— 一律返回 true 会让界面显示"已管理员运行"，
    * 实际却没权限，玩家看到的是核心起不来又没有任何提示。
    */
-  if (process.platform !== 'win32') {
+  if (!isWin) {
     const ok = typeof process.getuid !== 'function' || process.getuid() === 0;
     return { ok, restricted: false, reason: ok ? null : '需要以 root 运行：macOS/Linux 创建虚拟网卡要 root 权限' };
   }
@@ -400,7 +429,7 @@ function writePrefs(patch) {
 /** 是否该在启动时自动请求提权 */
 function shouldAutoElevate() {
   // Windows 与 macOS 都需要管理员才能建虚拟网卡（wintun / utun）；Linux 一般由用户态处理
-  if (process.platform !== 'win32' && process.platform !== 'darwin') return false;
+  if (!isWin && !isMac) return false;
   if (isElevated()) return false;
   // 开发模式（electron .）不自动提权：否则每次改代码重启都要点一次 UAC
   if (!app.isPackaged && process.env.MCLINK_AUTO_ELEVATE !== '1') return false;
@@ -427,7 +456,7 @@ function requestElevation() {
    * "核心起不来"且完全不知道要做什么。
    * 打包版直接执行 .app 内的可执行文件；开发版带上入口参数。
    */
-  if (process.platform === 'darwin') {
+  if (isMac) {
     writePrefs({ elevationAskedAt: Date.now() });
     return new Promise((resolve) => {
       try {
@@ -453,7 +482,7 @@ function requestElevation() {
       }
     });
   }
-  if (process.platform !== 'win32') return Promise.resolve({ ok: false, error: '该平台不需要提权' });
+  if (!isWin) return Promise.resolve({ ok: false, error: '该平台不需要提权' });
   const exe = process.execPath;
   const args = app.isPackaged ? [] : [path.join(__dirname, '..')];
   /**
@@ -576,7 +605,7 @@ function cleanupOrphanCores() {
   const ownExe = path.resolve(VENDOR_DIR).toLowerCase();
   const ownData = path.resolve(DATA_DIR).toLowerCase();
   try {
-    if (process.platform === 'win32') {
+    if (isWin) {
       /**
        * 用 WMI 查进程路径与命令行。
        *
@@ -637,6 +666,11 @@ function cleanupOrphanCores() {
       }
       return killed;
     }
+    /**
+     * 非 Windows 分支（macOS / Linux）：用 POSIX 的 pkill 按命令行匹配。
+     * 同样要求"路径在本应用 vendor 下 **且** 命令行里出现本客户端的数据目录"，
+     * 只不过程序名与匹配工具不同（macOS 没有 WMI，也没有 taskkill）。
+     */
     const res = spawnSync('pkill', ['-f', `easytier-core.*${DATA_DIR}`], { windowsHide: true, timeout: 5000 });
     return res.status === 0 ? 1 : 0;
   } catch (err) {
@@ -696,19 +730,32 @@ async function startCoreInner(payload, attempt) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.mkdirSync(LOG_DIR, { recursive: true });
   const configFile = path.join(DATA_DIR, `${(payload.instanceName || 'mclink').replace(/[^\w.-]/g, '_')}.toml`);
-  writeFileAtomic(configFile, payload.configToml);
+  /**
+   * 落盘前按平台过滤掉 Windows-only 的 flag（当前只有「局域网广播直通」）。
+   *
+   * 为什么在**写文件之前**做：写进去再改等于让核心先读到一次无效配置；
+   * 而且 `replay`（崩溃自动重启用）保存的必须是**同一个**过滤后的文本，
+   * 否则每次自动重启都会把 WinDivert 那行又带回来 —— 就成了"偶发失效"。
+   */
+  const sanitized = stripWindowsOnlyFlags(payload.configToml, process.platform);
+  writeFileAtomic(configFile, sanitized.toml);
 
   const args = (payload.launchArgs ?? ['-c', '%CONFIG%']).map((a) => (a === '%CONFIG%' ? configFile : a));
   if (!fs.existsSync(CORE_BIN)) {
     return setState('error', `找不到 easytier-core：${CORE_BIN}`);
   }
 
-  replay = { configToml: payload.configToml, launchArgs: payload.launchArgs, instanceName: payload.instanceName };
+  replay = { configToml: sanitized.toml, launchArgs: payload.launchArgs, instanceName: payload.instanceName };
   core.configFile = configFile;
   core.args = args;
   core.rpcPortal = pickRpcPortal(args);
   core.lastError = null;
   setState('starting');
+
+  // 明确告诉玩家"这个功能为什么没了"，而不是让他在「多人游戏」列表里干等
+  for (const item of sanitized.disabled) {
+    logLine(`已按平台关闭「${item.feature}」（${item.key}）：${item.why}`, 'info');
+  }
 
   const logFile = path.join(LOG_DIR, `core-${Date.now()}.log`);
   const fd = fs.openSync(logFile, 'a');
@@ -801,6 +848,23 @@ async function startCoreInner(payload, attempt) {
 function pickRpcPortal(args) {
   const idx = args.indexOf('-r');
   return idx >= 0 && idx + 1 < args.length ? args[idx + 1] : null;
+}
+
+/**
+ * `ps -o time=` 的输出 → 秒数。
+ * 形如 `0:01.23`（分:秒）、`1:02:03`（时:分:秒），从右往左按 60 进制累加即可。
+ * 解析不出来就返回 undefined —— 宁可没有这个数字，也不要给界面一个 NaN。
+ */
+function parseCpuTime(text) {
+  const parts = String(text ?? '').trim().split(':');
+  if (parts.length === 0 || parts.length > 3) return undefined;
+  let seconds = 0;
+  for (const part of parts) {
+    const value = Number(part);
+    if (!Number.isFinite(value)) return undefined;
+    seconds = seconds * 60 + value;
+  }
+  return seconds;
 }
 
 async function stopCore() {
@@ -941,16 +1005,27 @@ async function applyAcl(aclToml) {
 /* ------------------------------------------------------------- 窗口/托盘 */
 
 /**
- * 窗口做成**无边框 + 自绘标题栏**。
+ * 窗口标题栏：**两个平台两种做法**，这是本文件里最需要解释的一处取舍。
  *
- * 为什么不用系统标题栏：Windows 原生的那条灰白标题栏与这套暖墨/琥珀的界面
- * 完全是两种语言，摆在一起像两个软件拼起来的。参照 MCTier 的做法自绘一条，
- * 把窗口控制、连接状态和身份信息合并成一行。
+ * Windows：无边框 + 自绘标题栏。
+ *   为什么不用系统标题栏：Windows 原生的那条灰白标题栏与这套暖墨/琥珀的界面
+ *   完全是两种语言，摆在一起像两个软件拼起来的。参照 MCTier 的做法自绘一条，
+ *   把窗口控制、连接状态和身份信息合并成一行。
+ *   保留的关键能力（去掉 frame 容易顺手丢掉这些）：
+ *     · `thickFrame` 默认 true → 窗口仍可拖拽改变大小，Win+方向键仍能贴边
+ *     · 双击标题栏最大化/还原，由渲染层发 IPC 实现（TitleBar.vue 的 dblclick）
+ *     · `titleBarStyle: 'hidden'` 让系统只保留阴影与圆角，不给标题栏
  *
- * 保留的关键能力（去掉 frame 容易顺手丢掉这些）：
- *   · `thickFrame` 默认 true → 窗口仍可拖拽改变大小，Win+方向键仍能贴边
- *   · 双击标题栏最大化/还原，由渲染层发 IPC 实现
- *   · `titleBarStyle: 'hidden'` 让系统只保留阴影与圆角，不给标题栏
+ * macOS：`titleBarStyle: 'hiddenInset'` + **系统红黄绿按钮**（不要 frame: false）。
+ *   三个理由，都是"mac 用户会立刻发现不对"的那一类：
+ *     1. 红黄绿是系统级控件：位置、悬停时的符号、⌥ 键把绿灯变成"缩放"、
+ *        以及"绿灯=全屏"这些都是系统行为，自绘圆点只能模仿外观、模仿不了行为；
+ *     2. 关闭语义不同：Windows 上点 X 是"收进托盘"，macOS 上点红点是"关掉这个窗口"
+ *        （应用继续活着），系统按钮天然表达了这个意思，自绘按钮需要额外解释；
+ *     3. 可访问性：VoiceOver 认得出系统按钮，认不出我们的 div。
+ *   代价只有一处：左上角 ~70px 被系统占用，所以 AppRail 顶部要留出空白
+ *   （`--rail-top-inset`，见 AppRail.vue）—— 自绘标题栏与状态文字照旧保留，
+ *   只是把"窗口控制"这一小块交还给系统。
  */
 /**
  * 窗口默认尺寸：**横向宽窗**。
@@ -973,16 +1048,43 @@ const WINDOW_DEFAULTS = {
   backgroundColor: nativeTheme.shouldUseDarkColors ? '#121110' : '#f5f0e7',
 };
 
+/**
+ * 平台专属的窗口选项。
+ *
+ * `frame` 必须显式写：默认 true —— 在 Windows 上漏写这一条会变成"系统标题栏 + 自绘标题栏"
+ * 两条叠着（历史上就是这么错的），在 macOS 上写 false 又会把红黄绿一起干掉。
+ */
+function platformWindowOptions() {
+  if (isMac) {
+    return {
+      frame: true,
+      titleBarStyle: 'hiddenInset',
+      /**
+       * 红黄绿的位置：默认 inset 是 (20, 20) 左右，与 52px 的标题条相比偏上。
+       * 这里把 y 提到 17，让三个按钮与标题条的文字在视觉上同一条水平线 ——
+       * 不改 x：横向位置属于系统版式，动它看起来就不像原生应用了。
+       */
+      trafficLightPosition: { x: 18, y: 17 },
+      // macOS 的菜单栏永远在屏幕顶部，窗口级菜单条这个概念不存在
+      autoHideMenuBar: false,
+    };
+  }
+  return {
+    frame: false,
+    titleBarStyle: 'hidden',
+    // Windows/Linux：默认菜单没有用（我们自绘），藏起来但保留 Alt 唤出
+    autoHideMenuBar: true,
+  };
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     ...WINDOW_DEFAULTS,
+    ...platformWindowOptions(),
     show: false,
-    frame: false,
-    titleBarStyle: 'hidden',
-    // 无边框但仍可调整大小与贴边
+    // 两种平台都可调整大小；macOS 上可最大化 = 绿灯可用（缩放）
     resizable: true,
     maximizable: true,
-    autoHideMenuBar: true,
     title: 'McLink',
     icon: appIconPath(),
     webPreferences: {
@@ -1015,6 +1117,13 @@ function createWindow() {
      *   · tray        —— 直接收进托盘（老行为）
      *   · quit        —— 直接退出
      * 以前是无条件收进托盘、**没有任何提示**：玩家以为退出了，其实进程还在后台跑、联机也没断。
+     *
+     * macOS 上「关闭窗口」与「退出应用」是两件事，这里必须分得干净：
+     *   · 红点 / ⌘W → 走的就是这条 close（macOS 的惯例是"关窗不退出"，
+     *     所以界面上的文案是「隐藏窗口」，不是「最小化到托盘」——见 CloseConfirm.vue）；
+     *   · ⌘Q / 菜单「退出 McLink」→ app.quit()，先经过 before-quit（把 quitting 置 true），
+     *     于是**不会**被下面的 ask 分支拦下来 —— macOS 用户按 ⌘Q 就是要退出，
+     *     再弹一个"要退出吗"会被当成应用有毛病。
      */
     if (quitting) return;
     const action = normalizeCloseAction(readPrefs().closeAction);
@@ -1080,21 +1189,48 @@ function showMainWindow() {
   mainWindow?.focus();
 }
 
+/**
+ * 窗口/托盘图标。
+ *
+ * 为什么必须分平台：`nativeImage.createFromPath()` 只在 Windows 上认 `.ico`，
+ * 在 macOS 上给它一个 .ico 会返回**空图像** —— 托盘图标变成一块看不见的空白
+ * （功能还在，只是没人找得到菜单栏上的它，关闭窗口后就"找不回应用"了）。
+ * 所以 macOS 用 `electron/assets/tray-mac.png`（由 `pnpm icons` 生成的不透明剪影，
+ * 交给系统按菜单栏明暗自动反色），开发模式下退回 build/icon.png。
+ */
 function appIconPath() {
-  const candidates = [
-    // 打包后/开发时都能命中：electron/assets 会被打进 asar
-    path.join(__dirname, 'assets', 'icon.ico'),
-    // 开发模式下直接跑仓库里的 build/（打包时这个目录会被 electron-builder 排除，别依赖它）
-    path.join(__dirname, '..', 'build', 'icon.ico'),
-    path.join(__dirname, '..', '..', 'client', 'build', 'icon.ico'),
-  ];
+  const candidates = isMac
+    ? [
+        // 打包后/开发时都能命中：electron/assets 会被打进 asar
+        path.join(__dirname, 'assets', 'tray-mac.png'),
+        // 开发模式下直接跑仓库里的 build/（打包时这个目录会被 electron-builder 排除，别依赖它）
+        path.join(__dirname, '..', 'build', 'icon.png'),
+        path.join(__dirname, '..', '..', 'client', 'build', 'icon.png'),
+      ]
+    : [
+        // 打包后/开发时都能命中：electron/assets 会被打进 asar
+        path.join(__dirname, 'assets', 'icon.ico'),
+        // 开发模式下直接跑仓库里的 build/（打包时这个目录会被 electron-builder 排除，别依赖它）
+        path.join(__dirname, '..', 'build', 'icon.ico'),
+        path.join(__dirname, '..', '..', 'client', 'build', 'icon.ico'),
+      ];
   for (const c of candidates) if (fs.existsSync(c)) return c;
   return undefined;
 }
 
 function createTray() {
   const iconPath = appIconPath();
-  const image = iconPath ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty();
+  let image = iconPath ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty();
+  if (isMac && !image.isEmpty()) {
+    /**
+     * macOS 的菜单栏高度是 22px；直接把 256px 的图塞进去会被系统压缩得发糊。
+     * 缩到 18px（模板图按 1x/2x 各自渲染，Retina 上是 36px）。
+     * `setTemplateImage` 只对剪影图设置：让系统按菜单栏明暗自动涂黑/涂白，
+     * 深色菜单栏上不会变成一块看不见的黑方块。
+     */
+    image = image.resize({ width: 18, height: 18 });
+    if (path.basename(iconPath).startsWith('tray-mac')) image.setTemplateImage(true);
+  }
   tray = new Tray(image.isEmpty() ? nativeImage.createEmpty() : image);
   tray.setToolTip('McLink 《我的世界》联机');
   tray.on('double-click', () => {
@@ -1136,10 +1272,226 @@ function updateTray() {
   );
 }
 
-/* ------------------------------------------------------------------ IPC */
+/* ------------------------------------------------------------ macOS 菜单栏 */
+
+/**
+ * 菜单栏（**只在 macOS 上建**）。
+ *
+ * 为什么 macOS 必须有：菜单栏是 mac 应用的"命令行" —— 没有它，⌘Q / ⌘H / ⌘M /
+ * ⌘W / ⌘, 这些系统级习惯全都无处可去，用户会当成"这个应用没做完"。
+ * Electron 会给一个默认菜单，但那是英文的 Electron 名字与默认项，与「暖纸台」不是一套语言。
+ *
+ * 为什么 Windows 上**不建**：Windows 侧现在是无边框窗口 + 自绘标题栏，
+ * 窗口菜单条是多余的一层；改动它等于改 Windows 的现有行为，不在本次范围内。
+ * （保持现状：不调用 setApplicationMenu，Electron 的默认菜单在 autoHideMenuBar 下不可见。）
+ */
+function sendMenuCommand(command) {
+  /**
+   * 走渲染层而不是直接操作窗口：菜单是"导航到设置页"这种**业务意图**，
+   * 而哪个页面怎么切是渲染层的事（App.vue 的 goto）。主进程只负责转发。
+   */
+  sendToRenderer('app:menu-command', command);
+  showMainWindow();
+}
+
+/**
+ * 重新加载界面（⌘R）。
+ *
+ * 为什么要拦一下：渲染层的会话状态（当前房间、票据、成员）**只在内存里**，
+ * 而虚拟网络的进程在主进程里照旧跑着 —— 直接 reload 会让界面回到"没进房"的样子，
+ * 但核心还连着，心跳停了、房间成员过期，表现就是"我明明连着，界面说我没连"。
+ * 所以正在联机时先问一句：要么取消，要么**先断开**再重新加载，不留半吊子状态。
+ */
+async function reloadWindowSafely(ignoreCache = false) {
+  const win = mainWindow;
+  if (!win || win.isDestroyed()) return;
+  if (core.child) {
+    const { response } = await dialog.showMessageBox(win, {
+      type: 'warning',
+      buttons: ['取消', '断开并重新加载'],
+      defaultId: 0,
+      cancelId: 0,
+      message: '虚拟网络正在运行',
+      detail:
+        '重新加载界面会与正在运行的虚拟网络失去同步：界面会忘记当前房间与成员，需要重新进房。\n' +
+        '要先断开虚拟网络再重新加载吗？',
+    });
+    if (response !== 1) return;
+    await stopCore().catch(() => {});
+  }
+  if (ignoreCache) win.webContents.reloadIgnoringCache();
+  else win.webContents.reload();
+}
+
+function buildApplicationMenu() {
+  if (!isMac) return;
+  const appName = app.name || 'McLink';
+  const template = [
+    {
+      label: appName,
+      submenu: [
+        { role: 'about', label: `关于 ${appName}` },
+        { type: 'separator' },
+        /**
+         * ⌘, 是 macOS 上"打开偏好设置"的固定手势，缺了它用户会去 Dock 图标上找。
+         * 我们的设置页在渲染层，所以这里只是个转发。
+         */
+        { label: '设置…', accelerator: 'Command+,', click: () => sendMenuCommand('settings') },
+        { type: 'separator' },
+        { role: 'services', label: '服务' },
+        { type: 'separator' },
+        { role: 'hide', label: `隐藏 ${appName}` },
+        { role: 'hideOthers', label: '隐藏其他' },
+        { role: 'unhide', label: '全部显示' },
+        { type: 'separator' },
+        // ⌘Q：真正的退出。会先走 before-quit，所以不会撞上"关闭窗口"的询问
+        { role: 'quit', label: `退出 ${appName}` },
+      ],
+    },
+    {
+      /**
+       * 编辑菜单：mac 上这几个 role 不只是"给输入框用的"，
+       * 没有它们，⌘C/⌘V 在系统层面就没有对应的命令项（复制粘贴会失效）。
+       */
+      label: '编辑',
+      submenu: [
+        { role: 'undo', label: '撤销' },
+        { role: 'redo', label: '重做' },
+        { type: 'separator' },
+        { role: 'cut', label: '剪切' },
+        { role: 'copy', label: '拷贝' },
+        { role: 'paste', label: '粘贴' },
+        { role: 'pasteAndMatchStyle', label: '粘贴并匹配样式' },
+        { role: 'delete', label: '删除' },
+        { role: 'selectAll', label: '全选' },
+      ],
+    },
+    {
+      label: '视图',
+      submenu: [
+        { label: '重新加载界面', accelerator: 'Command+R', click: () => void reloadWindowSafely(false) },
+        { label: '强制重新加载界面', accelerator: 'Shift+Command+R', click: () => void reloadWindowSafely(true) },
+        { type: 'separator' },
+        { role: 'toggleDevTools', label: '开发者工具' },
+        { type: 'separator' },
+        { role: 'resetZoom', label: '实际大小' },
+        { role: 'zoomIn', label: '放大' },
+        { role: 'zoomOut', label: '缩小' },
+        { type: 'separator' },
+        { role: 'togglefullscreen', label: '进入全屏幕' },
+      ],
+    },
+    {
+      label: '窗口',
+      submenu: [
+        { role: 'minimize', label: '最小化' },
+        { role: 'zoom', label: '缩放' },
+        { type: 'separator' },
+        { role: 'front', label: '前置全部窗口' },
+        { type: 'separator' },
+        /**
+         * ⌘W = 关闭这一个窗口（走既有的关闭偏好：询问 / 隐藏 / 退出）。
+         * 与 ⌘Q 的区别必须留着：mac 用户靠这两项区分"收起界面"和"退出应用"。
+         */
+        { role: 'close', label: '关闭窗口' },
+      ],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+/* ------------------------------------------------- 系统通知（有人发消息） */
+
+/**
+ * 通知的实况：给界面（设置页提示"系统不支持通知"）与自动化验收用。
+ *
+ * 为什么记账放在主进程：渲染层只知道"我请求弹一条"，**到底弹出去没有只有主进程知道**
+ * （`Notification.isSupported()`、'show' 与 'failed' 事件都在这一侧）。
+ * 排查"为什么没弹"时，这几个数字就是全部证据。
+ */
+const notifyStats = {
+  requested: 0,
+  shown: 0,
+  failed: 0,
+  lastError: null,
+  supported: null,
+};
+
+function notificationsSupported() {
+  if (notifyStats.supported === null) {
+    try {
+      notifyStats.supported = Notification.isSupported();
+    } catch {
+      notifyStats.supported = false;
+    }
+  }
+  return notifyStats.supported;
+}
+
+/**
+ * 用户点了通知之后要做的事：**把窗口叫回来**（收在托盘/菜单栏里也拉起来），
+ * 再告诉渲染层"跳到这个房间"。
+ *
+ * 为什么抽成函数：自动化验收要断言这条落点（点了通知到底有没有回到房间页），
+ * 而系统通知的"点击"没法用脚本模拟 —— 测试走的是**同一个函数**
+ * （notify:simulateClick，只在 MCLINK_TEST_HOOKS=1 时注册）。
+ */
+function handleNotificationClick(roomId) {
+  showMainWindow();
+  sendToRenderer('app:notify-click', { roomId: roomId ?? null });
+}
+
+/**
+ * 弹一条系统通知（Windows = toast，macOS = 通知中心，都由 Electron 的 Notification 承担）。
+ *
+ * 两端真正不同的地方只有两处：
+ *   · Windows：toast 依赖 AppUserModelId（见文件顶部的常量），并且用 .ico 当图标；
+ *   · macOS：通知中心一律用**应用自己的图标**，`icon` 参数会被忽略 —— 所以我们不传，
+ *     免得哪天它被用上时显示成 22px 的黑色剪影（tray-mac.png）。
+ *     macOS 还会在用户拒绝通知权限时**静默丢弃**：这时 'failed' 不一定触发，
+ *     所以界面上不能承诺"一定弹"（设置页写的是"会尽量提醒"）。
+ */
+function showMessageNotification(payload) {
+  notifyStats.requested += 1;
+  if (!notificationsSupported()) {
+    notifyStats.lastError = '当前系统不支持通知';
+    return { ok: false, error: notifyStats.lastError, ...notifyStats };
+  }
+  const title = String(payload?.title ?? 'McLink').slice(0, 120);
+  const body = String(payload?.body ?? '').slice(0, 300);
+  const roomId = payload?.roomId ? String(payload.roomId) : null;
+  try {
+    const options = { title, body, silent: false };
+    if (isWin) {
+      const icon = appIconPath();
+      if (icon) options.icon = icon;
+    }
+    const notification = new Notification(options);
+    notification.on('show', () => {
+      notifyStats.shown += 1;
+    });
+    notification.on('failed', (_event, error) => {
+      notifyStats.failed += 1;
+      notifyStats.lastError = String(error ?? '未知原因');
+      logLine(`系统通知发送失败：${notifyStats.lastError}`, 'stderr');
+    });
+    notification.on('click', () => handleNotificationClick(roomId));
+    notification.show();
+    return { ok: true, ...notifyStats };
+  } catch (err) {
+    notifyStats.failed += 1;
+    notifyStats.lastError = err.message;
+    logLine(`系统通知发送失败：${err.message}`, 'stderr');
+    return { ok: false, error: err.message, ...notifyStats };
+  }
+}
 
 function registerIpc() {
-  /* ------------------------------------------------ 自绘标题栏的窗口控制 */
+  /* ------------------------------------------------ 自绘标题栏的窗口控制
+   * 注意：macOS 上这三个按钮**不显示**（系统红黄绿接管，见 platformWindowOptions），
+   * 但这条 IPC 桥保留着 —— 一是 Windows 侧照旧用，二是将来若要给 mac 加快捷键入口
+   * 不必再改 preload 契约。渲染层只是不渲染按钮而已。
+   */
   const withMain = (fn) => () => {
     if (!mainWindow || mainWindow.isDestroyed()) return null;
     return fn(mainWindow);
@@ -1233,6 +1585,10 @@ function registerIpc() {
     exeDir: path.dirname(process.execPath),
     /** 启动时是否会自动请求管理员权限（设置页的开关读它） */
     autoElevate: readPrefs().autoElevate !== false,
+    /** 有人在房间说话时弹系统通知（默认开）；关掉后一条都不弹 */
+    notifyMessages: readPrefs().notifyMessages !== false,
+    /** 当前系统能不能弹通知（macOS 用户可能关掉了通知权限；Windows 可能是精简系统） */
+    notificationsSupported: notificationsSupported(),
     /** 关闭窗口时的行为：ask（默认，关的时候问一次）/ tray（收进托盘）/ quit（直接退出） */
     closeAction: normalizeCloseAction(readPrefs().closeAction),
     /** true = 正在用软件渲染（此前观测到 GPU 进程异常，或设了 MCLINK_DISABLE_GPU=1） */
@@ -1253,6 +1609,35 @@ function registerIpc() {
 
   ipcMain.handle('app:relaunchElevated', () => requestElevation());
 
+  /* ------------------------------------------------ 有人发消息时的系统通知 */
+  /**
+   * 渲染层决定"该弹了"之后调这里 —— 判定不在这里做：判定要读的
+   * "窗口聚焦吗 / 正看着那个房间吗"只有渲染层知道，主进程只负责把它弹出去。
+   */
+  ipcMain.handle('notify:show', (_e, payload) => showMessageNotification(payload));
+  /** 通知实况（设置页提示 + 自动化验收） */
+  ipcMain.handle('notify:state', () => ({
+    supported: notificationsSupported(),
+    appUserModelId: isWin ? APP_USER_MODEL_ID : null,
+    ...notifyStats,
+  }));
+  ipcMain.handle('app:setNotifyMessages', (_e, enabled) => {
+    const value = enabled !== false;
+    writePrefs({ notifyMessages: value });
+    return { ok: true, notifyMessages: value };
+  });
+  /**
+   * 自动化专用：走**同一个** handleNotificationClick。
+   * 只在 MCLINK_TEST_HOOKS=1 时注册 —— 正常启动下这条 IPC 根本不存在，
+   * 免得有人能凭空让窗口跳来跳去。
+   */
+  if (process.env.MCLINK_TEST_HOOKS === '1') {
+    ipcMain.handle('notify:simulateClick', (_e, roomId) => {
+      handleNotificationClick(roomId ? String(roomId) : null);
+      return { ok: true };
+    });
+  }
+
   ipcMain.handle('app:setAutoElevate', (_e, enabled) => {
     const value = enabled !== false;
     writePrefs({ autoElevate: value });
@@ -1271,18 +1656,33 @@ function registerIpc() {
   ipcMain.handle('core:status', () => coreStatus());
   ipcMain.handle('core:logs', (_e, limit) => coreLogs.slice(-(Number(limit) || 400)));
   ipcMain.handle('core:resourceUsage', () => {
-    if (!core.child?.pid) return null;
+    const pid = core.child?.pid;
+    if (!pid) return null;
     try {
-      const res = spawnSync(
-        'powershell.exe',
-        [
-          '-NoProfile',
-          '-Command',
-          `Get-Process -Id ${core.child.pid} | Select-Object -Property WorkingSet64,CPU | ConvertTo-Json -Compress`,
-        ],
-        { encoding: 'utf8', windowsHide: true, timeout: 5000 },
-      );
-      return res.stdout ? JSON.parse(res.stdout) : null;
+      if (isWin) {
+        const res = spawnSync(
+          'powershell.exe',
+          [
+            '-NoProfile',
+            '-Command',
+            `Get-Process -Id ${pid} | Select-Object -Property WorkingSet64,CPU | ConvertTo-Json -Compress`,
+          ],
+          { encoding: 'utf8', windowsHide: true, timeout: 5000 },
+        );
+        return res.stdout ? JSON.parse(res.stdout) : null;
+      }
+      /**
+       * macOS / Linux：没有 PowerShell。用 POSIX 的 ps 取同一对事实，并**归一成同一形状**
+       * （WorkingSet64 字节 / CPU 秒），免得调用方还要再判一次平台：
+       *   rss  = 常驻内存，单位 KB；time = 累计 CPU 时间，形如 `1:02.34` 或 `1:02:03`。
+       */
+      const res = spawnSync('ps', ['-o', 'rss=,time=', '-p', String(pid)], { encoding: 'utf8', timeout: 5000 });
+      const line = (res.stdout || '').trim();
+      if (!line) return null;
+      const [rssKb, cpuTime] = line.split(/\s+/);
+      const rss = Number(rssKb);
+      if (!Number.isFinite(rss)) return null;
+      return { WorkingSet64: rss * 1024, CPU: parseCpuTime(cpuTime) };
     } catch {
       return null;
     }
@@ -1344,6 +1744,20 @@ if (!singleInstance) {
     if (migratedDataDirs.length > 0) {
       logLine(`已从旧数据目录迁移：${migratedDataDirs.join('、')}`, 'info');
     }
+    /**
+     * 菜单栏与「关于」面板都只在 macOS 上做（Windows 侧保持现状，见 buildApplicationMenu）。
+     * 顺序无所谓，但要在窗口之前建好：macOS 上菜单栏是应用级的，
+     * 窗口出现时它就该已经在屏幕顶部了。
+     */
+    if (isMac) {
+      app.setAboutPanelOptions({
+        applicationName: 'McLink',
+        applicationVersion: app.getVersion(),
+        version: app.getVersion(),
+        copyright: 'McLink · 基于 EasyTier 的《我的世界》联机平台',
+      });
+      buildApplicationMenu();
+    }
     registerIpc();
     createWindow();
     createTray();
@@ -1351,11 +1765,16 @@ if (!singleInstance) {
       logLine(`警告：未找到 easytier-core（${CORE_BIN}）。请运行 pnpm fetch:easytier 或重新安装客户端。`, 'stderr');
     }
     if (!isElevated()) {
-      logLine('当前未以管理员身份运行：创建虚拟网卡（TUN）会失败，请使用「以管理员身份重启」。', 'stderr');
+      logLine(
+        isMac
+          ? '当前不是以 root 运行：创建虚拟网卡（utun）会失败，请使用「以管理员身份重启」。'
+          : '当前未以管理员身份运行：创建虚拟网卡（TUN）会失败，请使用「以管理员身份重启」。',
+        'stderr',
+      );
     }
     /**
-     * 等窗口画出来之后再清残留：查进程要起一次 PowerShell（几百毫秒），
-     * 放在启动路径上会让双击图标到出现界面的那一下变慢。
+     * 等窗口画出来之后再清残留：Windows 上查进程要起一次 PowerShell（几百毫秒），
+     * macOS 上是 pkill（很快）。放在启动路径上会让双击图标到出现界面的那一下变慢。
      * 1.2 秒后执行，早于任何人能点完「连接」。
      */
     setTimeout(() => {
@@ -1371,9 +1790,13 @@ if (!singleInstance) {
      *   · 点「是」→ 提权后的新实例接管（老实例会先释放单实例锁再退出）；
      *   · 点「否」→ 照常以普通权限运行，7 天内不再自动弹（设置页可以彻底关掉，手动按钮仍在）。
      * 开发模式不自动弹，免得每次改代码重启都要点 UAC（要测就设 MCLINK_AUTO_ELEVATE=1）。
+     *
+     * macOS 走同一条逻辑，只是"系统授权框"换成了 osascript 的 administrator privileges
+     * （见 requestElevation）：utun 同样要 root，没有这一步 mac 用户会卡在
+     * "核心起不来、又没有任何提示"上。
      */
     if (shouldAutoElevate()) {
-      logLine('未以管理员身份运行：正在请求提权（创建虚拟网卡需要）…', 'info');
+      logLine(isMac ? '当前不是以 root 运行：正在请求管理员授权（创建虚拟网卡需要）…' : '未以管理员身份运行：正在请求提权（创建虚拟网卡需要）…', 'info');
       setTimeout(() => {
         void requestElevation().then((res) => {
           if (!res.ok) {
@@ -1385,7 +1808,12 @@ if (!singleInstance) {
   });
 
   app.on('window-all-closed', () => {
-    // Windows 上保持后台运行（托盘），不随窗口关闭退出
+    /**
+     * 不随窗口关闭退出，两个平台都是**故意的**（这正是 `closeAction` 偏好在管的事）：
+     *   · Windows：收进托盘继续跑 —— 关掉窗口不等于断掉联机；
+     *   · macOS：关闭窗口后应用继续活着（Dock 图标还在，⌘Q 才退出），
+     *     这是 mac 的系统惯例，`activate` 事件会把窗口叫回来。
+     */
   });
 
   app.on('before-quit', async () => {

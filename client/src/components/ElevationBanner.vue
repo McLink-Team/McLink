@@ -12,9 +12,14 @@
  *
  * 两个入口都给「以管理员身份重启」：那是复用现成的 relaunchElevated（走系统授权框），
  * 比让玩家自己找右键菜单更省事；弹窗文案里也写明了右键那条路。
+ *
+ * 平台差异（本次补齐）：Windows 的"自己动手"是右键 →「以管理员身份运行」；
+ * macOS 上右键 → 打开只是绕过 Gatekeeper，给的是安全提示、**不是权限** ——
+ * 那句文案照搬到 mac 上会把玩家引到错误的方向，所以统一走 `lib/platform.ts` 的说法。
  */
 import { computed, onMounted, ref } from 'vue';
 import { relaunchElevated } from '../lib/store.ts';
+import { adminHowTo, revealAppLabel, tunName } from '../lib/platform.ts';
 import type { AppInfo } from '../lib/bridge.ts';
 
 const info = ref<AppInfo | null>(null);
@@ -33,7 +38,13 @@ onMounted(async () => {
   }
 });
 
-/** 需要管理员才能建虚拟网卡的平台 */
+/**
+ * 需要管理员才能建虚拟网卡的平台。
+ *
+ * 与 `lib/platform.ts` 的 needsAdmin 是同一条规则，但这里判的是**主进程报的**
+ * platform（而不是 preload 那个同步值）：横幅该不该出现属于"主进程说了算"的事实，
+ * 用它的答案更不容易因为将来 preload 契约变化而跑偏。
+ */
 const NEEDS_ADMIN = new Set(['win32', 'darwin']);
 const notElevated = computed(
   () => info.value !== null && NEEDS_ADMIN.has(info.value.platform) && info.value.elevated === false,
@@ -56,11 +67,14 @@ async function elevate(): Promise<void> {
 }
 
 /**
- * 兜底：打开客户端所在的文件夹，让用户**右键 → 以管理员身份运行**。
+ * 兜底：带用户到客户端所在的文件夹。
+ *
+ * Windows 上是为了"右键 → 以管理员身份运行"；macOS 上这一步帮不上权限的忙，
+ * 但"想知道装在哪 / 想手动打开"仍然成立，所以按钮留着，只是改了说法（在访达中显示）。
  * 自动提权在某些环境里本来就会被拒（例如受限令牌不允许再提权），
- * 这时"带用户到文件所在处"比一句"请右键运行"有用得多。
+ * 这时"带用户到文件所在处"比一句空话有用得多。
  */
-function openExeDir(): void {
+function revealApp(): void {
   const dir = info.value?.exeDir;
   if (dir) void window.mclink.openPath(dir);
 }
@@ -72,14 +86,15 @@ function openExeDir(): void {
     <div class="card modal-card stack">
       <div>
         <div class="popup-title">需要管理员权限</div>
-        <div class="hint">未以管理员身份运行，建不了虚拟网卡 —— <b>联机不可用</b>（登录、建房都正常）。</div>
+        <div class="hint">
+          未以管理员身份运行，建不了虚拟网卡（{{ tunName }}）—— <b>联机不可用</b>（登录、建房都正常）。
+        </div>
       </div>
 
       <div v-if="reason" class="alert alert-warn">{{ reason }}</div>
 
       <div class="stack">
-        <div><b>怎么解决：</b>右键客户端图标 → 点「以管理员身份运行」。</div>
-        <div class="hint">也可以直接点下面的按钮：会弹系统授权框，本窗口退出后以管理员身份重新打开。</div>
+        <div><b>怎么解决：</b>{{ adminHowTo }}</div>
       </div>
 
       <!-- 提权失败就地说明：不要只把错误丢到顶部错误条（用户实测"按了没用"） -->
@@ -88,7 +103,7 @@ function openExeDir(): void {
       <div class="row-between">
         <button class="btn" type="button" :disabled="busy" @click="popupOpen = false">稍后再说</button>
         <div class="row" style="gap: var(--s-2)">
-          <button v-if="info?.exeDir" class="btn" type="button" @click="openExeDir">打开所在文件夹</button>
+          <button v-if="info?.exeDir" class="btn" type="button" @click="revealApp">{{ revealAppLabel }}</button>
           <button class="btn btn-primary" type="button" :disabled="busy" @click="elevate">
             {{ busy ? '正在重启…' : '以管理员身份重启' }}
           </button>
@@ -99,13 +114,12 @@ function openExeDir(): void {
 
   <div v-if="notElevated && !popupOpen" class="alert alert-warn elevation-banner">
     <span class="grow">
-      未以管理员身份运行：建不了虚拟网卡，<b>联机不可用</b>。请右键客户端图标 →
-      「以管理员身份运行」，或点右侧按钮重启（会弹系统授权框）。
+      未以管理员身份运行：建不了虚拟网卡（{{ tunName }}），<b>联机不可用</b>。{{ adminHowTo }}
       <span v-if="reason" class="hint">{{ reason }}</span>
       <span v-if="elevateError" class="hint">{{ elevateError }}</span>
     </span>
     <div class="row" style="gap: var(--s-2)">
-      <button v-if="info?.exeDir" class="btn btn-sm" type="button" @click="openExeDir">打开所在文件夹</button>
+      <button v-if="info?.exeDir" class="btn btn-sm" type="button" @click="revealApp">{{ revealAppLabel }}</button>
       <button class="btn btn-sm" type="button" :disabled="busy" @click="elevate">
         {{ busy ? '正在重启…' : '以管理员身份重启' }}
       </button>

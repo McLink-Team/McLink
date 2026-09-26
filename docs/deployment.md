@@ -147,6 +147,12 @@ GITLAB_TOKEN=glpat-xxxx bash deploy/fetch-release-from-gitlab.sh v1.0.0 --window
 挑出 `.exe/.dmg/.zip`（跳过 `.blockmap`）、拷进 `/opt/mclink/data/downloads`、
 设好属主与权限，并打印每个文件的 sha256。
 
+> macOS 产物是**未签名**的（没有 Apple 开发者证书）：玩家首次打开要右键 →「打开」，
+> 或 `xattr -dr com.apple.quarantine`。文件放进下载目录后官网会自动识别并列出，
+> 但**下载页不会替玩家绕过 Gatekeeper** —— 这一步写在
+> [`docs/build-clients.md`](build-clients.md) 的「macOS 玩家的首次启动」一节里。
+> macOS 侧的出包、runner 与自测清单也都在那一篇。
+
 **它不会自动改平台设置** —— 对外宣称哪个版本是运营决定，在控制台「平台设置 → 客户端版本」里改。
 ### 2.2 反向代理与证书
 

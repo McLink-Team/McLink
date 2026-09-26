@@ -1,0 +1,39 @@
+# Android 构建产物与机器相关文件。
+#
+# `local.properties` 里是**这台机器**的 SDK 路径（sdk.dir=F:\\android-sdk），
+# 提交它会让别人的构建去 F: 找一个不存在的目录，而错误信息是一句
+# "SDK location not found"，看不出是被谁写死的。构建脚本会自己生成它。
+
+local.properties
+
+# Gradle
+.gradle/
+build/
+captures/
+
+# Capacitor 同步进来的前端产物（由 vite build + cap sync 生成，不入库）
+app/src/main/assets/public/
+app/src/main/assets/capacitor.config.json
+app/src/main/assets/capacitor.plugins.json
+
+# 验证脚本的截图与临时产物
+.smoke/
+# 打好的包（发版时手动上传，不进 git —— 二进制入 git 会让仓库越来越重）
+release/
+
+# 原生构建产物
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# 签名材料：**绝对不许入库**（真实 keystore 一旦泄露，任何人都能签出"官方"包）
+*.jks
+*.keystore
+!debug.keystore
+
+# IDE
+.idea/
+*.iml
+.cxx/

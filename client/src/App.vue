@@ -17,6 +17,7 @@
  */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { copyText } from './lib/clipboard.ts';
+import { platform } from './lib/platform.ts';
 import {
   bootstrap,
   clearError,
@@ -109,15 +110,45 @@ function copy(text: string): void {
   void copyText(text);
 }
 
+/**
+ * macOS 菜单栏的命令（当前只有 ⌘, → 设置页）。
+ * Windows 上没有菜单栏，这个回调永远不会被调用 —— 留着它比在每个平台上分叉渲染逻辑便宜。
+ */
+let offMenuCommand: (() => void) | null = null;
+/**
+ * 用户点了系统通知（"XX 发来消息"）。
+ *
+ * 落点直接复用既有导航：主进程已经把窗口叫回来了（托盘/菜单栏里也拉起来了），
+ * 这里只要把视图切到「联机」那一屏 —— 房间内容本来就铺在那里（见上面 hasRoom 的注释），
+ * 所以**不需要**自己发明一套"跳到 room:<id>"的路由。
+ *
+ * 为什么还要判断 session 的房号：通知可能是几分钟前那批的，而玩家中途换过房间 ——
+ * 落点必须是他**现在**所在的那个房间，不然点了跳到别人的房间上（界面里根本没有那个房间的内容）。
+ */
+let offNotifyClick: (() => void) | null = null;
+
 onMounted(async () => {
   window.addEventListener('keydown', onKeydown);
+  offMenuCommand = window.mclink.onMenuCommand((command) => {
+    if (command === 'settings') goto('settings');
+  });
+  offNotifyClick =
+    window.mclink.notify?.onActivate(({ roomId }) => {
+      const current = clientState.session?.room.id ?? null;
+      if (roomId && current && roomId !== current) return; // 已经不是那个房间了：只把窗口叫回来
+      view.value = 'home';
+    }) ?? null;
   const info = await window.mclink.info();
   appVersion.value = info.version;
   await bootstrap();
   booting.value = false;
 });
 
-onUnmounted(() => window.removeEventListener('keydown', onKeydown));
+onUnmounted(() => {
+  window.removeEventListener('keydown', onKeydown);
+  offMenuCommand?.();
+  offNotifyClick?.();
+});
 </script>
 
 <template>
@@ -128,7 +159,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown));
     （实测：连接诊断的节点列表就是这么坏掉的）。新外壳的样式挂在 app-root 上，
     两个类名并存，谁也不挡谁。
   -->
-  <div class="app-shell app-root">
+  <div class="app-shell app-root" :data-platform="platform">
     <!--
       未提权横幅放在最上面：登录页、验证邮箱页、主界面每一屏都能看到 ——
       玩家没提权时最常停在登录页，放里面等于看不到。

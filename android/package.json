@@ -9,11 +9,16 @@
     "typecheck": "vue-tsc --noEmit -p tsconfig.json",
     "sync": "vite build && cap sync android",
     "open": "cap open android",
-    "apk": "node scripts/build-apk.mjs"
+    "apk": "node scripts/build-apk.mjs",
+    "verify": "node scripts/check-mobile-design.mjs && vite build && node scripts/smoke-mobile.mjs",
+    "verify:design": "node scripts/check-mobile-design.mjs",
+    "verify:smoke": "node scripts/smoke-mobile.mjs",
+    "verify:e2e": "node scripts/e2e-mobile.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^7.4.3",
     "@capacitor/core": "^7.4.3",
+    "@capacitor/local-notifications": "^7.0.7",
     "@mclink/shared": "workspace:*",
     "vue": "^3.5.13"
   },

@@ -1,5 +1,8 @@
 # GitLab CI：出 Windows 与 macOS 客户端安装包
 #
+# ⚠️ 本文件里的 build:windows 是**既有 job，本次 macOS 改造一行未动**（回归门槛：
+#    Windows 出包能力不能因为加 mac 支持而变坏）。macOS 的改动全部落在 build:macos。
+#
 # 前提（已确认可用）：本项目在 mc7984239/mc 上有 **macOS runner**
 # （构建日志路径 /Users/gitlab/builds/... 就是它），所以 macOS job 直接自动跑。
 # 如果哪天 runner 不可用，把 build:macos 的 `when` 改回 manual 即可。
@@ -7,6 +10,10 @@
 # 为什么必须 macOS：electron-builder 明确拒绝在 Windows 上构建 macOS 包 ——
 #   ⨯ Build for macOS is supported only on macOS
 # （源码里只拦 Windows：packager.js 的 `platform === MAC && process.platform === 'win32'`）
+#
+# ⚠️ 本文件"能不能跑起来"只能在推送到 GitLab 之后验证：本地既没有 runner，
+#    也没有 GitLab 的 rules 求值器。本地能验的只有 YAML 语法 + job/tags/artifacts
+#    的静态断言（见 client/scripts/verify-platform.mjs 与 docs/build-clients.md）。
 
 stages:
   - build
@@ -46,17 +53,28 @@ build:windows:
     expire_in: 30 days
 
 # ---------------------------------------------------------------- macOS
+#
+# 这个 job **只在 macOS runner 上跑**（tags 决定），出 dmg + zip 作为 artifacts。
+# 它是唯一能产出 macOS 包的路径：electron-builder 不允许在 Windows/Linux 上跨平台构建 mac。
+#
+# runner tag 换法：下面 tags 里的 `saas-macos-medium-m1` 就是 GitLab.com SaaS 的
+# Apple 芯片 macOS runner（用户已确认项目上可用）。换机器时**直接改这个字面量**——
+# 不写成变量：GitLab 文档里 tags 虽然支持变量展开，但它发生在 GitLab 侧、
+# 依赖实例版本与变量作用域，而写错的表现是 job 永远停在 pending（最难排查的一种失败）。
+# 可替换的值：saas-macos-medium-m1（M1）/ saas-macos-large-m2pro（M2 Pro，更贵）。
 build:macos:
   stage: build
   tags:
     - saas-macos-medium-m1
   rules:
+    # 打 v* 标签：自动跑，且**失败就是失败**（发布路径不允许静默跳过 mac 包）
     - if: $CI_COMMIT_TAG
+    # 「Run pipeline」按需出包：默认手动。
+    # allow_failure: true 只放在这条规则里 —— 手动 job 被"跳过"时不该把整条 pipeline
+    # 卡成 blocked（那会让"Run pipeline 只出 Windows"这件事看起来像出错了）。
     - if: $CI_PIPELINE_SOURCE == 'web'
       when: manual
-  # macOS 包体积大、耗时久（拉 400MB 产物、两次 Electron 下载）。
-  # 默认手动：这样"Run pipeline"只会跑 Windows，需要 mac 包时单独点这个 job。
-  allow_failure: false
+      allow_failure: true
   script:
     - node --version
     - corepack enable
@@ -88,3 +106,4 @@ build:macos:
       - client/release/*.dmg
       - client/release/*.zip
     expire_in: 30 days
+
