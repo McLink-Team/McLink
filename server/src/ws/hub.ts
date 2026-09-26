@@ -9,6 +9,7 @@ import type { IncomingMessage, Server } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { Topics, type ClientEvent, type ServerEvent } from '@mclink/shared';
 import { logger } from '../logger.ts';
+import { clientIp, type TrustedNet } from '../util/net.ts';
 import { APP_VERSION } from '../app.ts';
 import type { AuthContext } from '../http/kit.ts';
 
@@ -32,6 +33,13 @@ export interface WsHubOptions {
   /** 订阅话题的授权检查；返回 false 则拒绝订阅 */
   authorizeTopic: (client: WsClient, topic: string) => boolean | Promise<boolean>;
   heartbeatMs?: number;
+  /**
+   * 真实 IP 的判定规则与 HTTP 侧共用一套（util/net.ts 的 clientIp）。
+   * 以前这里直接读 `req.socket.remoteAddress`，于是反代后面所有 WS 连接的 IP
+   * 都是 127.0.0.1 —— 和 HTTP 侧记下来的真实 IP 对不上，排查时非常误导。
+   */
+  trustProxy?: boolean;
+  trustedProxies?: TrustedNet[] | null;
 }
 
 let clientSeq = 0;
@@ -117,7 +125,7 @@ export class WsHub {
       socket,
       auth: null,
       topics: new Set(),
-      ip: req.socket.remoteAddress ?? '',
+      ip: clientIp(req, this.#options.trustProxy ?? true, this.#options.trustedProxies ?? null),
       alive: true,
       connectedAt: Date.now(),
     };
@@ -140,6 +148,12 @@ export class WsHub {
     client.topics.add(Topics.platform);
 
     this.#clients.set(client.id, client);
+
+    /**
+     * 连接日志带上 IP。反代后面"所有 WS 都是 127.0.0.1"这类问题，
+     * 只有连的时候就记下来才查得动（HTTP 侧早就有这条，WS 侧一直没有）。
+     */
+    log.debug('WebSocket 已连接', { client: client.id, ip: client.ip, user: client.auth?.username });
 
     socket.on('message', (data) => void this.#onMessage(client, data.toString()));
     socket.on('pong', () => {

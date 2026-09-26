@@ -10,6 +10,8 @@ import { createApp, disposeApp, ensureBootstrapAdmin, APP_VERSION, type App } fr
 import { createServer } from './server.ts';
 import { mergeRelayedNetworks } from './services/nodes.ts';
 import { logger } from './logger.ts';
+import { describeTrustedProxies } from './util/net.ts';
+import type { ServerConfig } from './config.ts';
 import { toRoom } from './db/rooms.ts';
 
 const log = logger('main');
@@ -102,6 +104,7 @@ async function main(): Promise<void> {
 
   const base = app.config.publicBaseUrl || `http://${app.config.host}:${app.config.port}`;
   log.info('HTTP 服务已监听', { url: base, port: app.config.port });
+  logRealIpMode(app.config);
   if (!app.web.available) {
     log.warn('未找到前端构建产物，将显示兜底页面。请先执行 pnpm build:web', { root: app.web.root });
   }
@@ -470,6 +473,34 @@ async function fileExists(file: string): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * 把"真实 IP 是怎么算出来的"写进启动日志。
+ *
+ * 为什么值得专门记一行：反代后面"所有人都是 127.0.0.1"或"限流把整站算成一个人"
+ * 这类问题，只有能看到判定依据（信任谁、从哪个头取）时才查得动；
+ * 配置写错也要在这里报出来，而不是安静地按兼容模式跑。
+ */
+function logRealIpMode(config: ServerConfig): void {
+  if (!config.trustProxy) {
+    log.info('真实 IP：不信任反向代理头（MCLINK_TRUST_PROXY=false），一律使用直连对端地址');
+  } else if (config.trustedProxies.length > 0) {
+    log.info('真实 IP：信任反向代理头，取转发链里最右侧的非可信跳', {
+      trusted: describeTrustedProxies(config.trustedProxies),
+    });
+  } else {
+    log.warn(
+      '真实 IP：兼容模式 —— 信任回环与私网来源的转发头。若反代与主控不同机（容器/网关），' +
+        '或需要挡住"内网客户端伪造 X-Forwarded-For"，请显式设置 MCLINK_TRUSTED_PROXIES' +
+        '（同机 nginx 写 127.0.0.1/8,::1/128）',
+    );
+  }
+  if (config.trustedProxiesInvalid.length > 0) {
+    log.warn('MCLINK_TRUSTED_PROXIES 里有无法解析的项，已忽略', {
+      invalid: config.trustedProxiesInvalid.join(', '),
+    });
   }
 }
 

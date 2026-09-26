@@ -80,7 +80,11 @@ server {
     proxy_set_header X-Real-IP         $remote_addr;
     proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
-    # 主控用 X-Forwarded-For 识别真实 IP（MCLINK_TRUST_PROXY=true），限流与审计依赖它
+    # 主控用这两个头识别真实 IP（MCLINK_TRUST_PROXY=true + MCLINK_TRUSTED_PROXIES），
+    # 限流与审计依赖它。X-Forwarded-For 用 $proxy_add_x_forwarded_for（**追加**语义）没问题：
+    # 主控取的是转发链里最右侧的非可信跳，也就是本机 nginx 亲手写上的 $remote_addr，
+    # 客户端自己塞在最左边的那个值不会被采信。
+    # 注意：nginx 若不在本机（容器/另一台网关），要把它的地址加进 MCLINK_TRUSTED_PROXIES。
 
     # ---------------------------------------------------------------- 前端与 API
     location / {

@@ -255,12 +255,19 @@ GET /api/v1/rooms/public          （匿名）
 1. **不要直接把 8787 暴露到公网**：用 nginx/Caddy 做 TLS 终结，只让反代访问本机 8787。
 2. **中继端口 11010 必须开放 TCP+UDP**（它是裸 TCP/UDP，不能走 http 反代）；不要给它加任何
    7 层解析或限速设备，否则会破坏长连接。
-3. **`MCLINK_TRUST_PROXY` 的取值要与实际拓扑一致**：
-   * 在反代后面 → `true`（默认），并确保反代**覆盖**而不是追加客户端传来的
-     `X-Forwarded-For`（示例 nginx 配置用的是 `$proxy_add_x_forwarded_for`，
-     它会追加真实地址；主控取第一个值，所以攻击者伪造的头部会排在前面——见 §9 的弱点 6）；
-   * 直连暴露 → 必须设为 `false`，否则任何人伪造 `X-Forwarded-For` 就能绕过按 IP 的限流、
-     并污染审计日志。
+3. **`MCLINK_TRUST_PROXY` / `MCLINK_TRUSTED_PROXIES` 要与实际拓扑一致**：
+   * 在反代后面 → `MCLINK_TRUST_PROXY=true`（默认），并把**反代自己的地址**写进
+     `MCLINK_TRUSTED_PROXIES`（同机 nginx 写 `127.0.0.1/8,::1/128`，安装脚本已默认写入）。
+     主控只信这些来源发来的 `X-Forwarded-For` / `X-Real-IP`；
+   * 主控取的是转发链里**最右侧的非可信跳**，也就是反代亲手追加的那个 `$remote_addr`。
+     nginx 示例用的 `$proxy_add_x_forwarded_for` 是**追加**语义，客户端自己发的值排在
+     最左边，因此伪造它没有意义（旧实现在这里取最左边，属于"谁都能改"的值，已修）；
+   * CDN（Cloudflare 等）→ nginx 两级时，把 CDN 的**回源段**也加进 `MCLINK_TRUSTED_PROXIES`，
+     否则拿到的是 CDN 边缘地址（不精确，但至少不可伪造）；
+   * 直连暴露 → 必须设 `MCLINK_TRUST_PROXY=false`，否则任何伪造头部都可能被采信；
+   * 没配 `MCLINK_TRUSTED_PROXIES` 时是**兼容模式**：信任回环 + 私网来源的转发头
+     （容器里跑反代的老部署不至于一夜翻车），启动日志会有一条 warn 提示去显式配置。
+     注意兼容模式的残留问题：内网客户端本身也落在私网段里，因此**内网来源**仍可伪造 IP。
 4. **显式配置 `MCLINK_RELAY_PUBLIC_HOST` / `MCLINK_PUBLIC_BASE_URL`**：否则票据里的主控中继
    兜底地址会按请求的 `Host` 头推导，可能给出内网地址。
 5. **给 `/etc/mclink/mclink.env` 和 `/etc/mclink/node.env` 设 600**（安装脚本已做）；
@@ -294,14 +301,14 @@ GET /api/v1/rooms/public          （匿名）
 | 2 | **`/rooms/:id` 与 `/rooms/:id/members` 缺少成员校验** | `api/rooms.ts` | 任意登录用户知道房间 ID 即可读房间元信息、加入码与成员列表（含虚拟 IP） | 加 `assertMemberOrHost()` 校验 |
 | 3 | **节点令牌的熵源不是密码学随机**：`nodeToken = nodeId + "." + sha256(nodeId + ":" + Date.now() + ":" + Math.random())` | `services/nodes.ts` 的 `enroll()` | `Math.random()` 不是 CSPRNG；`nodeId` 与 `Date.now()` 都是低熵/可枚举量，理论上可被预测 | 改为 `crypto.randomBytes(32).toString('base64url')`（与用户会话令牌一致的写法） |
 | 4 | **`private_mode` 不可用 → 中继不校验密钥** | EasyTier 行为（§3.2） | 见 §4.1 | 需要强成员认证时改用 secure mode + credential；或为每个房间起独立中继实例（成本高） |
-| 5 | **`MCLINK_TRUST_PROXY=true` 时完全信任 `X-Forwarded-For`，且取的是第一个值** | `util/net.ts` 的 `clientIp()` | 若主控可被直连访问，攻击者能伪造 IP 绕过 IP 限流、污染审计 | 增加"可信代理 CIDR"白名单后再采信 XFF；取最右侧不可信值；直连场景设 `TRUST_PROXY=false` |
+| 5 | ~~`MCLINK_TRUST_PROXY=true` 时完全信任 `X-Forwarded-For`，且取的是第一个值~~ **已修（v1.0.4）** | `util/net.ts` 的 `clientIp()` | 修复前：可伪造 IP 绕过 IP 限流、污染审计、冒充子节点上报公网地址 | 已加可信代理 CIDR 白名单（`MCLINK_TRUSTED_PROXIES`）并改为取最右侧非可信跳；实测见 `.cache/check-real-ip.mjs` |
 | 6 | **未认证 WS 可读平台流量与房间名** | `server.ts` 的 `authorizeTopic` | 信息泄露（房间名、节点名、带宽） | 要求登录才能订阅 `traffic`；`platform` 只下发聚合计数 |
 | 7 | **限流是单进程内存态** | `server.ts` 的 `RateLimiter` | 重启清零；多进程/多实例不共享；无法做全局封禁 | 大规模部署时换成 Redis 等外部计数 |
 | 8 | **房间准入密码是固定盐 sha256** | `services/rooms.ts` 的 `hashRoomPassword()` | 库泄露后可离线快速爆破；不同房间相同密码哈希相同 | 若把房间密码当"真密码"用，应改为 scrypt/argon2 + per-room 盐（当前设计有意从简，因为真正隔离靠 32 位密钥） |
 | 9 | **`instance_recv_bps_limit` 可被客户端绕过** | 票据 TOML（客户端自制） | 恶意客户端可无视单成员限速 | 平台级硬限制只能靠中继的 `foreign_relay_bps_limit` |
 | 10 | **配额字段未强制**：`quotaBytes` / `maxRooms` 已入库，但 `quota_exceeded` 从未抛出 | `services/rooms.ts`（只用了 `maxRooms`） | 用量配额形同虚设（`maxRooms` 是唯一生效的） | 在流量累加处做配额判定 |
 | 11 | **`CORS` 允许 `*`** | `server.ts` 的 `isAllowedOrigin()` | 配置成 `*` 时回显任意 Origin 并带 `credentials: true`；虽然认证靠 Bearer 头（非 Cookie）因而 CSRF 风险低，但仍应避免 | 生产环境显式列出来源 |
-| 12 | **下载产物无摘要** | `api/public.ts` 的 `listDownloads()`（`sha256: null`） | 无法校验安装包完整性 | 上传时计算摘要并落库/落文件 |
+| 12 | ~~下载产物无摘要~~ **部分已修（v1.0.4）** | `api/public.ts` 的 `listDownloads()` | 修复前 `sha256` 恒为 `null`，无法校验安装包完整性；主产物还优先用**管理员手工登记**的值，换包忘改时页面会给出对不上的哈希（比不显示更糟） | 主控现在按下载目录里的实际文件懒计算并缓存摘要，登记值与实际不符时**以实际文件为准**并记 warn；同名文件被替换（size/mtime 变化）会自动重算。实测见 `.cache/check-download-sha.mjs`。剩余：摘要只覆盖本机目录，站外镜像仍需人工核对 |
 | 13 | **审计日志记录管理员提交的原始 body** | `api/admin.ts` 的 `user.update` 等 | 若管理员误传敏感字段会被落库 | 只记录白名单字段 |
 | 14 | **无 2FA / 无账号锁定** | — | 管理员账号弱密码即高危 | 强密码 + 限制管理台来源 IP |
 

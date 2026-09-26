@@ -10,7 +10,7 @@ import path from 'node:path';
 import { ErrorCodes, type ApiError } from '@mclink/shared';
 import { HttpError, isHttpError } from '../util/errors.ts';
 import { ValidationError } from '@mclink/shared';
-import { clientIp } from '../util/net.ts';
+import { clientIp, type TrustedNet } from '../util/net.ts';
 import { logger } from '../logger.ts';
 
 const log = logger('http');
@@ -187,7 +187,18 @@ export async function readJsonBody<T>(req: IncomingMessage): Promise<T> {
   }
 }
 
-export function makeCtx(req: IncomingMessage, res: ServerResponse, url: URL, trustProxy: boolean): Ctx {
+/**
+ * 组装一次请求的上下文。
+ * `trustedProxies` 为空表示兼容模式（见 util/net.ts 的 clientIp）——
+ * 真实 IP 的判定规则只写在那一个地方，这里只负责把配置透传下去。
+ */
+export function makeCtx(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  trustProxy: boolean,
+  trustedProxies: TrustedNet[] | null = null,
+): Ctx {
   let bodyPromise: Promise<Record<string, unknown>> | null = null;
   return {
     req,
@@ -196,7 +207,7 @@ export function makeCtx(req: IncomingMessage, res: ServerResponse, url: URL, tru
     url,
     params: {},
     query: url.searchParams,
-    ip: clientIp(req, trustProxy),
+    ip: clientIp(req, trustProxy, trustedProxies),
     auth: null,
     agent: null,
     state: {},
