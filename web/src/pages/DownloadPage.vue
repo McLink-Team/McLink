@@ -351,7 +351,7 @@ const requirements: Array<{ label: string; value: string }> = [
             <pre class="code">sha256sum McLink-Setup-0.1.0-x64.exe</pre>
             <p class="hint">
               与「可用产物」里该文件显示的 SHA-256 不一致时不要安装，
-              并联系管理员确认来源（校验值由管理员在控制台「平台设置」的 clientSha256 中登记）。
+              并联系管理员确认来源（校验值由主控按下载目录里的实际文件计算）。
             </p>
             <button class="btn btn-sm" type="button" @click="copyText(primaryUrl, '下载地址')">
               复制下载地址
