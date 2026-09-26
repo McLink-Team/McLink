@@ -36,6 +36,8 @@ import {
   DEFAULT_ROOM_POLICY,
   allocateSeat,
   allocateSlot,
+  BLOCKED_WORDS,
+  displayNameProblem,
   EMAIL_CODE_PATTERN,
   emailProblem,
   hostIpCidr,
@@ -43,6 +45,7 @@ import {
   kbpsToBytesPerSecond,
   memberIpCidr,
   memberIpForSlot,
+  normalizeDisplayName,
   normalizeEmailCode,
   slotFromIp,
   subnetForSlot,
@@ -403,6 +406,88 @@ describe('输入校验', () => {
     assert.ok(!EMAIL_CODE_PATTERN.test('1234567'));
     assert.ok(!EMAIL_CODE_PATTERN.test('12345a'));
     assert.equal(normalizeEmailCode(' 12 34 56 '), '123456');
+  });
+});
+
+describe('昵称（显示名）保留词与反冒充', () => {
+  test('归一化：全角 / 零宽 / 分隔符 / 同形字都折成同一个骨架', () => {
+    assert.equal(normalizeDisplayName('ＭｃＬｉｎｋ'), 'mclink', '全角走 NFKC');
+    assert.equal(normalizeDisplayName('Mc\u200bLink'), 'mclink', '零宽空格 U+200B');
+    assert.equal(normalizeDisplayName('Mc\u200dLink'), 'mclink', '零宽连接符 U+200D');
+    assert.equal(normalizeDisplayName('Mc\ufeffLink'), 'mclink', 'BOM U+FEFF');
+    assert.equal(normalizeDisplayName('Mc\u00adLink'), 'mclink', '软连字符 U+00AD');
+    assert.equal(normalizeDisplayName('管 理 员'), '管理员', '空格分隔');
+    assert.equal(normalizeDisplayName('Mc_L-i.nk'), 'mclink', '下划线/连字符/点');
+    assert.equal(normalizeDisplayName('МсLink'), 'mclink', '西里尔 М(U+041C)/с(U+0441)');
+    assert.equal(normalizeDisplayName(' 夜航星 '), '夜航星', '两侧空格');
+  });
+
+  test('冒充官方：归一化后命中保留词就拒（全角/空格/零宽/同形字/替形/加编号都挡）', () => {
+    const bypasses = [
+      '管理员',
+      '管 理 员',
+      '管-理-员',
+      'ＭｃＬｉｎｋ',
+      'McLink',
+      'Mc\u200bLink',
+      'МсLink',
+      'McLink官方客服',
+      '4dm1n',
+      'Admin123',
+      '管理员007',
+      '系统',
+      '客服',
+      'root',
+      'gm',
+    ];
+    for (const name of bypasses) {
+      const problem = displayNameProblem(name);
+      assert.ok(problem, `${JSON.stringify(name)} 应被拒绝`);
+      assert.match(problem, /官方身份相近/, `${JSON.stringify(name)} 的原因要可读`);
+    }
+  });
+
+  test('空/占位名：整名命中就拒，正常昵称放过', () => {
+    for (const name of ['匿名', '游客', 'null', 'undefined', 'test', '测试', '某人', '用户']) {
+      const problem = displayNameProblem(name);
+      assert.ok(problem, `${name} 应被拒绝`);
+      assert.match(problem ?? '', /占位名称/);
+    }
+    // 只做整名匹配：加了编号能区分到人，就不算占位名
+    assert.equal(displayNameProblem('夜航星'), null);
+    assert.equal(displayNameProblem('Player_01'), null, 'Player_01 是正常昵称（player 刻意不在词表里）');
+    assert.equal(displayNameProblem(''), null, '空值的语义由调用方决定（注册时昵称可选）');
+    // 只有不可见字符/分隔符：放行会在名册里出现看不见的人
+    assert.ok(displayNameProblem('\u200b'));
+    assert.ok(displayNameProblem('---'));
+  });
+
+  test('反冒充：与已有用户同名（含加零宽字符/分隔符）拒绝，改回自己原名放行', () => {
+    const taken = ['夜航星', 'Player_01'];
+    assert.ok(displayNameProblem('夜航星', { takenDisplayNames: taken }));
+    assert.match(displayNameProblem('夜航星', { takenDisplayNames: taken }) ?? '', /已被占用/);
+    assert.ok(displayNameProblem('夜\u200b航星', { takenDisplayNames: taken }), '插零宽字符冒充');
+    assert.ok(displayNameProblem('夜 航 星', { takenDisplayNames: taken }), '插空格冒充');
+    assert.equal(displayNameProblem('夜航星2', { takenDisplayNames: taken }), null, '不一样的名字要放过');
+
+    // 改回自己现在的昵称：归一化后相同 → 放行（否则老用户连保存一次都过不去）
+    assert.equal(displayNameProblem('夜航星', { takenDisplayNames: [], selfDisplayName: '夜航星' }), null);
+    assert.equal(displayNameProblem(' 夜 航 星 ', { takenDisplayNames: [], selfDisplayName: '夜航星' }), null);
+    assert.equal(displayNameProblem('ＭｃＬｉｎｋ', { selfDisplayName: 'McLink' }), null, '老昵称本身是保留词时也要放行');
+  });
+
+  test('运营词表：代码不预设内容（默认空），填进来即生效、不需要改代码', () => {
+    const words = BLOCKED_WORDS as string[];
+    const before = [...words];
+    try {
+      words.push('运营屏蔽词');
+      assert.equal(displayNameProblem('运营屏蔽词'), '这个名字不能使用：包含平台不接受的词语，请换一个');
+      assert.ok(displayNameProblem('前缀运营屏蔽词后缀'), '运营词表按"出现即拦"匹配');
+      assert.equal(displayNameProblem('夜航星'), null, '词表之外的正常昵称不受影响');
+    } finally {
+      words.length = 0;
+      words.push(...before);
+    }
   });
 });
 

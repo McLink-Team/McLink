@@ -1,5 +1,5 @@
 /** 账号接口 */
-import { ErrorCodes, Routes } from '@mclink/shared';
+import { ErrorCodes, Routes, displayNameProblem } from '@mclink/shared';
 import type { App } from '../app.ts';
 import type { Router } from '../http/kit.ts';
 import { bearerToken, req, requireAuth } from './helpers.ts';
@@ -64,6 +64,23 @@ export function registerAuthRoutes(router: Router, app: App): void {
     const email = typeof body.email === 'string' ? body.email.trim().slice(0, 120) : body.email === null ? null : undefined;
     if (displayName !== undefined && displayName.length === 0) {
       throw HttpError.badRequest('显示名不能为空', { displayName: '显示名不能为空' });
+    }
+    if (displayName !== undefined) {
+      /**
+       * 保留词 + 反冒充。**服务端是唯一的强制点**：客户端那份同函数校验只是即时提示
+       * （它拿不到库里的显示名，也拦不住直接改包的请求）。
+       *
+       * 两点讲究：
+       *   · 校验的是"将要入库的那一份"（trim + 截断之后）—— 否则 32 字之外的绕过照样会落库；
+       *   · 把自己当前的名字一起传进去：归一化后与自己相同就直接放行，
+       *     否则用户想连点两次保存（或只改邮箱）都会被自己的旧昵称挡下来。
+       */
+      const current = app.users.findById(auth.userId);
+      const problem = displayNameProblem(displayName, {
+        takenDisplayNames: app.users.displayNames(auth.userId),
+        selfDisplayName: current?.display_name ?? null,
+      });
+      if (problem) throw HttpError.badRequest(problem, { displayName: problem });
     }
     app.users.updateProfile(auth.userId, { displayName, email });
     const row = app.users.findById(auth.userId);

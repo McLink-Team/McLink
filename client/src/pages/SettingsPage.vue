@@ -22,7 +22,7 @@
  * 输入框其实是本机名称。
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue';
-import { currentTheme, emailProblem, passwordProblem, setThemeChoice, themeChoice, type ThemeChoice } from '@mclink/shared';
+import { currentTheme, displayNameProblem, emailProblem, passwordProblem, setThemeChoice, themeChoice, type ThemeChoice } from '@mclink/shared';
 import {
   changePassword,
   clientState,
@@ -113,10 +113,30 @@ const nickBusy = ref(false);
 const nickError = ref('');
 const nickSaved = ref(false);
 
+/**
+ * 与服务端同一条规则（shared 的 `displayNameProblem`）：保留词（冒充官方、匿名/占位）
+ * 在输入时就报出来，不用等服务端回一次 400。
+ *
+ * 两点与密码那一段同理：
+ *   · `selfDisplayName` 要传自己的旧昵称 —— 服务端"改回自己原名放行"的规则这里也要一致，
+ *     否则老用户改邮箱时会被自己现在的名字卡住；
+ *   · 服务端仍是强制点：它还会拿库里**所有**显示名做重名比对（客户端没有那份名单）。
+ */
+const nicknameIssue = computed(() =>
+  nickname.value.trim().length > 0
+    ? displayNameProblem(nickname.value.trim(), { selfDisplayName: clientState.user?.displayName ?? null })
+    : null,
+);
+
 async function saveNickname(): Promise<void> {
   const next = nickname.value.trim();
   if (next.length === 0) {
     nickError.value = '昵称不能为空。';
+    return;
+  }
+  // 按钮 disabled 时进不来，回车/别处触发时兜底 —— 保证一定有可读的原因
+  if (nicknameIssue.value) {
+    nickError.value = nicknameIssue.value;
     return;
   }
   nickBusy.value = true;
@@ -369,6 +389,8 @@ function openDataDir(): void {
               :disabled="nickBusy"
             />
             <div v-if="nickname.trim().length === 0" class="hint acct-bad">昵称不能为空。</div>
+            <!-- 与服务端同一条规则（shared 的 displayNameProblem）：冒充官方/占位名在输入时就报 -->
+            <div v-else-if="nicknameIssue" class="hint acct-bad">{{ nicknameIssue }}</div>
             <div v-else class="hint">
               房间成员列表、聊天和左下角头像都用它；用户名
               <span class="mono">{{ username }}</span> 不可修改，「本机名称」是另一回事（只备注这台设备）。
@@ -378,7 +400,7 @@ function openDataDir(): void {
             <button
               class="btn btn-primary"
               type="button"
-              :disabled="nickBusy || nickname.trim().length === 0"
+              :disabled="nickBusy || nickname.trim().length === 0 || nicknameIssue !== null"
               @click="saveNickname()"
             >
               保存昵称

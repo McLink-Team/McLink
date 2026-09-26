@@ -1,5 +1,5 @@
 /** 账号服务：注册、登录、会话、改密、邮箱验证 */
-import { ErrorCodes, emailProblem, normalizeEmailCode, EMAIL_CODE_PATTERN, passwordProblem, USERNAME_PATTERN } from '@mclink/shared';
+import { ErrorCodes, displayNameProblem, emailProblem, normalizeEmailCode, EMAIL_CODE_PATTERN, passwordProblem, USERNAME_PATTERN } from '@mclink/shared';
 import { HttpError } from '../util/errors.ts';
 import { hashPassword, newToken, randInt, safeEqual, sha256, verifyPassword } from '../util/id.ts';
 import { logger } from '../logger.ts';
@@ -108,11 +108,24 @@ export class AuthService {
       this.assertEmailUsable(email, null);
     }
 
+    /**
+     * 显示名与改资料那一侧同一条规则（shared 的 `displayNameProblem`）：
+     * 保留词 + 反冒充。注册是**另一个入口**，只堵 PATCH 等于留了扇后门。
+     *
+     * 只校验用户真的填了昵称的情况：留空时显示名回落到用户名，用户名有自己的
+     * 字符集与唯一性规则，不属于本次范围（而且注册表单里那一栏本来就是"可选"）。
+     */
+    const displayName = input.displayName?.trim() ?? '';
+    if (displayName.length > 0) {
+      const problem = displayNameProblem(displayName, { takenDisplayNames: this.users.displayNames() });
+      if (problem) throw HttpError.badRequest(problem, { displayName: problem });
+    }
+
     const passwordHash = await hashPassword(input.password);
     const isFirstUser = this.users.count() === 0;
     const row = this.users.create({
       username: input.username,
-      displayName: input.displayName?.trim() || input.username,
+      displayName: displayName || input.username,
       passwordHash,
       role: isFirstUser ? 'admin' : 'user',
       email: email.length > 0 ? email : null,
