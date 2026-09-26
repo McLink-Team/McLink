@@ -10,7 +10,7 @@ import type { App } from '../app.ts';
 import { APP_VERSION } from '../app.ts';
 import { mergeRelayedNetworks } from '../services/nodes.ts';
 import type { Router } from '../http/kit.ts';
-import { endpointHost } from '../db/nodes.ts';
+import { endpointHost, nodeConnectPort } from '../db/nodes.ts';
 import { logger } from '../logger.ts';
 import { handleUnsubscribe } from './unsubscribe.ts';
 
@@ -157,11 +157,17 @@ export function registerPublicRoutes(router: Router, app: App): void {
   /**
    * 客户端可见的中继节点列表（**需登录**）。
    *
-   * 和公开的 `/regions` 的区别只有一点：多了 `host`（探测用的主机名/IP）。
-   * 建房页要自己测延迟，就必须知道往哪儿 ping；但公开接口里绝不能出现端点，
-   * 所以这条单独做成鉴权路由。端口一律不给 —— 客户端只需要 ICMP 目标。
+   * 和公开的 `/regions` 的区别只有一点：多了探测目标 `host` + `port`。
+   * 建房页要自己测延迟，就必须知道往哪儿连；但公开接口里绝不能出现端点，
+   * 所以这条单独做成鉴权路由。
+   *
+   * 端口给的是**链接端口**（`nodeConnectPort`，规则与票据下发的那个端口同一份，
+   * 见 db/nodes.ts）：客户端就是用这个端口做 TCP 握手测延迟的，两边必须是同一个端口 ——
+   * 给运行端口的话，在 NAT/端口映射后面会测出一个根本连不上的数字。
+   * 这不是新增泄露：登录用户拿到的房间票据里本来就有 `host:connectPort`。
    */
   router.get(Routes.clientNodes, () => {
+    const relayPort = app.settings.current.relayPort;
     return {
       nodes: app.nodes
         .list()
@@ -172,6 +178,8 @@ export function registerPublicRoutes(router: Router, app: App): void {
           region: n.region,
           /** 只给主机部分：`relay-sh.example.com:21010` → `relay-sh.example.com` */
           host: endpointHost(n.endpoint),
+          /** 链接端口：客户端做 TCP 延迟探测、以及真正加入房间时连的都是它 */
+          port: nodeConnectPort(n, relayPort),
           peers: n.peers,
           capacity: n.capacity_peers,
           status: n.status,
