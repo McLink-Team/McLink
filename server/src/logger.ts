@@ -19,27 +19,35 @@ export interface LogFields {
   [key: string]: unknown;
 }
 
-export class Logger {
-  #level: LogLevel;
-  #json: boolean;
-  #scope: string;
+/**
+ * 全局日志配置，所有 logger（包括早就发出去的 child）都读这一份。
+ *
+ * 为什么不是每个 logger 抄一份：`logger('main')` / `logger('server')` 这类调用发生在
+ * **模块加载时**，早于 createApp() 里的 initLogger —— 抄一份的话，主控里最常用的
+ * 这几个 scope 会一直用着"默认 info + 非 JSON"的旧值。实测后果有两个：
+ *   · `MCLINK_LOG_LEVEL=debug` 对这些 scope 调不动（请求日志是 debug 级，直接被吞）；
+ *   · 生产环境日志一半 JSON、一半彩色文本，采集端解析不了。
+ */
+const sink: { level: LogLevel; json: boolean } = { level: 'info', json: false };
 
-  constructor(level: LogLevel, scope = 'mclink', json = false) {
-    this.#level = level;
+export class Logger {
+  readonly #scope: string;
+
+  constructor(scope = 'mclink') {
     this.#scope = scope;
-    this.#json = json;
   }
 
   child(scope: string): Logger {
-    return new Logger(this.#level, `${this.#scope}:${scope}`, this.#json);
+    return new Logger(`${this.#scope}:${scope}`);
   }
 
+  /** 改全局级别（所有 scope 立即生效） */
   setLevel(level: LogLevel): void {
-    this.#level = level;
+    sink.level = level;
   }
 
   get level(): LogLevel {
-    return this.#level;
+    return sink.level;
   }
 
   debug(msg: string, fields?: LogFields): void {
@@ -59,9 +67,9 @@ export class Logger {
   }
 
   #write(level: LogLevel, msg: string, fields?: LogFields): void {
-    if (LEVEL_WEIGHT[level] < LEVEL_WEIGHT[this.#level]) return;
+    if (LEVEL_WEIGHT[level] < LEVEL_WEIGHT[sink.level]) return;
 
-    if (this.#json) {
+    if (sink.json) {
       const line = JSON.stringify({
         ts: new Date().toISOString(),
         level,
@@ -105,7 +113,9 @@ function formatFields(fields: LogFields): string {
 let root: Logger | null = null;
 
 export function initLogger(level: LogLevel, json = false): Logger {
-  root = new Logger(level, 'mclink', json);
+  sink.level = level;
+  sink.json = json;
+  root ??= new Logger();
   return root;
 }
 

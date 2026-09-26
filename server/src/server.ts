@@ -114,7 +114,7 @@ export function createServer(app: App): RunningServer {
   async function handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const started = Date.now();
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
-    const ctx = makeCtx(req, res, url, app.config.trustProxy);
+    const ctx = makeCtx(req, res, url, app.config.trustProxy, app.config.trustedProxies);
 
     applySecurityHeaders(res);
 
@@ -370,6 +370,8 @@ export function createServer(app: App): RunningServer {
   const hub = new WsHub({
     server,
     path: WS_PATH,
+    trustProxy: app.config.trustProxy,
+    trustedProxies: app.config.trustedProxies,
     resolveToken: (token) => {
       const session = app.auth.resolveSession(token);
       if (!session) return null;
@@ -455,7 +457,8 @@ function readMs(name: string, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
-function logRequest(ctx: Ctx, startedAt: number, err?: unknown): void {  const ms = Date.now() - startedAt;
+function logRequest(ctx: Ctx, startedAt: number, err?: unknown): void {
+  const ms = Date.now() - startedAt;
   const fields = {
     method: ctx.method,
     path: ctx.url.pathname,

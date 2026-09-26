@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { SmtpEncryption } from '@mclink/shared';
+import { parseTrustedProxies, type TrustedNet } from './util/net.ts';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 /** server/ 目录 */
@@ -21,6 +22,15 @@ export interface ServerConfig {
   /** 对外可访问的基础 URL，用于生成下载链接与回调 */
   publicBaseUrl: string;
   trustProxy: boolean;
+  /**
+   * 可信反向代理网段（`MCLINK_TRUSTED_PROXIES`）。
+   * 空数组 = 兼容模式：信任回环与私网来源的转发头（老行为），启动时会提示显式配置。
+   */
+  trustedProxies: TrustedNet[];
+  /** 配置里写错、已被忽略的项（启动日志里报出来，免得"配了没生效"） */
+  trustedProxiesInvalid: string[];
+  /** 原始配置串，仅用于日志与诊断 */
+  trustedProxiesRaw: string;
 
   /* ---- 存储 ---- */
   dataDir: string;
@@ -175,11 +185,16 @@ function pickLogLevel(): LogLevel {
 
 export function loadConfig(): ServerConfig {
   const dataDir = path.resolve(env('MCLINK_DATA_DIR') ?? path.join(SERVER_ROOT, 'data'));
+  const trustedRaw = env('MCLINK_TRUSTED_PROXIES') ?? '';
+  const trusted = parseTrustedProxies(trustedRaw);
   const config: ServerConfig = {
     host: env('MCLINK_HOST') ?? '0.0.0.0',
     port: intEnv('MCLINK_PORT', DEFAULT_HTTP_PORT, 1, 65535),
     publicBaseUrl: env('MCLINK_PUBLIC_BASE_URL') ?? '',
     trustProxy: boolEnv('MCLINK_TRUST_PROXY', true),
+    trustedProxies: trusted.nets,
+    trustedProxiesInvalid: trusted.invalid,
+    trustedProxiesRaw: trustedRaw.trim(),
 
     dataDir,
     dbFile: path.resolve(env('MCLINK_DB_FILE') ?? path.join(dataDir, 'mclink.sqlite')),

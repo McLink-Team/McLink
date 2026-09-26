@@ -596,6 +596,9 @@ write_env_file() {
     echo "MCLINK_HOST=0.0.0.0"
     [[ -n "$PUBLIC_BASE_URL" ]] && echo "MCLINK_PUBLIC_BASE_URL=${PUBLIC_BASE_URL}"
     echo "MCLINK_TRUST_PROXY=true"
+    # 只信这台机器上的反代（nginx 与主控同机）。不配的话主控会退回"信任回环 + 私网"的
+    # 兼容模式 —— 那种模式下内网客户端也能伪造 X-Forwarded-For 冒充别人。
+    echo "MCLINK_TRUSTED_PROXIES=127.0.0.1/8,::1/128"
     echo ""
     echo "# ---- 主控中继（单端口承载多房间）----"
     echo "MCLINK_RELAY_PORT=${RELAY_PORT}"

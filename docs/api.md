@@ -28,8 +28,12 @@
 | 一般接口 | `MCLINK_RATE_LIMIT` | 240 次/分钟 |
 | `POST /auth/login`、`POST /auth/register` | `MCLINK_LOGIN_RATE_LIMIT` | 20 次/分钟 |
 
-超限返回 `429` + `rate_limited`。IP 判定遵循 `MCLINK_TRUST_PROXY`（默认 `true`，取
-`X-Forwarded-For` 第一跳）。
+超限返回 `429` + `rate_limited`。限流按客户端 IP 分桶，IP 的判定规则是
+「只信可信代理 + 取转发链里**最右侧的非可信跳**」，详见 `docs/security.md` §7.3：
+
+* `MCLINK_TRUST_PROXY`（默认 `true`）：直连暴露到公网时必须设成 `false`；
+* `MCLINK_TRUSTED_PROXIES`：可信反代网段（如 `127.0.0.1/8,::1/128`）。没配时按兼容模式
+  信任"回环 + 私网"来源的转发头，启动日志会有一条 warn 提示。
 
 ### 错误码表（`ErrorCodes`，`packages/shared/src/protocol.ts`）
 
