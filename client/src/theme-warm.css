@@ -494,27 +494,49 @@ textarea.input:focus {
 }
 
 /* 状态灯：新世界里它不是"发光的小灯"，而是一枚实色圆点 + 文字说明。
- * 「一切正常」这一类（已联机 / 已连接 / 直连成功）**统一用绿**：用户明确要求提示灯全绿，
- * 而且绿色在暖纸底与暖墨底上都比强调色（摩卡）更一眼可辨 —— 状态灯不该和品牌色抢注意力。
- * 故障仍然是红的：把故障也涂绿等于骗人。 */
+ *
+ * **特异性务必保持双选择器**：styles.css 里把底色写成了
+ *   `.app-shell .led, .titlebar .led { background: var(--paper-faint) }`
+ * 那是 0,2,0 的特异性，而 `.led-ok` 只有一个类（0,1,0）—— 于是标题条那枚灯
+ * 永远是灰的，"已联机"也不例外（这个 bug 在改造前就在，只是没人量过渲染结果）。
+ * 所以状态色也写成 `.app-shell .led-ok, .titlebar .led-ok`，同特异性 + 本文件后加载 = 生效。
+ *
+ * 「一切正常」这一类（已联机 / 连接中 / 直连成功）**统一用绿**（用户要求）：绿色在
+ * 暖纸底与暖墨底上都比强调色（摩卡）更一眼可辨。故障仍然是红的 —— 把故障也涂绿等于骗人。 */
+.app-shell .led,
+.titlebar .led {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--ink-faint);
+}
+.app-shell .led-ok,
+.titlebar .led-ok,
+.app-shell .led-signal,
+.titlebar .led-signal {
+  background: var(--led-ok);
+}
+.app-shell .led-warn,
+.titlebar .led-warn {
+  background: var(--warn);
+}
+.app-shell .led-fault,
+.titlebar .led-fault,
+.app-shell .led-danger,
+.titlebar .led-danger {
+  background: var(--fault);
+}
+/* 旧的呼吸动画保留：链路在跑时轻微呼吸，比一闪一闪催人好 */
+.led-live {
+  animation: led-breathe 2.6s var(--ease) infinite;
+}
 .led {
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background: var(--ink-faint);
   flex: none;
-}
-.led-ok {
-  background: var(--led-ok);
-}
-.led-warn {
-  background: var(--warn);
-}
-.led-fault {
-  background: var(--fault);
-}
-.led-signal {
-  background: var(--led-ok);
 }
 
 /* ------------------------------------------------------------ 列表 / 提示 */
