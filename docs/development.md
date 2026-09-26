@@ -108,14 +108,16 @@ cp client/release/McLink-Setup-0.1.0-x64.exe server/data/downloads/
 # 没有任何产物拿到「主产物」排序与已登记的 sha256。改版本号时三处一起改。
 # （服务端有兜底：设置里的文件不存在时，会退回下载目录里真实的 Windows 产物。）
 
-# 3) 登记校验值：下载页显示的 sha256 取自设置项 clientSha256，
-#    服务端**不会**每次请求都去哈希一个 87 MB 的文件（见 server/src/api/public.ts
-#    的 listDownloads）。忘了这步的现象是：页面显示旧哈希，玩家按页面校验会以为文件被篡改。
+# 3) 登记校验值：下载页显示的 sha256 默认由主控**自己算**（懒计算 + 缓存，
+#    见 server/src/api/public.ts 的 listDownloads/artifactSha256），不需要人工登记。
+#    设置项 clientSha256 仍然可以登记（自建下载源、站外核对过的值），但一旦它与
+#    实际文件对不上，主控会**以实际文件为准**并记一条 warn —— 所以忘了改这一项
+#    的后果从"页面显示旧哈希、玩家以为文件被篡改"降级成一条日志提醒。
 node -e "const {createHash}=require('crypto'),fs=require('fs');\
 console.log(createHash('sha256').update(fs.readFileSync(process.argv[1])).digest('hex'))" \
   server/data/downloads/McLink-Setup-0.1.0-x64.exe
-# 然后把得到的值 PATCH 到 /api/v1/admin/settings 的 clientSha256
-# （控制台「平台设置」里也能改；clientDownloadUrl 同理，文件名变了要一起改）
+# 想人工登记就 PATCH /api/v1/admin/settings 的 clientSha256（控制台「平台设置」里也能改；
+# clientDownloadUrl 同理，文件名变了要一起改）
 ```
 
 发布后建议按下载页给的链接**真下一次**并核对哈希——这条链路上

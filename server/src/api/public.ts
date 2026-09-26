@@ -11,7 +11,10 @@ import { APP_VERSION } from '../app.ts';
 import { mergeRelayedNetworks } from '../services/nodes.ts';
 import type { Router } from '../http/kit.ts';
 import { endpointHost } from '../db/nodes.ts';
+import { logger } from '../logger.ts';
 import { handleUnsubscribe } from './unsubscribe.ts';
+
+const log = logger('api:public');
 
 export interface DownloadArtifact {
   id: string;
@@ -316,6 +319,15 @@ function archOf(name: string): DownloadArtifact['arch'] {
 const shaCache = new Map<string, { size: number; mtimeMs: number; sha256: string }>();
 const shaPending = new Set<string>();
 
+/**
+ * 已经报过的"登记值与实际不一致"。
+ *
+ * 这个 warn 不能每次请求都打：`/meta` 与 `/downloads` 都是打开页面就调的，
+ * 每次都写等于用一条已知问题刷满日志。同一种不一致只报一次；
+ * 换了包（算出新的摘要）会重新报一条，正好是运维需要知道的那一次。
+ */
+const shaMismatchWarned = new Set<string>();
+
 export function artifactSha256(app: App, filename: string, size: number, mtimeMs: number): string | null {
   const cached = shaCache.get(filename);
   if (cached && cached.size === size && cached.mtimeMs === mtimeMs) return cached.sha256;
@@ -336,6 +348,39 @@ export function artifactSha256(app: App, filename: string, size: number, mtimeMs
   }
   return null;
 }
+/**
+ * 主产物的校验值：登记值与实际文件摘要取"实际文件"为准。
+ *
+ * 三种情形：
+ *   · 没登记 → 用算出来的（没算完就是 null，界面显示「未登记」）；
+ *   · 登记了、还没算出来 → 先显示登记值（别让页面空着），算完再纠正；
+ *   · 登记了、算出来了、两者不同 → 用实际值 + 记一条 warn（换包忘了改登记值时唯一的线索）。
+ */
+function resolveSha256(
+  app: App,
+  filename: string,
+  primaryFile: string,
+  registered: string | null,
+  stat: { size: number; mtimeMs: number },
+): string | null {
+  const computed = artifactSha256(app, filename, stat.size, stat.mtimeMs);
+  if (filename !== primaryFile || !registered) return computed;
+  if (!computed) return registered;
+  if (computed !== registered) {
+    const key = `${filename}:${registered}:${computed}`;
+    if (!shaMismatchWarned.has(key)) {
+      shaMismatchWarned.add(key);
+      log.warn('登记的 clientSha256 与实际安装包不一致，已改用实际摘要（换包后忘了更新登记值？）', {
+        file: filename,
+        registered,
+        actual: computed,
+      });
+    }
+    return computed;
+  }
+  return registered;
+}
+
 /** 扫描下载目录，列出可下载的客户端产物 */
 export function listDownloads(app: App): DownloadArtifact[] {
   const root = app.downloads.root;
@@ -358,13 +403,14 @@ export function listDownloads(app: App): DownloadArtifact[] {
       filename: entry.name,
       size: stat.size,
       /**
-       * 主产物优先用管理员登记的 clientSha256（自建下载源的场景，值可能是站外人工核对过的）；
-       * 没有登记的（以及所有其它产物）由主控自己算，算完缓存。
+       * 主产物优先用管理员登记的 clientSha256（自建下载源时可能是站外人工核对过的值）。
+       *
+       * 但**登记值会比文件旧**：换了新的安装包却忘了改这一项，下载页就会拿着一个
+       * 对不上的校验值让玩家核对 —— 比"未登记"更糟（玩家会以为文件被篡改）。
+       * 所以一旦算出真实摘要且两者不一致，就以**实际文件**为准，并留一条 warn：
+       * 页面上给出的校验值永远等于真正下载到的那个文件。
        */
-      sha256:
-        entry.name === primaryFile && s.clientSha256
-          ? s.clientSha256
-          : artifactSha256(app, entry.name, stat.size, stat.mtimeMs),
+      sha256: resolveSha256(app, entry.name, primaryFile, s.clientSha256, stat),
       url: `/downloads/${encodeURIComponent(entry.name)}`,
     });
   }
