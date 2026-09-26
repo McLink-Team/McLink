@@ -26,6 +26,7 @@ import {
   type PeerView,
 } from '../lib/easytier-parse.ts';
 import type { AppInfo } from '../lib/bridge.ts';
+import { LOSS_THRESHOLD, formatLoss } from '../lib/relay-fallback.ts';
 
 interface Advice {
   level: 'ok' | 'warn' | 'danger' | 'info';
@@ -57,6 +58,19 @@ const listenPorts = computed<string[]>(() => {
 const remotePeers = computed(() => peers.value.filter((p) => linkKind(p.cost) !== 'local'));
 const directPeers = computed(() => remotePeers.value.filter((p) => linkKind(p.cost) === 'p2p'));
 const relayPeers = computed(() => remotePeers.value.filter((p) => linkKind(p.cost) !== 'p2p'));
+
+/**
+ * 丢包：只对**直连**那一侧下判断。
+ *
+ * 经中继路径的丢包说明问题在中继或更上游，跟"要不要绕开直连"是两回事；
+ * 混在一起提示会让玩家按一个帮不上忙的建议去操作。
+ */
+const isHighLoss = (p: PeerView): boolean => p.lossRate !== null && p.lossRate > LOSS_THRESHOLD;
+const badDirectPeers = computed(() => directPeers.value.filter(isHighLoss));
+const worstDirectLoss = computed<number | null>(() => {
+  if (badDirectPeers.value.length === 0) return null;
+  return Math.max(...badDirectPeers.value.map((p) => p.lossRate ?? 0));
+});
 
 /**
  * 「换一个更近的区域」这条建议只在**所有节点都慢**时才给。
@@ -104,6 +118,16 @@ const advice = computed<Advice[]>(() => {
     list.push({
       level: 'ok',
       text: `已有 ${directPeers.value.length} 个节点 P2P 直连（延迟更低，也不占用中转带宽）。`,
+    });
+  }
+  /*
+   * 直连在丢包：这是「打洞成功但质量极差」那一种，延迟看着正常、游戏里却回弹。
+   * 一句话结论 + 一个动作（用户明确要求不长篇解释内部机制）。
+   */
+  if (worstDirectLoss.value !== null) {
+    list.push({
+      level: 'warn',
+      text: `P2P 直连在丢包（最高 ${formatLoss(worstDirectLoss.value)}），可以强制走中继。`,
     });
   }
   if (allPeersSlow.value) {
@@ -289,6 +313,9 @@ onMounted(async () => {
             <span v-if="p.tunnelProto">{{ p.tunnelProto }}</span>
             <span v-if="p.natType">NAT {{ p.natType }}</span>
             <span class="mono">{{ p.latencyMs === null ? '延迟未知' : `${p.latencyMs.toFixed(1)} ms` }}</span>
+            <span class="mono" :class="{ 'loss-high': isHighLoss(p) }" :title="`丢包率：${formatLoss(p.lossRate)}`">
+              丢包 {{ formatLoss(p.lossRate) }}
+            </span>
             <span class="mono">{{ formatBytes(p.rxBytes + p.txBytes) }}</span>
           </div>
         </div>
@@ -339,5 +366,13 @@ onMounted(async () => {
   word-break: break-all;
   max-height: 72px;
   overflow: auto;
+}
+/*
+ * 高出阈值的丢包加一档重量与颜色。数字本身（丢包 5.3% / 丢包 0.0%）是文字通道，
+ * 颜色只做强化 —— 与房间页的连接路径用同一套读数与阈值（lib/relay-fallback.ts）。
+ */
+.loss-high {
+  color: var(--warn);
+  font-weight: 600;
 }
 </style>

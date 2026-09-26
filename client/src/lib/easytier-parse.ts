@@ -49,11 +49,45 @@ export function parseLatency(value: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * 丢包率解析 —— 统一归一化成 **0..1 的小数**（0.053 = 5.3%）。
+ *
+ * 为什么要容错到这种程度：这一列是给别人看的**展示表格**，格式随版本/语言变：
+ *   · 2.6.4 的 JSON 输出现场抄下来是 `"0"` / `"-"`（见 verify-diagnostic.mjs 的 fixture）；
+ *   · 人读的表格里是 `"5.3%"`（easytier-cli 把 loss_rate: f32 格式化成百分比）；
+ *   · 上游若改回裸 f32，就会是 `0.053`。
+ * 三种都认，认不出就返回 null（界面显示 `—`），**绝不抛异常** ——
+ * 这一列拿不到只是少一个读数，不能让整个连接诊断/房间页挂掉。
+ *
+ * 歧义的处理：EasyTier 内部存的是 0..1 的比例，所以
+ *   · 带 `%` → 一定是百分数，除以 100；
+ *   · 裸数字 ≤ 1 → 按比例（0.08 = 8%）；
+ *   · 裸数字 > 1 → 只可能是本来就是百分数（丢包率不可能超过 100%），原样除 100。
+ * 最后统一夹到 0..1：上游若因为浮点误差报出 1.0000001，界面不该显示 100.0% 以上。
+ */
+export function parseLossRate(value: unknown): number | null {
+  let raw: number | null = null;
+  if (typeof value === 'number') {
+    raw = Number.isFinite(value) ? value : null;
+  } else if (typeof value === 'string') {
+    const text = value.trim();
+    if (text.length === 0 || text === '-' || text === '*') return null;
+    const percent = text.endsWith('%');
+    const n = Number.parseFloat(percent ? text.slice(0, -1) : text);
+    if (!Number.isFinite(n)) return null;
+    raw = percent ? n / 100 : n > 1 ? n / 100 : n;
+  }
+  if (raw === null) return null;
+  return Math.min(1, Math.max(0, raw));
+}
+
 export interface PeerView {
   hostname: string;
   ipv4: string;
   cost: string;
   latencyMs: number | null;
+  /** 丢包率，0..1 的小数；拿不到（旧版本/未测得/本机行）时为 null */
+  lossRate: number | null;
   rxBytes: number;
   txBytes: number;
   tunnelProto: string;
@@ -82,6 +116,7 @@ export function parsePeers(data: unknown): PeerView[] {
       ipv4,
       cost,
       latencyMs: parseLatency(row.lat_ms),
+      lossRate: parseLossRate(row.loss_rate),
       rxBytes: parseHumanNumber(row.rx_bytes),
       txBytes: parseHumanNumber(row.tx_bytes),
       tunnelProto: readableString(row.tunnel_proto),

@@ -30,6 +30,7 @@ import {
   openUpdatePage,
   refreshEmailStatus,
   relaunchElevated,
+  setAutoFallback,
   setDevice,
   startEmailVerification,
   submitEmailCode,
@@ -65,6 +66,19 @@ const closeAction = ref<CloseAction>('ask');
 async function saveCloseAction(): Promise<void> {
   const res = await window.mclink.setCloseAction(closeAction.value);
   closeAction.value = res.closeAction;
+}
+
+/**
+ * 自动回落（P2P 丢包 → 切中继）。**默认关**。
+ *
+ * 为什么默认关：它会在玩家没盯着屏幕的时候重启 EasyTier 核心，每次断几秒。
+ * 自动做"打断连接"的决定，必须由玩家先明确打开（这也是它跟"配色模式"这类
+ * 纯偏好设置的区别）。
+ */
+const autoFallback = ref(clientState.autoFallback);
+
+function saveAutoFallback(): void {
+  setAutoFallback(autoFallback.value);
 }
 
 /* ------------------------------------------------------------------ 外观 */
@@ -524,6 +538,32 @@ function openDataDir(): void {
             新手引导
           </button>
         </div>
+      </section>
+
+      <!--
+        联机质量：自动回落（P2P 丢包 → 切中继）。
+        放在「本机」之后：它和本机名称/端口一样是"这台机器怎么联网"的事，
+        而不是账号或外观。默认关，条件与代价全部写在开关下面 ——
+        一个会自动重启核心的设置，玩家有权在打开之前知道它什么时候动手。
+      -->
+      <section class="card stack">
+        <div class="section-head">
+          <span class="title">联机质量</span>
+        </div>
+        <label class="check-row">
+          <input v-model="autoFallback" type="checkbox" @change="saveAutoFallback()" />
+          <span>
+            P2P 丢包时自动切到中继
+            <span class="hint" style="display: block">
+              直连打洞成功但质量很差时（游戏里表现为人物回弹），自动改走中继。
+              触发条件：连续 3 个采样窗口（约 36 秒）里，<b>所有</b>测得丢包的直连节点都超过 5%。
+              切过去之后还会比一次，如果中继反而更差（中继自己也在丢包，或延迟明显绕远）
+              就自动切回直连，并在 30 分钟内不再自动切换。
+              为确认能不能切回直连，之后每 15 分钟会尝试恢复一次直连，连续失败则逐步拉长到 1 小时。
+              <b>每次自动切换与重试都会让连接中断约 3 秒。</b>
+            </span>
+          </span>
+        </label>
       </section>
 
       <section class="card stack">
