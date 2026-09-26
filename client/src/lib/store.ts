@@ -31,12 +31,12 @@ import {
   SAMPLE_WINDOW_MS,
   TRIGGER_WINDOWS,
   PROBE_BASE_MS,
-  bestRoutes,
   formatLoss,
+  hostLinkQuality,
+  hostRoute,
   loadAutoFallback,
   loadForceRelay,
   nextProbeDelay,
-  p2pQuality,
   relayLooksWorse,
   saveAutoFallback,
   saveForceRelay,
@@ -165,6 +165,29 @@ export const isOnline = computed(() => state.coreStatus?.state === 'running');
 export const hasRoom = computed(() => state.session !== null);
 export const isHost = computed(() => state.session?.isHost === true);
 export const shareAddress = computed(() => state.session?.ticket.hostVirtualIp ?? null);
+
+/**
+ * 房主的虚拟地址（裸地址，不带 /24）——「到房主那条链路」的**唯一匹配键**。
+ *
+ * 取哪个字段是读代码确认过的，不是猜的：
+ *   · 首选票据的 `hostVirtualIp`。主控在 roomTicket 里就是用房主成员的 `virtual_ip`
+ *     去掉掩码算出来的（server/src/services/rooms.ts），和「联机地址」是同一个值 ——
+ *     玩家在游戏里填的就是它，用它匹配 peer list 才不会和玩家看到的地址对不上；
+ *   · 成员列表里 `role === 'host'` 那条的 `virtualIp` 作为兜底（票据之外的第二次机会，
+ *     比如以后加了房主转移）。
+ *
+ * 本机就是房主时它等于自己的地址 —— 调用方必须先看 `isHost`：
+ * 没有"到自己的链路"这回事（见 lib/relay-fallback.ts 的 hostRoute）。
+ */
+export function sessionHostVirtualIp(session: ActiveSession | null): string {
+  if (!session) return '';
+  const fromTicket = (session.ticket.hostVirtualIp ?? '').split('/')[0] ?? '';
+  if (fromTicket.length > 0) return fromTicket;
+  const hostMember = session.members.find((m) => m.role === 'host');
+  return (hostMember?.virtualIp ?? '').split('/')[0] ?? '';
+}
+
+export const hostVirtualIp = computed(() => sessionHostVirtualIp(state.session));
 
 /**
  * 房间页那个开关的四种状态（**唯一判据**，别在页面里另写一套 `v-if`）：
@@ -813,8 +836,15 @@ export async function setForceRelay(on: boolean, source: RelaySource): Promise<v
       state.relayNotice = `切换后核心没有起来：${state.lastError ?? '未知原因'}`;
       return;
     }
+    /**
+     * 结果那一行必须说清**是谁切的、为什么**：
+     * 自动回落的消息以前被这里的通用文案盖住（房间页那段 `source === 'auto'` 的
+     * 说法因此永远显示不出来），玩家只会看到"已切到中继"，不知道是程序自己动的。
+     */
     state.relayNotice = on
-      ? '已切到中继：所有流量经中继转发，P2P 直连已停用。'
+      ? source === 'auto'
+        ? '已自动切到中继：到房主的直连丢包持续偏高。'
+        : '已切到中继：所有流量经中继转发，P2P 直连已停用。'
       : '已切回 P2P 直连：流量重新尝试打洞直连。';
   } catch (err) {
     state.relayNotice = `切换失败：${friendlyError(err)}`;
@@ -864,15 +894,33 @@ function resetGuard(phase: GuardPhase): void {
  * 自动回落的主循环。每 SAMPLE_WINDOW_MS 跑一次，只读 `clientState.peers`
  * （不自己调 easytier-cli：心跳已经在每 10 秒拉一次，重复调用只是白开机房进程）。
  *
+ * **判据只有一条链路：本机 → 房主**（见 lib/relay-fallback.ts 的 hostLinkQuality）。
+ * 为什么不是"所有直连节点里最差的那条"：`cost = p2p` 只说明本机到那个节点是直连，
+ * 平台中继节点也常常是直连 —— 上一版就是这样把"到中继服务器的直连"当成
+ * "玩家间的 P2P"，房间里四条连接全是中继节点却在报 P2P 丢包。
+ * 玩家能感知到的回弹只来自跑着游戏服务端的房主那台机器，所以只有它能驱动回落。
+ *
  * 阶段流转（括号里是停留时长）：
  *   watch(≥3 个窗口) --超标--> ab(20s) --中继不差--> serving(退避档) --到点--> probing(36s)
  *                                    \--中继更差--> watch + 冷却 30 分钟
- *   probing --P2P 恢复--> watch（退避归零）   \--还是差--> ab（退避翻倍）
+ *   probing --到房主的直连恢复--> watch（退避归零）   \--还是差--> ab（退避翻倍）
  */
 function guardTick(): void {
   const session = state.session;
   if (!session) {
     stopRelayGuard();
+    return;
+  }
+  /**
+   * 本机就是房主 → 自动回落**永不触发**。
+   *
+   * 判据是"到房主那条链路"，而房主没有"到房主"的链路（没有到自己的连接这回事）：
+   * 这里显式退掉，而不是靠"peer list 里匹配不到自己"这种副作用 —— 后者一旦
+   * 哪天多出一条同地址的记录（中继回环、EasyTier 行为变化）就会误触发，
+   * 而误触发的代价是玩家被无故断流几秒。
+   */
+  if (session.isHost) {
+    resetGuard('off');
     return;
   }
   // 正在换配置：这一刻的 peers 是半新半旧的，什么都不能判
@@ -890,7 +938,13 @@ function guardTick(): void {
   if (state.coreStatus?.state !== 'running') return;
 
   const now = Date.now();
-  const quality = p2pQuality(state.peers);
+  const hostIp = sessionHostVirtualIp(session);
+  const quality = hostLinkQuality(state.peers, hostIp);
+  /** A/B 基线：只有到房主那一条。切换前后比的就是"我到房主"这条路的前后 */
+  const hostBaseline = (): RouteSample[] => {
+    const route = hostRoute(state.peers, hostIp);
+    return route ? [route] : [];
+  };
 
   if (guard.phase === 'off') resetGuard('watch');
 
@@ -903,16 +957,21 @@ function guardTick(): void {
       guard.streak = 0;
       return;
     }
-    // 这一次没测到丢包 → 这个窗口作废：既不累加（那不是证据），也不清零
-    // （清零会让"每次采样都恰好漏掉一个节点"的房间永远无法触发）
-    if (quality.measured === 0) return;
-    if (!quality.allOver) {
+    /*
+     * 这一窗**没有可判断的对象**（lossRate 为 null）→ 窗口作废：既不累加也不清零。
+     * 三种情况都落在这一支，且都不该动手：
+     *   · peer list 里还没有房主（刚进房、还没建链路）；
+     *   · 到房主当前走的是中继（已经在走中继了，再"强制走中继"什么也改变不了）；
+     *   · 那条链路的丢包读数还没测出来（不拿未知当证据）。
+     */
+    if (quality.lossRate === null) return;
+    if (!quality.over) {
       guard.streak = 0;
       return;
     }
     guard.streak += 1;
     if (guard.streak < TRIGGER_WINDOWS) return;
-    guard.baseline = bestRoutes(state.peers);
+    guard.baseline = hostBaseline();
     guard.deadline = now + AB_OBSERVE_MS;
     guard.phase = 'ab';
     void setForceRelay(true, 'auto');
@@ -926,7 +985,7 @@ function guardTick(): void {
       return;
     }
     if (now < guard.deadline) return;
-    if (relayLooksWorse(guard.baseline, bestRoutes(state.peers))) {
+    if (relayLooksWorse(guard.baseline, hostBaseline())) {
       guard.cooldownUntil = now + AB_REVERT_COOLDOWN_MS;
       state.relayNotice = '中继反而更差，已切回 P2P 直连；30 分钟内不再自动切换。';
       resetGuard('watch');
@@ -959,15 +1018,15 @@ function guardTick(): void {
     return;
   }
   if (now < guard.deadline) return;
-  if (quality.measured > 0 && !quality.allOver) {
-    state.relayNotice = `P2P 直连已恢复（最高丢包 ${formatLoss(quality.worstLoss)}），继续走直连。`;
+  if (quality.lossRate !== null && !quality.over) {
+    state.relayNotice = `到房主的直连已恢复（丢包 ${formatLoss(quality.lossRate)}），继续走直连。`;
     guard.probeDelayMs = PROBE_BASE_MS;
     resetGuard('watch');
     return;
   }
   // 还是差 → 重新降级，并把下一次重试推远一档
   guard.probeDelayMs = nextProbeDelay(guard.probeDelayMs);
-  guard.baseline = bestRoutes(state.peers);
+  guard.baseline = hostBaseline();
   guard.deadline = now + AB_OBSERVE_MS;
   guard.phase = 'ab';
   void setForceRelay(true, 'auto');
