@@ -14,8 +14,11 @@ import { asArray, copyText } from '../lib/ui.ts';
 interface DownloadArtifact {
   id: string;
   platform: string;
+  /** `universal` = 与 CPU 架构无关（安卓 APK 是 Capacitor 壳，包内没有本地库） */
   arch: string;
   label: string;
+  /** 主控从文件名里取的版本号；取不到为 null */
+  version?: string | null;
   filename: string;
   size: number;
   sha256: string | null;
@@ -28,7 +31,19 @@ interface DownloadsResponse {
   artifacts: DownloadArtifact[];
 }
 
+/**
+ * `/meta` 里只取下载相关的这一块。
+ *
+ * 安卓卡片**用主控挑好的那个产物**，而不是自己在 `artifacts` 里翻：
+ * "哪个 apk 是最新的"属于产物语义（目录里会同时留历史版本），
+ * 只有扫描下载目录的那一侧说得清。
+ */
+interface MetaDownloads {
+  clientDownloads?: { version: string; android: DownloadArtifact | null } | null;
+}
+
 const data = ref<DownloadsResponse | null>(null);
+const metaDownloads = ref<MetaDownloads['clientDownloads']>(null);
 const loading = ref(true);
 const error = ref<string | null>(null);
 
@@ -38,7 +53,16 @@ const EASYTier_RELEASES = 'https://github.com/EasyTier/EasyTier/releases';
 async function load(): Promise<void> {
   loading.value = true;
   try {
-    data.value = await api.get<DownloadsResponse>(Routes.downloads);
+    /**
+     * 产物清单是硬依赖；`/meta` 只是给安卓卡片补一个"最新 apk"，
+     * 拿不到就退回从产物清单里找 —— 少一个请求不能让整页变成错误页。
+     */
+    const [list, meta] = await Promise.all([
+      api.get<DownloadsResponse>(Routes.downloads),
+      api.get<MetaDownloads>(Routes.meta).catch(() => null),
+    ]);
+    data.value = list;
+    metaDownloads.value = meta?.clientDownloads ?? null;
     error.value = null;
   } catch (err) {
     error.value = friendlyError(err);
@@ -54,10 +78,19 @@ onMounted(() => {
 const artifacts = computed<DownloadArtifact[]>(() => asArray(data.value?.artifacts));
 
 const windowsArtifacts = computed(() => artifacts.value.filter((a) => a.platform === 'windows'));
-const otherArtifacts = computed(() => artifacts.value.filter((a) => a.platform !== 'windows'));
+/**
+ * 「未做玩家侧引导」的那一类产物。
+ *
+ * Windows / macOS / Android 上面都各有一张卡了，所以这里要把它们排掉 ——
+ * 否则安卓包一上传，下方那句"非 Windows 产物…未做玩家侧引导"就会指向
+ * 明明已经在卡片里给了下载入口的文件。
+ */
+const otherArtifacts = computed(
+  () => artifacts.value.filter((a) => !['windows', 'macos', 'android'].includes(a.platform)),
+);
 
 /**
- * 双端下载：Windows 与 macOS 各一张卡。
+ * 三端下载：Windows / macOS(两种芯片) / Android 各一张卡。
  *
  * macOS 分两种芯片（Apple 芯片 / Intel），而**浏览器判断不出来** ——
  * Safari 在 M 系列机器上也会把 UA 报成 "Intel Mac OS X"。所以不猜：
@@ -65,7 +98,7 @@ const otherArtifacts = computed(() => artifacts.value.filter((a) => a.platform !
  * macOS 产物还没上传时（刚部署、mac 包还在构建），卡片如实说明，
  * 而不是留一个点了 404 的按钮 —— 产物一进下载目录，这里会自动出现。
  */
-const detectedPlatform = computed<'windows' | 'macos' | 'other'>(() => {
+const detectedPlatform = computed<'windows' | 'macos' | 'android' | 'other'>(() => {
   if (typeof navigator === 'undefined') return 'other';
 
   /**
@@ -76,7 +109,8 @@ const detectedPlatform = computed<'windows' | 'macos' | 'other'>(() => {
   if (uaChPlatform) {
     if (/windows/i.test(uaChPlatform)) return 'windows';
     if (/macos|mac os/i.test(uaChPlatform)) return 'macos';
-    if (/ios|android|linux|chrome os/i.test(uaChPlatform)) return 'other';
+    if (/android/i.test(uaChPlatform)) return 'android';
+    if (/ios|linux|chrome os/i.test(uaChPlatform)) return 'other';
   }
 
   const ua = navigator.userAgent;
@@ -91,7 +125,9 @@ const detectedPlatform = computed<'windows' | 'macos' | 'other'>(() => {
   const looksLikeMac = /Mac OS X|Macintosh/i.test(ua);
   const isIPadInDesktopMode = looksLikeMac && (navigator.maxTouchPoints ?? 0) > 1;
   if (looksLikeMac && !isIPadInDesktopMode) return 'macos';
-  if (/iPhone|iPad|iPod|Android/i.test(ua)) return 'other';
+  /** Android 的 UA 一直带 `Android` 字样（手机与平板都是），比"猜芯片"可靠得多 */
+  if (/Android/i.test(ua)) return 'android';
+  if (/iPhone|iPad|iPod/i.test(ua)) return 'other';
   if (/Windows/i.test(ua)) return 'windows';
   return 'other';
 });
@@ -105,7 +141,44 @@ const macIntelArtifact = computed<DownloadArtifact | null>(
 );
 const macMissing = computed(() => !macArmArtifact.value && !macIntelArtifact.value);
 
+/**
+ * 安卓产物：优先用主控在 `/meta` 里挑好的那一个，拿不到再从产物清单里找。
+ *
+ * 没有 apk 时它是 null —— 卡片据此走"即将推出"的占位态，
+ * 而不是渲染一个点了没反应的按钮。
+ */
+const androidArtifact = computed<DownloadArtifact | null>(
+  () =>
+    metaDownloads.value?.android ??
+    artifacts.value.find((a) => a.platform === 'android') ??
+    null,
+);
+
+/**
+ * 安卓卡片的版本号**不能借用 `clientVersion`**。
+ *
+ * 实测三方版本互不一致：apk 文件名是 0.1.0、`android/package.json` 是 0.1.0、
+ * 而 `android/android/app/build.gradle` 的 versionName 是 "1.0"、
+ * 主控设置里的 clientVersion 是 1.0.7（那是 Windows/macOS 客户端的版本）。
+ * 所以只显示**这个文件自己带的**版本，取不到就不显示，绝不把 1.0.7 挂到 apk 上。
+ *
+ * 顺序：主控给的 `version` 优先；老主控（还没部署这次改动）不给这个字段时，
+ * 从文件名里取一段 x.y.z —— **只是显示**，不参与任何挑选逻辑
+ * （"哪个 apk 是最新的"始终只由主控决定，见 androidArtifact）。
+ */
+const androidVersion = computed(() => {
+  const artifact = androidArtifact.value;
+  if (!artifact) return null;
+  return artifact.version ?? /(\d+\.\d+\.\d+)/.exec(artifact.filename)?.[1] ?? null;
+});
+
 const mb = (size: number): string => `${(size / 1048576).toFixed(0)} MB`;
+
+/**
+ * 架构列：主控给的 `universal` 是"与 CPU 架构无关"（安卓 APK 没有本地库）。
+ * 中文界面里直接写「通用」，不要把一个英文枚举原样丢给玩家。
+ */
+const archText = (arch: string): string => (arch === 'universal' ? '通用' : arch);
 
 /**
  * 主按钮目标：服务端已把与设置里 `clientDownloadUrl` 同名的主产物排在最前，
@@ -156,10 +229,10 @@ const requirements: Array<{ label: string; value: string }> = [
         </p>
 
         <!--
-          三个按钮，玩家自己选：Windows / macOS(Apple 芯片) / macOS(Intel)。
+          四张卡，玩家自己选：Windows / macOS(Apple 芯片) / macOS(Intel) / Android。
           不做芯片"自动判断" —— 浏览器根本拿不到可靠的芯片信息
           （Safari 在 M 系列上也把 UA 报成 Intel Mac），猜错就是白下一次 130MB。
-          能可靠判断的只有**平台**（Windows 还是 macOS），所以只用它做高亮。
+          能可靠判断的只有**平台**（Windows / macOS / Android），所以只用它做高亮。
         -->
         <div class="dl-platforms">
           <article class="dl-platform" :class="{ 'is-current': detectedPlatform === 'windows' }">
@@ -218,6 +291,65 @@ const requirements: Array<{ label: string; value: string }> = [
               未签名的包首次打开会被 Gatekeeper 拦下 —— 右键点图标选「打开」，或执行
               <code class="mono">xattr -dr com.apple.quarantine /Applications/McLink.app</code>。
             </p>
+          </article>
+
+          <!--
+            安卓：**唯一的"还没准备好"平台**，所以这张卡的两种状态差别最大。
+               · 有 apk → 与 Windows 卡同一套东西：版本、大小、SHA-256、下载按钮；
+               · 没有 apk → 只有一句"即将推出"和一行说明，**不渲染任何按钮**。
+                 留一个 href 指向不存在文件的 <a> 就是死链，所以宁可什么都不给。
+
+            版本号取文件自己的（见 androidVersion）：主控的 clientVersion 是
+            Windows/macOS 客户端的 1.0.7，挂到 apk 上就是错的。
+
+            "你正在用它"这个徽标**不给安卓**：这张卡的位置要留给「测试版」标记 ——
+            它会一直是内测签名（debug keystore）包，这件事比"你在用安卓"重要得多。
+            访客自己在不在安卓上，靠卡片的琥珀描边表达就够了。
+          -->
+          <article class="dl-platform" :class="{ 'is-current': detectedPlatform === 'android' }">
+            <div class="dl-platform-head">
+              <span class="dl-platform-name">Android</span>
+              <span v-if="androidArtifact" class="badge badge-warn">测试版</span>
+            </div>
+            <p class="dl-platform-meta">
+              <template v-if="androidArtifact">
+                <template v-if="androidVersion">版本 {{ androidVersion }} · </template>
+                手机与平板，需允许「安装未知来源的应用」
+              </template>
+              <template v-else>手机与平板 · 通过 APK 安装</template>
+            </p>
+            <a v-if="androidArtifact" class="btn btn-primary" :href="androidArtifact.url" download>
+              下载 APK · {{ mb(androidArtifact.size) }}
+            </a>
+            <template v-else>
+              <p class="hint">
+                <b>安卓版即将推出。</b>安装包还没上传到主控的下载目录；上传后这里会自动出现下载按钮。
+              </p>
+            </template>
+            <template v-if="androidArtifact">
+              <p class="dl-platform-file mono">{{ androidArtifact.filename }}</p>
+              <div v-if="androidArtifact.sha256" class="dl-platform-hash">
+                <span class="dl-platform-hash-key">SHA-256</span>
+                <code class="dl-platform-hash-value">{{ androidArtifact.sha256 }}</code>
+                <button
+                  class="btn btn-sm btn-ghost"
+                  type="button"
+                  @click="copyText(androidArtifact.sha256 ?? '', 'SHA-256')"
+                >
+                  复制
+                </button>
+              </div>
+              <!--
+                这一段是**必须**的：这个 apk 是 assembleDebug 出来的内测包，
+                而安卓端目前只做到 milestone 1 —— 能建房/进房/聊天，
+                但还没把手机上的 MC 联进房间（EasyTier JNI + VpnService 在下一阶段）。
+                玩家看到"安卓版"三个字很容易默认"手机上能玩了"，所以这里把边界写清楚，
+                并且**不出现任何日期或功能承诺**。
+              -->
+              <p class="hint">
+                内测版（debug 签名）：目前可用房间与聊天，手机端接入 MC 联机还在开发中。
+              </p>
+            </template>
           </article>
         </div>
 
@@ -291,9 +423,19 @@ const requirements: Array<{ label: string; value: string }> = [
                         </span>
                         <span class="mono file-name" :title="a.filename">{{ a.filename }}</span>
                       </div>
-                      <div class="faint" style="font-size: var(--fs-xs)">{{ a.label }}</div>
+                      <!--
+                        主控对"认不出来的产物"会把文件名原样当 label 返回，
+                        那样这一行就会把同一个文件名写两遍。重复的一行不如不显示。
+                      -->
+                      <div
+                        v-if="a.label && a.label !== a.filename"
+                        class="faint"
+                        style="font-size: var(--fs-xs)"
+                      >
+                        {{ a.label }}
+                      </div>
                     </td>
-                    <td class="muted">{{ a.arch }}</td>
+                    <td class="muted">{{ archText(a.arch) }}</td>
                     <td class="table-num">{{ formatBytes(a.size) }}</td>
                     <td>
                       <div v-if="a.sha256" class="hash-cell">
@@ -312,7 +454,7 @@ const requirements: Array<{ label: string; value: string }> = [
               </table>
             </div>
             <p v-if="otherArtifacts.length > 0" class="hint">
-              非 Windows 产物（{{ otherArtifacts.map((a) => a.filename).join('、') }}）同样可直接下载，但未做玩家侧引导。
+              其它产物（{{ otherArtifacts.map((a) => a.filename).join('、') }}）同样可直接下载，但未做玩家侧引导。
             </p>
           </template>
         </section>

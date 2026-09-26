@@ -1,0 +1,53 @@
+# ============================================================================
+# 真实票据留档（android/scripts/fixtures/ticket-real.toml）
+#
+# 来源：本机主控 → POST /api/v1/auth/register（临时账号）
+#       → POST /api/v1/rooms（临时房间）→ GET /api/v1/rooms/:id/ticket
+#       取回的 configToml 原样保存，**只改了一处**：network_secret 换成了等长占位值
+#       （它是一次性临时房间的随机串，但从形状上看像密钥，不该进仓库）。
+#
+# 为什么需要这份 fixture：接线测试（verify-vpn-bridge.mjs）要在浏览器里
+# 把一份 TOML 交给页面的 core.start，而它不该为了这个再起一次主控。
+# 手写的样例证明不了"生成器今天下发的形状能被解析" —— 所以留的是真东西。
+#
+# 过期怎么办：verify-vpn-plan.mjs 每次都会断言这份 fixture 仍能算出
+# 10.200.x.0/24 的房间网段。生成器改了形状而它没跟着更新时，那条断言会红。
+# ============================================================================
+# 由 mclink 主控自动生成，请勿手工编辑 —— 下次同步会被覆盖
+instance_name = "mclink-qsmj23"
+hostname = "vpnplanmuisi6dz"
+ipv4 = "10.200.0.1/24"
+listeners = ["tcp://0.0.0.0:21480", "udp://0.0.0.0:21480"]
+console_log_level = "warn"
+
+[network_identity]
+network_name = "mclink-room-ba0c8ba23276afacd1c259f1fe564844"
+network_secret = "00000000000000000000000000000000"
+
+[[peer]]
+uri = "tcp://127.0.0.1:11010"
+
+[[peer]]
+uri = "udp://127.0.0.1:11010"
+
+[flags]
+enable_encryption = true
+enable_ipv6 = false
+mtu = 1380
+default_protocol = "tcp"
+no_tun = false
+bind_device = false
+dev_name = "McLink"
+enable_udp_broadcast_relay = false
+disable_p2p = false
+lazy_p2p = false
+multi_thread = true
+
+[acl.acl_v1]
+
+[[acl.acl_v1.chains]]
+name = "mclink_room_r_Lw2GKkZPD3"
+chain_type = 1
+description = "mclink 房间 r_Lw2GKkZPD3 的访问控制"
+enabled = true
+default_action = 1

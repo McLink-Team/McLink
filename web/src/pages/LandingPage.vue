@@ -65,7 +65,10 @@ interface DownloadArtifact {
   sha256: string | null;
   /** 主控按文件名推断：用于双端下载按钮（windows / macos / linux / android） */
   platform?: 'windows' | 'macos' | 'linux' | 'android';
-  arch?: 'x64' | 'arm64';
+  /** `universal` = 与 CPU 架构无关（安卓 APK 没有本地库），不是 Intel */
+  arch?: 'x64' | 'arm64' | 'universal';
+  /** 文件名里的版本号（主控解析；取不到为 null） */
+  version?: string | null;
 }
 
 const meta = ref<MetaInfo | null>(null);
@@ -227,9 +230,15 @@ const steps = [
             <!--
               首屏不再猜平台/芯片，只给一个入口 → 下载页。
               理由：平台能猜（UA 可靠），**芯片猜不出来**（Safari 在 M 系列上也报 Intel Mac），
-              猜错的代价是玩家白下 130MB。下载页把三个包并排列出来让他自己选。
+              猜错的代价是玩家白下 130MB。下载页把几个包并排列出来让他自己选。
+              按钮里那句 (Win/Mac/安卓) 只是"这一页能拿到哪三端"的预告，
+              **顺序与下载页的卡片一致**（Windows → macOS → Android），
+              用半角括号 + 小一号字，不折行也不抢主语（窄屏实测 390px 仍在按钮内一行）。
             -->
-            <RouterLink to="/download" class="btn btn-primary btn-lg">下载客户端</RouterLink>
+            <RouterLink to="/download" class="btn btn-primary btn-lg">
+              下载客户端
+              <span class="btn-platforms">(Win/Mac/安卓)</span>
+            </RouterLink>
             <a href="#how" class="btn btn-lg">看它怎么工作</a>
           </div>
           <dl class="hero-facts rise rise-3">
@@ -633,6 +642,21 @@ const steps = [
     display: none;
   }
 }
+/*
+ * 手机宽度：顶栏右侧那一排（配色开关 + 管理控制台 + 下载客户端）加上字标，
+ * 一行放不下 —— 实测 390px 会把整页撑出 27px 横向滚动条（与首屏无关：
+ * 删掉首屏动作区后照样溢出，隐藏这一排才归零）。所以让它**折成两行**，
+ * 而不是把横向滚动条丢给用户；宽度够时 flex-wrap 不会触发，观感不变。
+ */
+@media (max-width: 560px) {
+  .topbar-inner {
+    height: auto;
+    flex-wrap: wrap;
+    gap: var(--s-2) var(--s-6);
+    padding-top: var(--s-2);
+    padding-bottom: var(--s-2);
+  }
+}
 
 /* ---------------------------------------------------------------- 首屏 */
 .hero {
@@ -663,6 +687,15 @@ const steps = [
   flex-wrap: wrap;
   gap: var(--s-3);
   margin-bottom: var(--s-7);
+}
+/*
+ * 主按钮里的三端提示 "(win/安卓/mac)"。
+ * 只降字号与字重，颜色沿用 --cta-fg —— **不用 opacity 变淡**：
+ * 琥珀底上叠 0.72 透明度会把文字压到 ~4.0:1（亮色主题实测），低于 AA。
+ */
+.btn-platforms {
+  font-size: var(--fs-sm);
+  font-weight: 400;
 }
 .hero-facts {
   display: flex;
@@ -886,7 +919,10 @@ const steps = [
   align-items: center;
   gap: var(--s-2);
   padding: 7px var(--s-4);
-  border: 1px solid rgba(233, 164, 65, 0.4);
+  /* 原来是写死的 rgba(233, 164, 65, 0.4) —— 正是令牌 --signal-line 在暗色下的值，
+     但亮色下它仍是暗色世界那支琥珀（在暖白底上会偏淡）。收敛到令牌后两个主题各自正确，
+     暗色下像素完全不变。DESIGN.md 也明令页面 CSS 里不出现 rgba/hex。 */
+  border: 1px solid var(--signal-line);
   border-radius: var(--r-sm);
   background: var(--signal-wash);
   font-family: var(--font-mono);

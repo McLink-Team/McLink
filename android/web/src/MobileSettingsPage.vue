@@ -137,7 +137,7 @@ async function doLogout(): Promise<void> {
       <p v-else class="hint">平台不开放自建主控：客户端只能连官方主控，这是「票据只能来自官方主控」这条安全前提的一部分。</p>
     </section>
 
-    <!-- 版本与当前能力边界：不写清楚，玩家会以为"手机上也能联机" -->
+    <!-- 版本与已知边界：能联机了，但"踢人/限速"与 IPv6 这两条要如实写出来，别让玩家自己撞上 -->
     <section class="card stack">
       <h2 class="mobile-section-title">关于</h2>
       <div class="row-between">
@@ -145,8 +145,13 @@ async function doLogout(): Promise<void> {
         <span class="mono">v{{ clientState.localVersion || '—' }}</span>
       </div>
       <p class="hint">
-        当前是<strong>里程碑 1</strong>：登录、看房间、建房、拿加入码与联机地址、凭码加入、看成员都可用；
-        本机<strong>尚未接入虚拟网络内核</strong>，所以这台手机暂时只能"看房间"，不能真的进局域网开黑。
+        联机时系统会问一次 VPN 授权，<strong>点『确定』之后这台手机就进入房间的虚拟局域网了</strong>：
+        可以在手机上的 MC 启动器（如 FCL）里「添加服务器」，地址填房间页的联机地址加端口，直接进服
+        —— 不需要另一台电脑代劳。
+      </p>
+      <p class="hint">
+        两条已知边界：<strong>手机做房主时踢人与限速不生效</strong>（房间能建、能联，只是房主规则用不上）；
+        <strong>只走 IPv4</strong>，IPv6 地址的服务器不在这个局域网里。
       </p>
     </section>
   </div>

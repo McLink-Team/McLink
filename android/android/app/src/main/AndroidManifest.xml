@@ -45,9 +45,54 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths"></meta-data>
         </provider>
+
+        <!--
+            把手机接进房间虚拟局域网的 VPN 服务。
+
+            逐项说明为什么是这么写的：
+
+            · android:permission="android.permission.BIND_VPN_SERVICE" —— **必须**。
+              这是签名级权限，只有系统持有它，所以 exported="true" 不会让别人随便绑我们的服务；
+              而 exported 又必须为 true，否则系统 VPN 设置页里的「始终开启的 VPN」绑不上。
+
+            · android:foregroundServiceType="specialUse" —— VPN 不属于 dataSync / connectedDevice /
+              mediaPlayback 里的任何一类；dataSync 在 Android 15 上还有每天 6 小时的时长上限，
+              用它就等于给联机加了一个"玩够 6 小时自动断"的隐藏规则。
+              specialUse 是 Android 为"确实不属于任何一类"的场景留的口子，代价是上架 Google Play
+              时要单独申报（我们走官网分发，见 docs/android-vpn.md §6）。
+
+            · <property ... SPECIAL_USE_FGS_SUBTYPE> —— 声明 specialUse 的**子类型**，
+              targetSdk 34+ 起是硬要求；值写 vpn 让系统的电量/隐私界面能正确归类。
+
+            · <intent-filter action="android.net.VpnService"> —— 让系统知道"这个应用有 VPN 服务"，
+              系统设置里才会出现我们的条目。
+        -->
+        <service
+            android:name=".MclinkVpnService"
+            android:permission="android.permission.BIND_VPN_SERVICE"
+            android:exported="true"
+            android:foregroundServiceType="specialUse">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="vpn" />
+        </service>
     </application>
 
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 建立隧道与连中继都要知道网络是否可用（诊断面板与重连判断会读它） -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 前台服务：隧道必须能在界面被切到后台后继续活着 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- targetSdk 34+ 起每个前台服务类型都要对应的权限，specialUse 就是这一条 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!--
+        Android 13+ 的通知权限。拿不到也不影响联机（隧道照跑），
+        只是那条"已联机"的常驻通知看不见 —— 所以插件里是"请求但不等待"。
+    -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 </manifest>

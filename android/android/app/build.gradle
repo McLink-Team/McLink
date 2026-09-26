@@ -7,9 +7,28 @@ android {
         applicationId "link.cnnic.mclink"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode 2
+        /*
+         * 版本号与 android/package.json 的 version **必须一致**。
+         *
+         * 之前这里写死 "1.0" 而 package.json 是 0.1.0、APK 文件名又是 0.1.0 ——
+         * 同一个包在三个地方有三个版本号，玩家报问题时说不清装的是哪个。
+         * 0.2.0 = 第一条能真正联机的安卓版本线（里程碑 2）。
+         */
+        versionName "0.2.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        /*
+         * 只打 arm64-v8a。
+         *
+         * 两个理由：
+         *   1. 我们只有 arm64-v8a 的原生库（jniLibs 下的 EasyTier 两个 .so），别的 ABI 装上也跑不起来；
+         *   2. 一旦哪天有人把 x86_64 的 .so 丢进 jniLibs（比如为了模拟器调试），
+         *      这里会拦住它，避免正式包平白多出十几 MB。
+         * 注意它**不会**把缺失的 ABI 补上，只是过滤：jniLibs 里没有的 ABI 本来也不会进包。
+         */
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61

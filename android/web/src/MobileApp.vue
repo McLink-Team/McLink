@@ -74,16 +74,17 @@ const pageTitle = computed(() => {
 /**
  * 状态点那一行字。
  *
- * 与桌面 App.vue 的 statusLabel 同构，但**多了一档** `'未接入'`：
- * 里程碑 1 的内核是空实现，`coreStatus.state === 'error'` 且房间存在。
- * 桌面那句「连接异常」在手机上说不清"为什么"，而这一档要说清的是
- * "房间是好的，是这台设备还不能联网"——否则玩家会以为是房间坏了。
+ * 与桌面 App.vue 的 statusLabel 同构。**与联机内核接入之前相比，这一档的含义变了**：
+ * 那时 `state === 'error'` 恒表示"这台设备还不支持联机"（已知的能力缺口），
+ * 现在它表示**一次真实的联机失败**（VPN 授权被拒 / 通道建立失败 / 内核启动失败），
+ * 所以措辞不能再写成中性的「本机未接入网络」——那会让人以为是设备限制，
+ * 而不是"这次操作没成功，下面那条提示写了原因"。
  */
 const statusLabel = computed(() => {
   if (!loggedIn.value) return '未登录';
   if (clientState.session) {
     if (coreState.value === 'running') return `已联机 · ${clientState.session.room.code}`;
-    if (coreState.value === 'error') return '本机未接入网络';
+    if (coreState.value === 'error') return '联机失败';
     return '正在建立连接…';
   }
   if (coreState.value === 'running') return '虚拟网络已就绪';
@@ -93,34 +94,63 @@ const statusLabel = computed(() => {
 const ledClass = computed(() => {
   if (!loggedIn.value) return 'led-signal';
   if (coreState.value === 'running') return 'led-ok';
-  // 房间在但内核没起来：这是"已知的能力缺口"，不是故障 —— 用 signal 而不是 danger，
-  // 免得玩家以为客户端坏了，跑去重装。
-  if (clientState.session) return 'led-signal';
+  /*
+   * 只有「房间在、隧道却没起来」才算失败 —— 那是一次真实的联机失败，给 danger。
+   * 没进房时的 error 是"内核还没启动"（`core.status()` 在空闲时报的就是它），
+   * 那不是故障，亮红灯会让玩家以为客户端坏了。
+   */
+  if (clientState.session && coreState.value === 'error') return 'led-danger';
   return 'led-signal';
 });
 
-/* -------------------------------------------------- 「里程碑 1」的诚实话 */
+/* -------------------------------------------------- 进房前后的两段实话 */
 
-const NOTICE_KEY = 'mclink.android.mi1NoticeDismissed';
+const NOTICE_KEY = 'mclink.android.vpnNoticeDismissed';
 const noticeDismissed = ref(true);
 
-function dismissNotice(): void {
-  noticeDismissed.value = true;
+/**
+ * 进房之前就把"点了连接会发生什么"说清楚。
+ *
+ * 为什么值得占一屏顶部的一块：不说的话，玩家会在 VPN 授权弹窗上犹豫、点拒绝，
+ * 然后进游戏连不上，再依次怀疑游戏、房主、网络，最后才怀疑客户端。
+ * 在**做那件事之前**讲清楚，是这里唯一能省下那段排查时间的地方。
+ * 可以在「设置」里重新看到这条说明。
+ */
+const showNotice = computed(
+  () => !noticeDismissed.value && loggedIn.value && hasRoom.value && coreState.value !== 'running',
+);
+
+const NEXT_STEP_KEY = 'mclink.android.nextStepDismissed';
+const nextStepDismissed = ref(true);
+
+/**
+ * 隧道起来之后的**下一步**。
+ *
+ * 为什么单独一段、判据是 `coreState === 'running'`：只有真的进了虚拟局域网，
+ * "在启动器里添加服务器"才是可执行的动作。早一步说，玩家就是在一个连不上的
+ * 地址上试错 —— 那正是这条提示想消灭的东西。
+ */
+const showNextStep = computed(
+  () => !nextStepDismissed.value && loggedIn.value && hasRoom.value && coreState.value === 'running',
+);
+
+function rememberDismissed(key: string): void {
   try {
-    localStorage.setItem(NOTICE_KEY, '1');
+    localStorage.setItem(key, '1');
   } catch {
     /* 隐私模式下写不进去：那就在本次会话里记住即可 */
   }
 }
 
-/**
- * 进房之前就把能力边界说清楚。
- *
- * 为什么值得占一屏顶部的一块：不说的话，玩家会建房 → 拿到地址 → 进游戏 → 连不上，
- * 然后依次怀疑游戏、房主、网络，最后才怀疑客户端。在**做那件事之前**讲清楚，
- * 是这里唯一能省下那段排查时间的地方。可以在「设置」里重新看到这条说明。
- */
-const showNotice = computed(() => !noticeDismissed.value && loggedIn.value && hasRoom.value);
+function dismissNotice(): void {
+  noticeDismissed.value = true;
+  rememberDismissed(NOTICE_KEY);
+}
+
+function dismissNextStep(): void {
+  nextStepDismissed.value = true;
+  rememberDismissed(NEXT_STEP_KEY);
+}
 
 /* ---------------------------------------------------------------- 生命周期 */
 
@@ -177,8 +207,10 @@ onMounted(async () => {
 
   try {
     noticeDismissed.value = localStorage.getItem(NOTICE_KEY) === '1';
+    nextStepDismissed.value = localStorage.getItem(NEXT_STEP_KEY) === '1';
   } catch {
     noticeDismissed.value = false;
+    nextStepDismissed.value = false;
   }
   try {
     await bootstrap();
@@ -232,10 +264,26 @@ onUnmounted(() => {
       <template v-else>
         <div v-if="showNotice" class="alert alert-warn">
           <span class="grow">
-            这台手机还没接入虚拟网络内核，<strong>不能直接进游戏联机</strong>。建房、拿加入码与联机地址、
-            加入房间、看成员都可用 —— 把加入码发给装了 Windows 客户端的朋友，联机由他们那台承担。
+            联机时手机会弹一次 VPN 授权 —— <strong>在系统对话框里点『确定』，这台手机就加入房间的虚拟局域网了</strong>：
+            建房、拿加入码、进游戏都由这台手机完成，不需要另一台电脑代劳。
+            只走 IPv4，IPv6 的服务器不在这个局域网里。
+            <strong>手机做房主时踢人与限速不生效</strong>（房间能建、能联，只是房主规则用不上）。
           </span>
           <button class="btn btn-sm btn-ghost" type="button" @click="dismissNotice()">知道了</button>
+        </div>
+
+        <!--
+          隧道起来之后的**下一步**。
+          玩家此刻已经真的在虚拟局域网里了，"然后呢"必须当场说 —— 否则最常见的结果是
+          他退出去打开 MC，然后在「多人游戏」里空等一个不会自己出现的房间。
+        -->
+        <div v-if="showNextStep" class="alert alert-ok">
+          <span class="grow">
+            已联机。接下来在手机上的 MC 启动器（如 FCL）里<strong>「添加服务器」</strong>，
+            地址填房间页「联机地址」加端口（Java 版默认 <span class="mono">25565</span>；
+            房主改过端口就以房间页「联机帮助」里那条为准，它可以一键复制）。
+          </span>
+          <button class="btn btn-sm btn-ghost" type="button" @click="dismissNextStep()">知道了</button>
         </div>
 
         <div v-if="clientState.kickedReason" class="alert alert-danger">

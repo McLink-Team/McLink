@@ -1,6 +1,6 @@
 {
   "name": "@mclink/android",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "McLink Android 端：Capacitor 外壳 + 复用 client/src 的「暖纸台」渲染层",
@@ -13,7 +13,11 @@
     "verify": "node scripts/check-mobile-design.mjs && vite build && node scripts/smoke-mobile.mjs",
     "verify:design": "node scripts/check-mobile-design.mjs",
     "verify:smoke": "node scripts/smoke-mobile.mjs",
-    "verify:e2e": "node scripts/e2e-mobile.mjs"
+    "verify:e2e": "node scripts/e2e-mobile.mjs",
+    "verify:vpn": "node scripts/verify-vpn-plan.mjs && node scripts/verify-vpn-bridge.mjs && node scripts/verify-vpn-copy.mjs",
+    "verify:vpn:plan": "node scripts/verify-vpn-plan.mjs",
+    "verify:vpn:bridge": "node scripts/verify-vpn-bridge.mjs",
+    "verify:vpn:copy": "node scripts/verify-vpn-copy.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^7.4.3",
