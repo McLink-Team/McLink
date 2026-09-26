@@ -469,6 +469,32 @@ update settings
  where key = 'platform'
    and json_extract(value, '$.clientDownloadUrl') = '/downloads/McLink-Setup-1.0.3-x64.exe';
 `;
+/**
+ * V18：客户端版本 1.0.4 → 1.0.5。
+ *
+ * 1.0.5 是**外观与交互的一次大改**（客户端换成「暖纸台」世界：横向外壳 + 左图标栏 +
+ * 链路牌首页；房间页两栏；原生确认框换应用内模态；设置页新增「账号」分区可以改昵称/密码/邮箱）。
+ * 功能上还修了几处真问题：在线中继数被 `auto` 伪区域算了两遍（7 显示成 14）、
+ * 关客户端时主进程抛 `Object has been destroyed`（easytier-core 比窗口晚退出，
+ * 往已销毁的 webContents 发消息）、成员"离线"误报（首次心跳前 lastSeenAt 为 null）、
+ * `.btn-danger` 在新世界里被 `.btn` 盖掉根本不红。
+ *
+ * 纪律同前：只动"还停在上一版默认值"的部署，管理员手改过的一律不碰；
+ * 从更老的版本升上来会依次跑 V15 → V16 → V17 → V18，最终都落在 1.0.5。
+ */
+const V18_CLIENT_1_0_5 = `
+update settings
+   set value = json_set(value, '$.clientVersion', '1.0.5'),
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ where key = 'platform'
+   and json_extract(value, '$.clientVersion') = '1.0.4';
+
+update settings
+   set value = json_set(value, '$.clientDownloadUrl', '/downloads/McLink-Setup-1.0.5-x64.exe'),
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ where key = 'platform'
+   and json_extract(value, '$.clientDownloadUrl') = '/downloads/McLink-Setup-1.0.4-x64.exe';
+`;
 export const MIGRATIONS: readonly string[] = [
   V1_INITIAL,
   V2_RELAY_ROOM_MAP,
@@ -487,6 +513,7 @@ export const MIGRATIONS: readonly string[] = [
   V15_CLIENT_1_0_2,
   V16_CLIENT_1_0_3,
   V17_CLIENT_1_0_4,
+  V18_CLIENT_1_0_5,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
