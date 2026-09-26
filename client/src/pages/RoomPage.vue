@@ -2,13 +2,26 @@
 /**
  * 房间页 —— 进房后的主界面。
  *
- * 排布逻辑：**先把要发出去的东西放最上面，再放"我自己"的读数，然后才是别人。**
- * 玩家进房后 90% 的动作是「把联机地址发给朋友」，所以地址是整页唯一带强调色的
- * 一块，而且整块可点即复制；房间名与关键信息挤在它上面一行，房主操作收到页面
- * 最底部单独一段 —— 关房间这种事不该和"复制地址"抢同一个位置。
+ * **两栏**（用户给的参照是一个桌面启动器的房间界面，但内容全是本产品真实有的东西）：
+ *   左栏 2fr：成员大卡 → 连接路径 → 房间聊天。这一栏是"房间里发生了什么"。
+ *   右栏 1fr：房间卡（房间名 / 加入码 / 联机地址 / 动作）→ 我的网络 → 连接诊断 → 联机帮助。
+ *   这一栏是"这个房间是什么、我能对它做什么"。
  *
- * 成员与节点用发丝线分隔的名册，而不是卡片套卡片：窄窗里每多一层盒子，
- * 就少一行能看的信息。
+ * 为什么这么分而不是继续单列往下堆：进房后玩家只有两类问题 ——
+ * 「谁进来了、通不通」（左）和「把地址发出去 / 改规则 / 走人」（右）。
+ * 单列时这两类事按时间顺序交替出现，找"关房间"要滚过整屏的成员与聊天。
+ *
+ * 宽度用 `grid-template-columns: 2fr 1fr` 而不是固定像素：fr 分配的是**整条轨道**，
+ * 两栏宽度比因此恒为 2:1（940 窗口实测 537 / 269）。窄于 820 回落一栏 ——
+ * 那时图标栏吃掉 80 之后，1/3 侧栏只剩 236px，房间卡的按钮会开始竖着叠。
+ *
+ * 几处刻意的取舍：
+ *   · **联机地址仍然整块可点即复制**（本产品最核心的动作），但只留一行"点一下即复制"。
+ *     原来铭牌下面那段"不少游戏要连端口 / 端口看游戏提示"的长句已删掉 ——
+ *     端口属于"按游戏查"的资料，只在「联机帮助」里讲，房间里不再出现解释性长句。
+ *   · 成员行的"本机"标记优先于"房主"：自己那一行玩家一眼要认出的是自己，
+ *     房主身份在别人那行才有信息量。
+ *   · 头像用暖色单调圆 + 首字母（参照稿的形态）：不需要任何素材，也不假装有插画。
  */
 import { computed, onUnmounted, ref } from 'vue';
 import { formatBitrate, formatBytes, regionLabel } from '@mclink/shared';
@@ -40,6 +53,8 @@ const busy = ref(false);
 const error = ref('');
 const policyOpen = ref(false);
 const inviteOpen = ref(false);
+/** 「联机帮助」二级菜单：房间页上只留一行入口，内容进弹层 */
+const helpOpen = ref(false);
 const policy = ref({
   maxPlayers: 8,
   maxBandwidthKbps: 0,
@@ -96,6 +111,71 @@ const lastSeenText = (m: { lastSeenAt: string | null }): string => {
   if (minutes < 60) return `${minutes} 分钟前`;
   return `${Math.round(minutes / 60)} 小时前`;
 };
+
+/* ------------------------------------------------------------- 成员行视图 */
+
+/**
+ * 一行的全部显示事实在**这里**算完，模板里只剩摆位。
+ *
+ * 为什么不在模板里写一串 `m.status === 'pending' ? … : m.p2p ? …`：
+ * 链路徽标、状态点、离线文案看着是三处，其实是**同一个判断**的三个出口。
+ * 分开写就一定会漂移（上一版实测出过：徽标写"直连"、状态点却是灰的）。
+ */
+interface MemberRow {
+  userId: string;
+  displayName: string;
+  status: string;
+  role: string;
+  /** "本机"优先于"房主"：自己那一行玩家先要认出自己 */
+  roleBadge: string | null;
+  linkLabel: string;
+  linkClass: string;
+  dotClass: string;
+  virtualIp: string | null;
+  deviceName: string | null;
+  latencyText: string | null;
+  lastSeen: string | null;
+}
+
+const memberRows = computed<MemberRow[]>(() =>
+  members.value.map((m) => {
+    /**
+     * 三种"没在直连"要分开：**刚进房还没上报**、**心跳超时**、**待审批**。
+     * 合成一个"离线"是错的：房间刚建好时所有人的 lastSeenAt 都还是 null
+     * （服务端插入成员时写 null，要等第一次心跳 + 30 秒一次的成员刷新才填上），
+     * 那时把自己标成"离线"看着就像坏了。
+     */
+    const noBeat = m.lastSeenAt === null;
+    const stale = !noBeat && isStale(m);
+    const self = m.userId === (clientState.user?.id ?? '');
+    const waiting = m.status === 'pending';
+    const link = waiting
+      ? { label: '待审批', cls: 'badge-warn' }
+      : noBeat
+        ? { label: '尚未心跳', cls: 'badge-neutral' }
+        : stale
+          ? { label: '离线', cls: 'badge-warn' }
+          : m.p2p
+            ? { label: 'P2P 直连', cls: 'badge-ok' }
+            : { label: '经中继', cls: 'badge-neutral' };
+    return {
+      userId: m.userId,
+      displayName: m.displayName,
+      status: m.status,
+      role: m.role,
+      roleBadge: self ? '本机' : m.role === 'host' ? '房主' : null,
+      linkLabel: link.label,
+      linkClass: link.cls,
+      // 状态点与徽标同源：待审批/离线是琥珀，还没心跳是灰，在线是绿 ——
+      // 颜色不单独传达状态，徽标上都有字。
+      dotClass: waiting || stale ? 'led-warn' : noBeat ? 'led-signal' : 'led-ok',
+      virtualIp: m.virtualIp,
+      deviceName: m.deviceName,
+      latencyText: !stale && !noBeat && m.latencyMs !== null ? `${m.latencyMs.toFixed(0)} ms` : null,
+      lastSeen: stale ? `最后心跳 ${lastSeenText(m)}` : null,
+    };
+  }),
+);
 
 /**
  * 「连接路径」的清洗与分组。
@@ -281,6 +361,30 @@ async function doClose(): Promise<void> {
     busy.value = false;
   }
 }
+
+/**
+ * 退出房间（成员侧）。
+ *
+ * 以前这个按钮直接调 leaveRoom()：一次误点就断网、还得重新找房主要加入码。
+ * 它和「关闭房间」一样是**不可撤销地把自己踢下线**的操作，所以走同一个确认弹层。
+ * 文案里必须写明"房主不受影响、自己要用加入码才能回来"——玩家对这两个后果的预期经常是反的。
+ */
+async function doLeave(): Promise<void> {
+  const ok = await window.mclink.confirm({
+    title: '退出房间',
+    message: '确定退出这个房间吗？',
+    detail: '退出后会断开虚拟网络，想再进来要重新输入加入码。房间本身不受影响，其他成员照常联机。',
+  });
+  if (!ok) return;
+  busy.value = true;
+  try {
+    await leaveRoom();
+  } catch (err) {
+    error.value = friendlyError(err);
+  } finally {
+    busy.value = false;
+  }
+}
 </script>
 
 <template>
@@ -303,266 +407,337 @@ async function doClose(): Promise<void> {
       </span>
     </div>
 
-    <!-- 房间头：名字 + 一行关键信息 + 一排方形动作按钮 -->
-    <header class="room-head">
-      <div class="room-title-row">
-        <h2 class="room-name">{{ room.name }}</h2>
-        <div class="room-actions">
-          <button
-            class="icon-btn"
-            type="button"
-            title="刷新状态"
-            aria-label="刷新状态"
-            :disabled="busy"
-            @click="pollPeers()"
-          >
-            <svg viewBox="0 0 14 14" aria-hidden="true">
-              <path d="M1.3 7h2.4l1.5-4.2 2.1 8.4 1.6-4.2h3.8" />
-            </svg>
-          </button>
-          <button
-            class="icon-btn"
-            type="button"
-            title="刷新成员"
-            aria-label="刷新成员"
-            :disabled="busy"
-            @click="refreshRoom()"
-          >
-            <svg viewBox="0 0 14 14" aria-hidden="true">
-              <circle cx="5.4" cy="4.4" r="2.1" />
-              <path d="M1.7 12.2c0-2 1.6-3.4 3.7-3.4s3.7 1.4 3.7 3.4" />
-              <path d="M10.6 2.6a1.9 1.9 0 0 1 0 3.7" />
-              <path d="M10.4 8.9c1.3.4 2.1 1.5 2.1 3" />
-            </svg>
-          </button>
-          <button
-            class="icon-btn"
-            :class="{ 'is-on': favorite }"
-            type="button"
-            :title="favorite ? '取消收藏' : '收藏这个房间'"
-            :aria-label="favorite ? '取消收藏' : '收藏这个房间'"
-            @click="toggleFav()"
-          >
-            <svg viewBox="0 0 14 14" aria-hidden="true">
-              <path d="M7 1.5l1.7 3.5 3.8.5-2.8 2.6.7 3.8L7 10.1l-3.4 1.8.7-3.8L1.5 5.5l3.8-.5z" />
-            </svg>
-          </button>
-          <button class="icon-btn" type="button" title="邀请信息" aria-label="邀请信息" @click="inviteOpen = true">
-            <svg viewBox="0 0 14 14" aria-hidden="true">
-              <path d="M5.6 8.4l2.8-2.8" />
-              <path d="M6.3 3.9l1-1a2.3 2.3 0 0 1 3.2 3.2l-1 1" />
-              <path d="M7.7 10.1l-1 1a2.3 2.3 0 0 1-3.2-3.2l1-1" />
-            </svg>
-          </button>
-        </div>
-      </div>
-
-      <div class="room-meta">
-        <span class="row" style="gap: 6px">
-          <span class="led" :class="isOnline ? 'led-ok led-live' : 'led-signal'" />
-          <span>{{ isOnline ? '虚拟网络已连接' : '正在建立连接…' }}</span>
-        </span>
-        <span>区域 {{ regionLabel(room.zone) }}</span>
-        <span>网段 <span class="mono">{{ room.subnet }}</span></span>
-        <span>在线 <span class="mono">{{ room.onlineMembers }}/{{ room.policy.maxPlayers }}</span></span>
-        <button class="meta-copy" type="button" title="点击复制加入码" @click="copy(room.code, 'code')">
-          加入码 {{ copied === 'code' ? '已复制' : room.code }}
-        </button>
-      </div>
-    </header>
-
-    <!-- 联机地址：整块可点，点一下就复制 -->
-    <section class="addr">
-      <button class="addr-hit" type="button" title="点击复制联机地址" @click="copyAddress()">
-        <span class="addr-label">联机地址</span>
-        <span class="addr-value">{{ shareAddress ?? '等待分配…' }}</span>
-        <span class="addr-hint">
-          点一下即复制。注意：<b>不少游戏要连端口</b>，写法是 <span class="mono">地址:端口</span>
-          —— 端口看游戏里的提示（Minecraft 在「对局域网开放」那一屏，泰拉瑞亚默认 7777），
-          各游戏怎么写见下面的「联机帮助」。
-        </span>
-      </button>
-      <button class="btn btn-primary" type="button" :disabled="!shareAddress" @click="copyAddress()">
-        {{ copied === 'addr' ? '已复制' : '复制' }}
-      </button>
-    </section>
-
-    <!-- 我这边的读数 -->
-    <section class="panel">
-      <div class="section-head">
-        <span class="title">我的网络</span>
-        <span class="grow" />
-        <span class="badge badge-neutral mono">{{ session.virtualIp }}</span>
-      </div>
-
-      <div class="stat-row">
-        <div>
-          <div class="stat-label">下载</div>
-          <div class="stat-value">{{ formatBitrate(clientState.localRxBps) }}</div>
-        </div>
-        <div>
-          <div class="stat-label">上传</div>
-          <div class="stat-value">{{ formatBitrate(clientState.localTxBps) }}</div>
-        </div>
-        <div>
-          <div class="stat-label">累计流量</div>
-          <div class="stat-value">{{ formatBytes(clientState.localRxBytes + clientState.localTxBytes) }}</div>
-        </div>
-      </div>
-    </section>
-
-    <!-- 连接路径：easytier-cli 的输出是按路径列的，必须清洗 + 分组后再铺（见 visiblePeers） -->
-    <section class="panel">
-      <div class="section-head">
-        <span class="title">连接路径</span>
-        <span class="grow" />
-        <span class="faint" style="font-size: var(--fs-xs)">
-          {{ visiblePeers.length > 0 ? `${visiblePeers.length} 条` : '暂无' }}
-        </span>
-      </div>
-
-      <template v-if="visiblePeers.length > 0">
-        <!-- 房间成员：这里才是"我和谁连上了、是直连还是绕路" -->
-        <div v-if="memberPeers.length > 0" class="path-group">
-          <div class="path-group-head">
-            <span class="path-group-title">房间成员</span>
-            <span class="faint">{{ memberPeers.length }}</span>
+    <div class="room-columns">
+      <!-- ================================================= 左栏：房间里发生了什么 -->
+      <div class="room-main">
+        <!-- 成员大卡：一行一个人，行尾一枚状态点 -->
+        <section class="card stack">
+          <div class="section-head">
+            <span class="title">房间成员</span>
+            <span class="count mono">{{ members.length }}</span>
+            <span class="grow" />
+            <span v-if="pending.length > 0" class="badge badge-warn">{{ pending.length }} 个待审批</span>
+            <button
+              class="icon-btn"
+              type="button"
+              title="刷新成员"
+              aria-label="刷新成员"
+              :disabled="busy"
+              @click="refreshRoom()"
+            >
+              <svg viewBox="0 0 14 14" aria-hidden="true">
+                <circle cx="5.4" cy="4.4" r="2.1" />
+                <path d="M1.7 12.2c0-2 1.6-3.4 3.7-3.4s3.7 1.4 3.7 3.4" />
+                <path d="M10.6 2.6a1.9 1.9 0 0 1 0 3.7" />
+                <path d="M10.4 8.9c1.3.4 2.1 1.5 2.1 3" />
+              </svg>
+            </button>
           </div>
-          <div class="roster">
-            <div v-for="p in memberPeers" :key="`m-${p.ipv4}${p.hostname}`" class="roster-row">
-              <span class="grow roster-main">
-                <span class="roster-name">{{ p.hostname || '未命名节点' }}</span>
-                <span class="roster-sub">{{ p.ipv4 || '—' }}</span>
+
+          <div v-if="memberRows.length > 0" class="member-list">
+            <div v-for="r in memberRows" :key="r.userId" class="member">
+              <span class="member-face" aria-hidden="true">{{ initial(r.displayName) }}</span>
+              <span class="grow member-main">
+                <span class="member-name">
+                  {{ r.displayName }}
+                  <span v-if="r.roleBadge" class="badge badge-brand">{{ r.roleBadge }}</span>
+                </span>
+                <span class="member-tags">
+                  <span class="badge" :class="r.linkClass">{{ r.linkLabel }}</span>
+                  <span v-if="r.latencyText" class="mono member-tag">{{ r.latencyText }}</span>
+                  <span class="mono member-tag">{{ r.virtualIp ?? '尚未分配地址' }}</span>
+                  <span v-if="r.deviceName" class="member-tag">{{ r.deviceName }}</span>
+                  <span v-if="r.lastSeen" class="member-tag">{{ r.lastSeen }}</span>
+                </span>
               </span>
-              <span class="badge" :class="p.cost.startsWith('p2p') ? 'badge-ok' : 'badge-neutral'">
-                {{ p.cost.startsWith('p2p') ? 'P2P 直连' : '经中继' }}
-              </span>
-              <span class="mono faint roster-sub nowrap">
-                {{ p.latencyMs === null ? '—' : `${p.latencyMs.toFixed(1)} ms` }}
-              </span>
-              <span class="mono faint roster-sub nowrap">{{ formatBytes(p.rxBytes + p.txBytes) }}</span>
+              <!-- 状态点只是个"一眼能扫"的辅助：文字在链路徽标里，颜色不单独承载信息 -->
+              <span class="led" :class="r.dotClass" :title="r.linkLabel" />
+              <template v-if="isHost">
+                <template v-if="r.status === 'pending'">
+                  <button class="btn btn-sm" type="button" @click="approveMember(r.userId, true)">通过</button>
+                  <button class="btn btn-sm btn-ghost" type="button" @click="approveMember(r.userId, false)">拒绝</button>
+                </template>
+                <button
+                  v-else-if="r.role !== 'host'"
+                  class="btn btn-sm btn-danger"
+                  type="button"
+                  :disabled="busy"
+                  @click="doKick(r.userId, r.displayName)"
+                >
+                  踢出
+                </button>
+              </template>
             </div>
           </div>
-        </div>
+          <p v-else class="hint">还没有其他成员。把右栏的加入码和联机地址发给朋友就行。</p>
 
-        <!-- 中继节点：平台下发的兜底入口。多个是刻意的冗余，不是"你连了两台服务器" -->
-        <div v-if="relayPeers.length > 0" class="path-group">
-          <div class="path-group-head">
-            <span class="path-group-title">中继节点</span>
-            <span class="faint">{{ relayPeers.length }}</span>
-          </div>
-          <div class="roster">
-            <div v-for="p in relayPeers" :key="`r-${p.ipv4}${p.hostname}`" class="roster-row">
-              <span class="grow roster-main">
-                <span class="roster-name">{{ p.hostname || '未命名中继' }}</span>
-                <span class="roster-sub">{{ p.ipv4 || '平台下发的中继入口' }}</span>
-              </span>
-              <!-- 只有走过字节数的那条才是在用的；其余显示"备用"，省得玩家以为流量走了两条 -->
-              <span
-                v-if="carriesTraffic(p)"
-                class="badge badge-ok"
-                title="这条路径承载了业务流量"
-              >
-                承载流量
-              </span>
-              <span v-else class="badge badge-neutral" title="冗余入口：只在主路径不可用时才转发">备用</span>
-              <span class="mono faint roster-sub nowrap">
-                {{ p.latencyMs === null ? '—' : `${p.latencyMs.toFixed(1)} ms` }}
-              </span>
-              <span class="mono faint roster-sub nowrap">{{ formatBytes(p.rxBytes + p.txBytes) }}</span>
-            </div>
-          </div>
-        </div>
-      </template>
-      <p v-else class="hint">还没有发现其它节点。等成员进来后这里会显示他们。</p>
-    </section>
+          <p v-if="isHost" class="hint">
+            踢人后服务端会重算房间 ACL（按被踢成员的虚拟 IP 建丢弃规则），本客户端的 easytier-core 会自动应用。
+          </p>
+        </section>
 
-    <!-- 成员名册 -->
-    <section class="panel">
-      <div class="section-head">
-        <span class="title">房间成员</span>
-        <span class="count mono">{{ members.length }}</span>
-        <span class="grow" />
-        <span v-if="pending.length > 0" class="badge badge-warn">{{ pending.length }} 个待审批</span>
-      </div>
-
-      <div v-if="members.length > 0" class="roster">
-        <div v-for="m in members" :key="m.userId" class="roster-row">
-          <span class="avatar">{{ initial(m.displayName) }}</span>
-          <span class="grow roster-main">
-            <span class="roster-name">{{ m.displayName }}</span>
-            <span class="roster-sub">
-              {{ m.virtualIp ?? '尚未分配地址' }}
-              <!-- 掉线的人要说明"多久没心跳了"，否则玩家只看到在线数和人数对不上 -->
-              <template v-if="m.lastSeenAt && isStale(m)"> · 最后心跳 {{ lastSeenText(m) }}</template>
+        <!-- 连接路径：easytier-cli 的输出是按路径列的，必须清洗 + 分组后再铺（见 visiblePeers） -->
+        <section class="card stack">
+          <div class="section-head">
+            <span class="title">连接路径</span>
+            <span class="grow" />
+            <span class="faint" style="font-size: var(--fs-xs)">
+              {{ visiblePeers.length > 0 ? `${visiblePeers.length} 条` : '暂无' }}
             </span>
-          </span>
-          <span v-if="m.status === 'pending'" class="badge badge-warn">待审批</span>
-          <span v-else-if="m.role === 'host'" class="badge badge-brand">房主</span>
+          </div>
+
+          <template v-if="visiblePeers.length > 0">
+            <!-- 房间成员：这里才是"我和谁连上了、是直连还是绕路" -->
+            <div v-if="memberPeers.length > 0" class="path-group">
+              <div class="path-group-head">
+                <span class="path-group-title">房间成员</span>
+                <span class="faint">{{ memberPeers.length }}</span>
+              </div>
+              <div class="roster">
+                <div v-for="p in memberPeers" :key="`m-${p.ipv4}${p.hostname}`" class="roster-row">
+                  <span class="grow roster-main">
+                    <span class="roster-name">{{ p.hostname || '未命名节点' }}</span>
+                    <span class="roster-sub">{{ p.ipv4 || '—' }}</span>
+                  </span>
+                  <span class="badge" :class="p.cost.startsWith('p2p') ? 'badge-ok' : 'badge-neutral'">
+                    {{ p.cost.startsWith('p2p') ? 'P2P 直连' : '经中继' }}
+                  </span>
+                  <span class="mono faint roster-sub roster-num">
+                    {{ p.latencyMs === null ? '—' : `${p.latencyMs.toFixed(1)} ms` }}
+                  </span>
+                  <span class="mono faint roster-sub roster-num">{{ formatBytes(p.rxBytes + p.txBytes) }}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 中继节点：平台下发的兜底入口。多个是刻意的冗余，不是"你连了两台服务器" -->
+            <div v-if="relayPeers.length > 0" class="path-group">
+              <div class="path-group-head">
+                <span class="path-group-title">中继节点</span>
+                <span class="faint">{{ relayPeers.length }}</span>
+              </div>
+              <div class="roster">
+                <div v-for="p in relayPeers" :key="`r-${p.ipv4}${p.hostname}`" class="roster-row">
+                  <span class="grow roster-main">
+                    <span class="roster-name">{{ p.hostname || '未命名中继' }}</span>
+                    <span class="roster-sub">{{ p.ipv4 || '平台下发的中继入口' }}</span>
+                  </span>
+                  <!-- 只有走过字节数的那条才是在用的；其余显示"备用"，省得玩家以为流量走了两条 -->
+                  <span
+                    v-if="carriesTraffic(p)"
+                    class="badge badge-ok"
+                    title="这条路径承载了业务流量"
+                  >
+                    承载流量
+                  </span>
+                  <span v-else class="badge badge-neutral" title="冗余入口：只在主路径不可用时才转发">备用</span>
+                  <span class="mono faint roster-sub roster-num">
+                    {{ p.latencyMs === null ? '—' : `${p.latencyMs.toFixed(1)} ms` }}
+                  </span>
+                  <span class="mono faint roster-sub roster-num">{{ formatBytes(p.rxBytes + p.txBytes) }}</span>
+                </div>
+              </div>
+            </div>
+          </template>
+          <p v-else class="hint">还没有发现其它节点。等成员进来后这里会显示他们。</p>
+        </section>
+
+        <!-- 房间聊天：放在成员下面，和"谁在场"挨着 -->
+        <ChatPanel />
+      </div>
+
+      <!-- ================================================= 右栏：房间本身与我的动作 -->
+      <aside class="room-side">
+        <!-- 房间卡：名字 / 加入码 / 联机地址 / 全部动作 -->
+        <section class="card stack">
+          <div class="room-card-head">
+            <h2 class="room-title">{{ room.name }}</h2>
+            <button
+              class="icon-btn"
+              :class="{ 'is-on': favorite }"
+              type="button"
+              :title="favorite ? '取消收藏' : '收藏这个房间'"
+              :aria-label="favorite ? '取消收藏' : '收藏这个房间'"
+              @click="toggleFav()"
+            >
+              <svg viewBox="0 0 14 14" aria-hidden="true">
+                <path d="M7 1.5l1.7 3.5 3.8.5-2.8 2.6.7 3.8L7 10.1l-3.4 1.8.7-3.8L1.5 5.5l3.8-.5z" />
+              </svg>
+            </button>
+          </div>
+
+          <!-- 加入码：整行可点即复制（和联机地址一样，是"发出去"的东西） -->
+          <button class="code-row" type="button" title="点击复制加入码" @click="copy(room.code, 'code')">
+            <span class="code-label">加入码</span>
+            <span class="code-value mono">{{ room.code }}</span>
+            <span class="code-act">{{ copied === 'code' ? '已复制' : '复制' }}</span>
+          </button>
+
+          <div class="room-facts">
+            <!-- 连接状态：圆点 + 文字（颜色不单独承载状态，这是本仓库的硬规则） -->
+            <span class="link-state">
+              <span class="led" :class="isOnline ? 'led-ok led-live' : 'led-signal'" />
+              <span>{{ isOnline ? '虚拟网络已连接' : '正在建立连接…' }}</span>
+            </span>
+            <span>区域 {{ regionLabel(room.zone) }}</span>
+            <span>网段 <span class="mono">{{ room.subnet }}</span></span>
+            <span>在线 <span class="mono">{{ room.onlineMembers }}/{{ room.policy.maxPlayers }}</span></span>
+          </div>
+
           <!--
-            离线判定优先于「直连/成员」：`p2p` 与 `latencyMs` 都是成员**上次心跳时**上报的值，
-            心跳断了之后这些数字就不再代表当下（实测：掉线的人还挂着"直连 1 ms"）。
+            联机地址：整块可点即复制 —— 这是本产品最核心的一个动作，所以它仍然独占一块强调色。
+            下面只留一行"点一下即复制"：端口怎么写属于"按游戏查"的资料，
+            全在「联机帮助」里，房间里不再出现解释性长句。
           -->
-          <span v-else-if="isStale(m)" class="badge badge-warn">离线</span>
-          <span v-else-if="m.p2p" class="badge badge-ok">直连</span>
-          <span v-else class="badge badge-neutral">成员</span>
-          <span v-if="!isStale(m) && m.latencyMs !== null" class="mono faint roster-sub nowrap">
-            {{ `${m.latencyMs.toFixed(0)} ms` }}
-          </span>
-          <template v-if="isHost">
-            <template v-if="m.status === 'pending'">
-              <button class="btn btn-sm" type="button" @click="approveMember(m.userId, true)">通过</button>
-              <button class="btn btn-sm btn-ghost" type="button" @click="approveMember(m.userId, false)">拒绝</button>
+          <button
+            class="addr-copy"
+            type="button"
+            :disabled="!shareAddress"
+            title="点击复制联机地址"
+            @click="copyAddress()"
+          >
+            <span class="addr-label">联机地址</span>
+            <span class="addr-value">{{ shareAddress ?? '等待分配…' }}</span>
+            <span class="addr-hint">{{ copied === 'addr' ? '已复制到剪贴板' : '点一下即复制' }}</span>
+          </button>
+
+          <!--
+            动作区：房主操作就在这儿（不再单独占页面底部一段）。
+            每个按钮都带文字与 title：房间规则 / 轮换密钥这种词，只给图标没人猜得出来。
+            破坏性动作（关闭房间 / 退出房间）占整行并走确认弹层。
+          -->
+          <div class="room-acts">
+            <button
+              class="btn btn-sm"
+              type="button"
+              title="分享地址：把加入码、联机地址和进房步骤一起复制给朋友"
+              @click="inviteOpen = true"
+            >
+              分享地址
+            </button>
+            <button
+              class="btn btn-sm"
+              type="button"
+              title="刷新状态：重新读一次节点、链路与延迟"
+              :disabled="busy"
+              @click="pollPeers()"
+            >
+              刷新状态
+            </button>
+            <template v-if="isHost">
+              <button
+                class="btn btn-sm"
+                type="button"
+                title="房间规则：人数上限、带宽与包速率限制、端口白名单、P2P 与局域网广播"
+                @click="openPolicy()"
+              >
+                房间规则
+              </button>
+              <button
+                class="btn btn-sm"
+                type="button"
+                title="轮换密钥：所有人（包括你）都会断开，需要用新的加入码重进"
+                :disabled="busy"
+                @click="doRotate()"
+              >
+                轮换密钥
+              </button>
+              <button
+                class="btn btn-sm btn-danger"
+                type="button"
+                title="关闭房间：解散这个虚拟网络，所有成员立刻断开"
+                :disabled="busy"
+                @click="doClose()"
+              >
+                关闭房间
+              </button>
             </template>
             <button
-              v-else-if="m.role !== 'host'"
+              v-else
               class="btn btn-sm btn-danger"
               type="button"
+              title="退出房间：断开虚拟网络，想再进来要重新输入加入码"
               :disabled="busy"
-              @click="doKick(m.userId, m.displayName)"
+              @click="doLeave()"
             >
-              踢出
+              退出房间
             </button>
-          </template>
-        </div>
-      </div>
-      <p v-else class="hint">还没有其他成员。把上面的联机地址和加入码发给朋友就行。</p>
+          </div>
+        </section>
 
-      <p v-if="isHost" class="hint">
-        踢人后服务端会重算房间 ACL（按被踢成员的虚拟 IP 建丢弃规则），本客户端的 easytier-core 会自动应用。
-      </p>
-    </section>
+        <!-- 我这边的读数 -->
+        <section class="card stack">
+          <div class="section-head">
+            <span class="title">我的网络</span>
+            <span class="grow" />
+            <span class="badge badge-neutral mono">{{ session.virtualIp }}</span>
+          </div>
 
-    <!-- 房主操作单独收在底下：不和"发地址"抢同一行 -->
-    <section class="panel">
-      <div class="section-head">
-        <span class="title">{{ isHost ? '房主操作' : '房间操作' }}</span>
-      </div>
-      <div class="ops">
-        <template v-if="isHost">
-          <button class="btn btn-sm" type="button" @click="openPolicy()">房间规则</button>
-          <button class="btn btn-sm" type="button" :disabled="busy" @click="doRotate()">轮换密钥</button>
-          <button class="btn btn-sm btn-danger" type="button" :disabled="busy" @click="doClose()">关闭房间</button>
-        </template>
-        <button v-else class="btn btn-sm btn-danger" type="button" :disabled="busy" @click="leaveRoom()">
-          退出房间
+          <div class="stat-row">
+            <div>
+              <div class="stat-label">下载</div>
+              <div class="stat-value">{{ formatBitrate(clientState.localRxBps) }}</div>
+            </div>
+            <div>
+              <div class="stat-label">上传</div>
+              <div class="stat-value">{{ formatBitrate(clientState.localTxBps) }}</div>
+            </div>
+            <div>
+              <div class="stat-label">累计流量</div>
+              <div class="stat-value">{{ formatBytes(clientState.localRxBytes + clientState.localTxBytes) }}</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 直连还是中继、延迟、NAT 与监听端口 -->
+        <ConnectionDiagnostic />
+
+        <!--
+          联机帮助入口：一整行可点，进二级菜单。
+          按游戏查端口的那份表有 9 个游戏、每个 4~6 行 —— 铺在页面上会占掉一整屏，
+          而它是"查资料"的地方，不是常驻信息，所以只留这一行入口。
+        -->
+        <button class="help-entry" type="button" @click="helpOpen = true">
+          <span class="help-mark" aria-hidden="true">
+            <svg viewBox="0 0 16 16">
+              <circle cx="8" cy="8" r="6.4" />
+              <path d="M6.1 6.1a1.95 1.95 0 1 1 2.6 1.84c-.5.2-.7.6-.7 1.06v.4" />
+              <path d="M8 12.05v.05" />
+            </svg>
+          </span>
+          <span class="grow help-entry-text">
+            <span class="help-entry-title">联机帮助</span>
+            <span class="help-entry-sub">按游戏查房主要做什么、玩家填什么</span>
+          </span>
+          <span class="help-entry-more" aria-hidden="true">
+            <svg viewBox="0 0 16 16">
+              <path d="M6 3.6l4.4 4.4L6 12.4" />
+            </svg>
+          </span>
         </button>
+      </aside>
+    </div>
+
+    <!-- 联机帮助二级菜单：按游戏查「房主做什么 / 玩家填什么」 -->
+    <div v-if="helpOpen" class="modal-mask" @click.self="helpOpen = false">
+      <div class="card modal-card help-modal stack">
+        <div class="row-between">
+          <div>
+            <div class="modal-title">联机帮助</div>
+            <div class="hint">
+              按游戏查「房主要做什么、玩家填什么地址」。要不要带端口、端口是多少，每个游戏里都写着；
+              列表里的地址已经带好端口，点一下就复制。
+            </div>
+          </div>
+          <button class="icon-btn" type="button" title="关闭帮助" aria-label="关闭帮助" @click="helpOpen = false">
+            <svg viewBox="0 0 14 14" aria-hidden="true">
+              <path d="M3.4 3.4l7.2 7.2M10.6 3.4l-7.2 7.2" />
+            </svg>
+          </button>
+        </div>
+        <GameQuickConnect />
       </div>
-      <p class="hint">
-        {{ isHost
-          ? '轮换密钥会让所有人断开并用新的凭证重进；关闭房间则直接解散这个虚拟网络。'
-          : '退出后会断开虚拟网络；重新进入需要再输一次加入码。' }}
-      </p>
-    </section>
-
-    <!-- 房间聊天 -->
-    <ChatPanel />
-
-    <!-- 按游戏查「房主做什么 / 玩家填什么」 -->
-    <GameQuickConnect />
-
-    <!-- 直连还是中继、延迟、NAT 与监听端口 -->
-    <ConnectionDiagnostic />
+    </div>
 
     <!-- 邀请信息弹层：多行文本，可直接粘到群里 -->
     <div v-if="inviteOpen" class="modal-mask">
@@ -661,6 +836,296 @@ async function doClose(): Promise<void> {
 </template>
 
 <style scoped>
+/* ------------------------------------------------------------------ 两栏骨架 */
+/*
+ * `width: 100%` 不是多余的：`.view` 自带 `margin: 0 auto`，而它在 `.deck-scroll`
+ * 这个**纵向 flex 容器**里 —— 带 auto 外边距的 flex 项不会被 stretch，宽度会退化成
+ * fit-content。写死 100% 之后两栏的宽度才是确定的（940 窗口实测 537 / 269）。
+ */
+.room-view {
+  width: 100%;
+}
+
+/*
+ * 两栏是**这一页自己**的栅格，所以它必须通栏：
+ * styles.css 在 ≥740px 时已经把 `.room-view` 排成了两等分栅格，
+ * 这层内层栅格是它的一个整体（不通栏就会被塞进其中一格）。
+ */
+.room-columns {
+  grid-column: 1 / -1;
+  display: grid;
+  /* fr 分配的是整条轨道，所以两栏宽度比恒为 2:1，不随窗口变化漂移 */
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: var(--s-4);
+  align-items: start;
+  min-width: 0;
+}
+.room-main,
+.room-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  min-width: 0;
+}
+/*
+ * 窄于 820 回落一栏：图标栏吃掉 80 之后，1/3 侧栏只剩 236px，
+ * 房间卡的两个按钮会开始竖着叠、成员行的标签也会挤成两行。
+ * 断点取 820 而不是窗口最小值 780 —— 780 时两栏已经不能读了。
+ */
+@media (max-width: 819px) {
+  .room-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* -------------------------------------------------------------------- 成员行 */
+/*
+ * 行与行之间只隔一条发丝线：成员卡里再给每行套一张小卡，就是"卡里套卡"，
+ * 而且行数一多整张卡会碎成一堆盒子。
+ */
+.member-list {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.member {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: 9px 0;
+  min-width: 0;
+}
+.member + .member {
+  border-top: 1px solid var(--line-soft);
+}
+/* 暖色单调圆 + 首字母：不需要任何素材，也不假装有插画（参照稿的头像形态） */
+.member-face {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--accent-wash);
+  color: var(--accent);
+  font-size: var(--fs-sm);
+  font-weight: 650;
+}
+.member-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.member-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  color: var(--ink);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.member-tags {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  min-width: 0;
+}
+.member-tag {
+  color: var(--ink-3);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+}
+
+/* ---------------------------------------------------------------- 右栏房间卡 */
+.room-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-2);
+}
+/*
+ * 不用 styles.css 里的 `.room-name`：那条规则是 0,2,0 且在这里要改字号，
+ * 同特异性比的是打包顺序 —— 换个新类名就没这个不确定性。
+ */
+.room-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-xl);
+  font-weight: 600;
+  letter-spacing: var(--track-display);
+  line-height: var(--lh-tight);
+  overflow-wrap: anywhere;
+}
+
+/* 加入码：整行可点即复制 */
+.code-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  width: 100%;
+  padding: 6px var(--s-3);
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: copy;
+  transition: background var(--dur-fast) var(--ease);
+}
+.code-row:hover {
+  background: var(--surface-3);
+}
+.code-label {
+  color: var(--ink-3);
+  font-size: var(--fs-xs);
+}
+.code-value {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-lg);
+  font-weight: 650;
+  letter-spacing: var(--track-wide);
+  overflow-wrap: anywhere;
+}
+.code-act {
+  flex: none;
+  color: var(--accent);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+
+.room-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px var(--s-2);
+  color: var(--ink-3);
+  font-size: var(--fs-xs);
+}
+/* 连接状态整行独占（它比区域/网段重要一档），圆点与文字基线对齐 */
+.link-state {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-basis: 100%;
+  color: var(--ink-2);
+}
+
+/* 路径行里的数字不折行：折了以后 ms 与字节数会各自换行，两行错位看不出是哪条路径的 */
+.roster-num {
+  white-space: nowrap;
+}
+
+/* 联机地址铭牌：保留强调色底（这是整页唯一带强调色的东西），但收成一行 */
+.addr-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: var(--s-3);
+  border: 1px solid var(--signal-line);
+  border-radius: var(--r-md);
+  background: var(--signal-wash);
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: copy;
+}
+.addr-copy:hover:not(:disabled) .addr-value {
+  color: var(--accent-strong);
+}
+.addr-copy:disabled {
+  cursor: not-allowed;
+}
+
+/*
+ * 动作区：两列网格。可用宽度只有 ~245px，所以按钮内边距收一档；
+ * 破坏性动作占整行 —— 它是最重的一个，不该和"刷新状态"一样宽。
+ *
+ * 类名为什么叫 room-acts 而不是 room-actions：styles.css 里有一个**同名**的
+ * `.app-shell .room-actions`（旧单列布局的图标行，`display:flex` 且不换行），
+ * 与本文件的 scoped 规则同特异性（0,2,0），比的是打包顺序 —— 实测打包版里
+ * 就是那条旧规则赢，五个按钮挤成一行、从卡片右边溢了出去。
+ * 换个没被占用的名字比"比特异性"稳，也比删别人文件里的规则安全。
+ */
+.room-acts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+.room-acts .btn {
+  padding-inline: var(--s-2);
+}
+.room-acts .btn-danger {
+  grid-column: 1 / -1;
+}
+
+/* ------------------------------------------------------------------ 帮助入口 */
+.help-entry {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  width: 100%;
+  min-width: 0;
+  padding: var(--s-3);
+  border: 0;
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+}
+.help-entry:hover {
+  background: var(--surface-2);
+}
+.help-mark {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-sm);
+  background: var(--accent-wash);
+  color: var(--accent);
+}
+.help-mark svg,
+.help-entry-more svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.help-entry-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.help-entry-title {
+  font-size: var(--fs-sm);
+  font-weight: 650;
+}
+.help-entry-sub {
+  font-size: var(--fs-xs);
+  color: var(--ink-3);
+  line-height: var(--lh-snug);
+}
+.help-entry-more {
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: var(--ink-faint);
+}
+
+/* -------------------------------------------------------------------- 弹层 */
 .modal-mask {
   position: fixed;
   inset: 0;
@@ -674,6 +1139,15 @@ async function doClose(): Promise<void> {
   width: min(560px, 100%);
   max-height: 88vh;
   overflow: auto;
+}
+/* 帮助弹层比房间规则宽一档：里面是「游戏名 + 两步说明 + 地址」的长文本 */
+.help-modal {
+  width: min(660px, 100%);
+}
+.modal-title {
+  color: var(--ink);
+  font-weight: 650;
+  font-size: var(--fs-lg);
 }
 .invite {
   margin: 0;
