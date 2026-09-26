@@ -51,11 +51,12 @@ export interface MclinkBridge {
   info(): Promise<AppInfo>;
   freePort(): Promise<number>;
   /**
-   * TCP 延迟探测（tcping，建房页选节点用）：对每个中继的链接端口做一次 TCP 握手，
-   * 返回 `{ "host:port": 最小时延 ms | null }`，超时或连不上是 null。
+   * TCP 延迟探测（tcping，建房页选节点用）：对每个中继的链接端口**连打 3 次**、取最快的一次，
+   * 返回 `{ "host:port": 最小时延 ms | null }`，3 次都没连上是 null。
    *
    * 为什么不是 ICMP：量的是**真正要走的那个端口**，"连不上"因此基本等于"用不了"。
-   * 但仍然**只用于展示与排序** —— 单次超时可能只是抖动，不该让节点从选单里消失。
+   * 为什么要 3 次：偶发丢包不该让整行显示「—」。但仍然**只用于展示与排序** ——
+   * 三次都失败也可能只是那几秒的抖动，不该让节点从选单里消失。
    */
   tcping(targets: ProbeTarget[]): Promise<Record<string, number | null>>;
   openPath(target: string): Promise<string>;

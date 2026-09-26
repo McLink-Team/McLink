@@ -5,24 +5,31 @@
  * **链接端口**。ICMP 只证明主机在网络层活着，跟那个端口能不能连是两件事，线上两种误判都出现过：
  *   · 主机不答 ICMP（不少机房默认屏蔽或限速）→ 界面显示「—」，节点其实完全可用；
  *   · 主机答 ICMP 很快，但中继端口被安全组挡着 → 界面显示「12 ms」，玩家点进去连不上。
- * 对链接端口做一次 TCP 握手，量出来的包含 DNS 解析 + 路由 + 端口放行 + 握手，
- * 与真正建房走的是同一条路径。
+ * 对链接端口连续做 3 次 TCP 握手、取最快的一次，量出来的包含 DNS 解析 + 路由 + 端口放行 + 握手，
+ * 与真正建房走的是同一条路径。**为什么要三次**（用户实测提出的）：偶发丢包/TCP 重传、
+ * 或中继瞬时 SYN 队列满，都会让某一次握手落空；一次就下结论会让界面整列显示「—」，
+ * 而节点其实完全可用。三次是各自独立的 SYN（每次都新建 socket、走新的初始 RTO），
+ * 只要有一次握手成功就有数，取最小值也顺带压掉了调度抖动。
  *
  * 实现用 Node 原生 `net`：三平台一致、零依赖、零提权（raw socket 做 SYN 探测要管理员/root，
- * 代价比这点精度大得多）。代价是**会在中继上留下一次「连上就断」的记录** ——
+ * 代价比这点精度大得多）。代价是**会在中继上留下「连上就断」的记录** ——
  * 这是 tcping 的固有行为，EasyTier 只会记一条普通连接关闭。
  *
- * **结果只用于展示与排序**：握手失败返回 null（界面显示「—」），不参与可用性判断 ——
+ * **结果只用于展示与排序**：3 次全没握手成功才返回 null（界面显示「—」），不参与可用性判断 ——
  * 单次超时可能只是瞬时抖动，不能让一个节点因此从选单里消失。
  *
  * 离线校验：`node client/scripts/verify-tcping.mjs`（自己起真实监听、自己制造失败）。
  */
 const net = require('node:net');
 
-/** 单次握手超时：与旧 ICMP 探测（`ping -w 1200`）同量级，界面等的秒数不变 */
+/** 单次握手超时：与旧 ICMP 探测（`ping -w 1200`）同量级 */
 const TCPING_TIMEOUT_MS = 1200;
-/** 采样次数：取最小值，压掉调度抖动（对应旧实现的 `ping -n 2`） */
-const TCPING_ATTEMPTS = 2;
+/**
+ * 采样次数：**3 次取最小值**。
+ * 三次都失败（即最坏情况：目标被黑洞）时界面要等约 3.8 秒 —— 只有"真的连不上"才会付这个代价；
+ * 连得上的节点是 3 × RTT（几十毫秒），ECONNREFUSED 这类干脆的失败也是立刻返回、不占超时。
+ */
+const TCPING_ATTEMPTS = 3;
 /** 一次最多探多少个目标：节点再多也不该把界面按住 */
 const TCPING_MAX_TARGETS = 24;
 /**
@@ -95,12 +102,12 @@ function normalizeTargets(targets) {
 }
 
 /**
- * 批量探测：目标之间**并行**（界面只等最慢的那一个），同一个目标采样两次取最小值。
- * 最坏等待 = 采样次数 × 单次超时（约 2.4 秒），与旧 ICMP 探测的两次 echo 同量级。
+ * 批量探测：目标之间**并行**（界面只等最慢的那一个），同一个目标连打 3 次取最小值。
+ * 最坏等待 = 采样次数 × 单次超时（约 3.8 秒），且只有"三次都没握手成功"的节点才会等满。
  *
  * @param {unknown} targets `[{ host, port }]`
  * @param {{timeoutMs?: number, attempts?: number}} [options] 仅供校验脚本调参
- * @returns {Promise<Record<string, number|null>>} 键是 `host:port`：整数毫秒，或 null（没连上）
+ * @returns {Promise<Record<string, number|null>>} 键是 `host:port`：整数毫秒，或 null（3 次都没连上）
  */
 async function tcpPingAll(targets, options = {}) {
   const timeoutMs = options.timeoutMs ?? TCPING_TIMEOUT_MS;
