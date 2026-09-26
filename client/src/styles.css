@@ -958,6 +958,18 @@ textarea {
   cursor: not-allowed;
 }
 
+/* ============================================================================
+ * 房间页旧单列布局留下的类名（room-head / room-title-row / room-name /
+ * room-actions / room-meta / meta-copy / addr / addr-hit）—— **已经没人用了**。
+ *
+ * 房间页现在是自己带两栏栅格的（RoomPage.vue 的 .room-columns / .room-acts），
+ * 房间名与加入码挪进了右栏的房间卡。这里保留规则只是不想做一次大扫除，
+ * 但下一个人**不要**再复用这些名字：它们与本文件同特异性（0,2,0）的后代选择器
+ * 会和页面 scoped 的 `.xxx[data-v-…]` 抢同一条属性，胜负只看打包顺序
+ * —— 实测过一次：页面新写的 `.room-actions`（两列网格）被下面这条 `display:flex`
+ * 顶掉，五个按钮挤成一行从卡片右边溢出去，而 `.deck-scroll` 的 overflow-x:hidden
+ * 把它藏住了，连"整页没有横向溢出"这条断言都抓不到。
+ * ========================================================================= */
 /* 房间头：房间名大标题 + 一行关键信息 */
 .app-shell .room-head {
   display: flex;
@@ -1126,13 +1138,12 @@ textarea {
     max-width: 84ch;
   }
 
-  /* 设置页同样是一堆独立卡片，宽窗两栏更省滚动 */
-  .app-shell .settings-view {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-    gap: var(--s-4);
-    align-items: start;
-  }
+  /*
+   * 设置页的排布**不再在这里**：`repeat(auto-fit, minmax(320px, 1fr))` 是窄窗时代
+   * 的等宽卡片流，换成 940×580 的横窗后，卡片高度差被放大成"三列不等高"，
+   * 最右一列还会顶到窗口边缘。现在那一页自己带栅格（SettingsPage.vue 的
+   * .settings-grid，同排 align-items: start），这里的旧选择器已经没人用了。
+   */
 }
 
 @media (max-width: 460px) {

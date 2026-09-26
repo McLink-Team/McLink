@@ -400,6 +400,24 @@ textarea {
   color: var(--ink);
 }
 
+/* 破坏性动作（关闭房间、踢出成员）。
+ *
+ * styles.css 里其实有 .btn-danger，但它和这里的 .btn 是**同特异性**（都是 0,1,0），
+ * 而本文件在 styles.css 之后加载 —— 于是 `.btn { color: var(--ink) }` 把
+ * `.btn-danger` 的红字与红描边一起盖掉了。表现是「关闭房间」和「房间规则」
+ * 长得一模一样，并排放在房间卡的动作区里完全分不出轻重（实测截图）。
+ * 修在组件层而不是页面里：这是新世界的通用语义，交给每个页面各写一遍迟早会漏。 */
+.btn-danger {
+  background: var(--surface-3);
+  color: var(--fault-text);
+  border-color: var(--fault-line);
+}
+.btn-danger:hover:not(:disabled) {
+  background: var(--fault-wash);
+  border-color: var(--fault);
+  color: var(--fault-text);
+}
+
 .btn-sm {
   min-height: 32px;
   padding: 5px var(--s-3);

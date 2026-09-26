@@ -155,18 +155,34 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * 往渲染层发消息 —— 必须先确认窗口**和它的 webContents** 都还活着。
+ *
+ * 为什么不能只写 `mainWindow?.webContents.send(...)`：
+ * 退出流程里 easytier-core 比窗口晚一步退出，它的 close 回调仍然会走到
+ * logLine() / setState()。这时 mainWindow 引用还在（不是 null），但 webContents
+ * 已经销毁，`.send()` 直接抛 "Object has been destroyed" —— 表现就是
+ * **关客户端时弹一个主进程 JS 错误框**（实测截图：main.cjs:162 logLine）。
+ * 可选链只挡得住 null，挡不住"已被销毁的对象"。
+ */
+function sendToRenderer(channel, payload) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.webContents.isDestroyed()) return;
+  mainWindow.webContents.send(channel, payload);
+}
+
 function logLine(line, stream = 'stdout') {
   const entry = { ts: new Date().toISOString(), stream, line };
   coreLogs.push(entry);
   if (coreLogs.length > MAX_LOG_LINES) coreLogs.splice(0, coreLogs.length - MAX_LOG_LINES);
-  mainWindow?.webContents.send('core:log', entry);
+  sendToRenderer('core:log', entry);
 }
 
 function setState(state, error) {
   core.state = state;
   if (error !== undefined) core.lastError = error;
   const payload = coreStatus();
-  mainWindow?.webContents.send('core:status', payload);
+  sendToRenderer('core:status', payload);
   updateTray();
   return payload;
 }
@@ -987,7 +1003,7 @@ function createWindow() {
   /** 最大化状态变化时通知渲染层，好把"最大化/还原"图标切换过来 */
   const pushMaximized = () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('win:maximized', mainWindow.isMaximized());
+      sendToRenderer('win:maximized', mainWindow.isMaximized());
     }
   };
   mainWindow.on('maximize', pushMaximized);
