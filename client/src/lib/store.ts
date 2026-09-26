@@ -45,7 +45,7 @@ import {
   type RelaySource,
   type RouteSample,
 } from './relay-fallback.ts';
-import { isMac, supportsLanBroadcast, tunName } from './platform.ts';
+import { isMac, platform, supportsLanBroadcast, tunName } from './platform.ts';
 import { handleIncomingMessage } from './notify.ts';
 
 export type { PeerView } from './easytier-parse.ts';
@@ -792,6 +792,18 @@ async function stopNetwork(): Promise<void> {
 /** 把底层报错翻译成玩家能据以行动的建议 */
 function describeCoreError(message: string | null): string {
   if (!message) return '虚拟网络启动失败';
+  /**
+   * Android 直接原样返回，上面这些规则一条都不套用。
+   *
+   * 为什么必须提前返回：下面每一条建议都是**桌面专属**的 —— 「以管理员身份重启」「确认已安装
+   * wintun.dll」「点 UAC 授权框」在手机上没有任何对应动作。而 EasyTier 在 Android 上的典型报错
+   * 恰好命中这些正则（内核报的是 tun / permission / bind 那几个词），于是玩家会看到一句
+   * 手机上做不到的指引，比不给建议更糟。
+   *
+   * Android 侧的文案由 `MclinkVpnPlugin` 按 `lastErrorCode` 生成（见 docs/android-vpn.md §3），
+   * 那里才知道"没授权 VPN"和"被别的 VPN 占用"的区别。
+   */
+  if (platform === 'android') return message;
   // 端口类错误必须排在 bind 分支前面，否则会被「网卡绑定被拒绝」吃掉，
   // 玩家会照着错误的建议去点提权重启，而问题其实在端口上
   if (/端口被占用|10048|10013|EADDRINUSE/i.test(message)) {

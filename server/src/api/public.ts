@@ -20,8 +20,18 @@ export interface DownloadArtifact {
   id: string;
   /** 平台与架构都是**推断出来的**（见 platformOf / archOf），用于官网按平台分组 */
   platform: 'windows' | 'macos' | 'linux' | 'android';
-  arch: 'x64' | 'arm64';
+  /**
+   * `universal` = **与 CPU 架构无关**。
+   *
+   * 只有安卓包会是它：APK 是 Capacitor 壳，包内没有 `lib/<abi>/` 本地库
+   * （实测 `mclink-android-0.1.0-debug.apk` 的 lib 条目数为 0，WebView 由系统提供），
+   * 所以它对 arm64 / x86_64 手机都一样。以前这里没有这一档，`archOf` 落到
+   * `'x64'` 兜底 —— 下载页就会对着安卓用户写"x64"。
+   */
+  arch: 'x64' | 'arm64' | 'universal';
   label: string;
+  /** 文件名里第一段 `x.y.z`（取不到为 null）。官网用它显示"这一份是什么版本" */
+  version: string | null;
   filename: string;
   size: number;
   sha256: string | null;
@@ -73,7 +83,7 @@ export function registerPublicRoutes(router: Router, app: App): void {
       easytierVersion: app.relay.cliVersion,
       clientVersion: s.clientVersion,
       clientDownloadUrl: resolveClientDownloadUrl(app),
-      /** 双端下载：官网的 Windows / macOS 两个按钮各自该指向哪个文件 */
+      /** 按平台分好的下载入口：官网 Windows / macOS(×2) / Android 各自的按钮指向哪个文件 */
       clientDownloads: buildClientDownloads(app),
       stats: {
         onlineNodes: online,
@@ -309,7 +319,48 @@ function archOf(name: string): DownloadArtifact['arch'] {
   const n = name.toLowerCase();
   if (n.includes('arm64') || n.includes('aarch64') || n.includes('apple')) return 'arm64';
   if (n.includes('x86_64') || n.includes('amd64') || n.includes('x64') || n.includes('intel')) return 'x64';
+  /**
+   * 安卓包：**没有任何架构关键字**（`mclink-android-0.1.0-debug.apk`）。
+   * 它是一个 Capacitor 壳，包内没有本地库，跟手机的 CPU 架构无关，
+   * 所以不能像其它产物那样落到 `'x64'` 兜底 —— 那是把一个推断不出来的东西写成了具体值。
+   * 显式写了架构的包（比如以后拆 `-arm64.apk`）会被上面两条先接住。
+   */
+  if (n.endsWith('.apk') || n.includes('android')) return 'universal';
   return 'x64';
+}
+
+/**
+ * 文件名里第一段 `x.y.z`：`mclink-android-0.1.0-debug.apk` → `0.1.0`。
+ * 取不到就返回 null —— 宁可官网不显示版本，也不要凭空造一个。
+ */
+function versionOf(name: string): string | null {
+  const m = /(\d+)\.(\d+)\.(\d+)/.exec(name);
+  return m ? `${m[1]}.${m[2]}.${m[3]}` : null;
+}
+
+/**
+ * 从一组产物里挑**版本最高的那一个**。
+ *
+ * 下载目录里会同时留着历史版本（没人删），所以不能按字典序取第一个：
+ * 字典序会把 `0.10.0` 排在 `0.9.0` 前面、把 `0.1.0` 排在 `1.0.0` 前面 ——
+ * 官网就会把过期包挂给玩家（macOS 那边踩过同一个坑，见 preferDmg 的注释）。
+ * 同一个版本号同时有正式包与内测包时，正式包优先（内测包不该盖过正式包）。
+ */
+function latestOf(list: DownloadArtifact[]): DownloadArtifact | null {
+  const parts = (v: string | null): number[] => (v ? v.split('.').map(Number) : []);
+  return (
+    [...list].sort((a, b) => {
+      const [pa, pb] = [parts(a.version), parts(b.version)];
+      for (let i = 0; i < 3; i += 1) {
+        const diff = (pb[i] ?? 0) - (pa[i] ?? 0);
+        if (diff !== 0) return diff;
+      }
+      const debug = Number(/debug/i.test(a.filename)) - Number(/debug/i.test(b.filename));
+      if (debug !== 0) return debug;
+      // 兜底：文件名倒序，让 `-2` 排在 `-1` 前面（localeCompare 保证跨平台稳定）
+      return b.filename.localeCompare(a.filename);
+    })[0] ?? null
+  );
 }
 
 /**
@@ -408,6 +459,7 @@ export function listDownloads(app: App): DownloadArtifact[] {
       platform: platformOf(entry.name),
       arch: archOf(entry.name),
       label: labelFor(entry.name),
+      version: versionOf(entry.name),
       filename: entry.name,
       size: stat.size,
       /**
@@ -431,18 +483,24 @@ export function listDownloads(app: App): DownloadArtifact[] {
 }
 
 /**
- * 双端下载入口：官网按平台给按钮用。
+ * 按平台分好的下载入口：官网每个平台按钮该指向哪个文件。
  *
  * Windows 走设置里的主产物（管理员可覆盖）；macOS 直接在下载目录里找
  * —— EasyTier 的核心与 electron-builder 的产物名都带 macos/arm64/x64，能认出来。
  * `macos` 优先 Apple 芯片（现在绝大多数 Mac），`macosIntel` 单独给，
  * 两者都存在时前端会让玩家二选一。
+ *
+ * `android` 与它们同构，但多一条约束：安卓包**按版本挑最新**（见 latestOf）。
+ * 让主控来挑、而不是让官网自己在一堆产物里翻，是因为"哪个文件是最新的"
+ * 属于产物语义，只有扫描目录的这一侧说得清。没有 apk 时它是 null ——
+ * 官网据此显示占位态，而不是留一个点了 404 的按钮。
  */
 export function buildClientDownloads(app: App): {
   version: string;
   windows: DownloadArtifact | null;
   macos: DownloadArtifact | null;
   macosIntel: DownloadArtifact | null;
+  android: DownloadArtifact | null;
   all: DownloadArtifact[];
 } {
   const artifacts = listDownloads(app);
@@ -478,6 +536,7 @@ export function buildClientDownloads(app: App): {
     windows: artifacts.find((a) => a.platform === 'windows') ?? null,
     macos: macPrimary,
     macosIntel: macArm ? macIntel : null,
+    android: latestOf(artifacts.filter((a) => a.platform === 'android')),
     all: artifacts,
   };
 }
@@ -485,5 +544,14 @@ export function buildClientDownloads(app: App): {
 function labelFor(name: string): string {
   if (name.includes('setup') || name.endsWith('.exe')) return 'Windows 客户端安装包';
   if (name.includes('easytier-core')) return 'EasyTier 核心（可选，用于自带核心）';
+  /**
+   * 安卓包以前落到最后一行的"原样返回文件名"：下载页表格里文件名会出现两次，
+   * 而且看不出这是个什么包。`debug` 产物单独标出来 —— 它是内测签名，
+   * 与下载页那张"测试版"卡片说的是同一件事。
+   */
+  const n = name.toLowerCase();
+  if (n.endsWith('.apk') || n.includes('android')) {
+    return /debug/i.test(name) ? 'Android 客户端安装包（测试版）' : 'Android 客户端安装包';
+  }
   return name;
 }
