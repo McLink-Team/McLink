@@ -11,7 +11,7 @@
  * 刻意不显示任何服务器信息：玩家不需要知道、也无权修改它连的是哪台机器。
  */
 import { computed, onMounted, ref } from 'vue';
-import { clientState, login, register, setDevice } from '../lib/store.ts';
+import { clearAuthNotice, clientState, login, register, setDevice } from '../lib/store.ts';
 import { friendlyError } from '../lib/api.ts';
 import { emailProblem, passwordProblem } from '@mclink/shared';
 
@@ -76,6 +76,15 @@ async function submit(): Promise<void> {
     <div class="card login-card">
       <!-- 品牌印记不再重复：左上的图标栏里那个就是它（用户要求） -->
       <p class="login-lede">登录后建房，或者用朋友的加入码进房</p>
+
+      <!--
+        改密码成功后必须回到这一屏（服务端吊销了全部会话，见 store.ts 的 changePassword），
+        所以"密码已更新，请重新登录"这句话只能挂在这里 —— 否则玩家莫名其妙被踢回登录页。
+      -->
+      <div v-if="clientState.authNotice" class="alert alert-ok">
+        <span class="grow">{{ clientState.authNotice }}</span>
+        <button class="btn btn-sm btn-ghost" type="button" @click="clearAuthNotice()">知道了</button>
+      </div>
 
       <div class="tabs">
         <button class="tab" :class="{ active: mode === 'login' }" @click="mode = 'login'">登录</button>

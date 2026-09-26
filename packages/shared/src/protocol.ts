@@ -33,6 +33,8 @@ export const Routes = {
   login: '/auth/login',
   logout: '/auth/logout',
   me: '/auth/me',
+  /** 改自己的显示名/邮箱（PATCH） */
+  profile: '/auth/profile',
   changePassword: '/auth/password',
   /** 开始邮箱验证：给自己的账号绑定邮箱并寄出 6 位验证码 */
   emailStart: '/auth/email/start',

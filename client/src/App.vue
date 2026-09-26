@@ -31,6 +31,7 @@ import AppRail, { type RailKey } from './components/AppRail.vue';
 import TitleBar from './components/TitleBar.vue';
 import ElevationBanner from './components/ElevationBanner.vue';
 import CloseConfirm from './components/CloseConfirm.vue';
+import ConfirmDialog from './components/ConfirmDialog.vue';
 import LoginPage from './pages/LoginPage.vue';
 import CreateJoin from './components/CreateJoin.vue';
 import RoomPage from './pages/RoomPage.vue';
@@ -217,6 +218,12 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown));
 
     <!-- 关闭窗口时问"彻底退出还是最小化"（主进程发 app:ask-close 触发） -->
     <CloseConfirm />
+    <!--
+      应用内确认弹层（退出房间 / 关闭房间 / 轮换密钥 / 踢人 / 删除消息共用这一个）：
+      和 CloseConfirm 一样只挂一次，任何一屏、任何组件里 `await confirmInApp(...)` 都能弹。
+      以前这些确认走的是主进程的原生 Windows 对话框 —— 与「暖纸台」不是一路，且 CDP 点不到。
+    -->
+    <ConfirmDialog />
     <!-- 首次使用向导：整屏遮罩；「不再显示」后可在设置页重新打开 -->
     <OnboardingWizard v-if="!booting && onboardingVisible" />
   </div>

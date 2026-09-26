@@ -43,6 +43,7 @@ import {
 import type { PeerView } from '../lib/easytier-parse.ts';
 import { friendlyError } from '../lib/api.ts';
 import { copyText } from '../lib/clipboard.ts';
+import { confirmInApp } from '../lib/confirm.ts';
 import { isFavorite, shortcutsRevision, toggleFavorite } from '../lib/shortcuts.ts';
 import ChatPanel from '../components/ChatPanel.vue';
 import ConnectionDiagnostic from '../components/ConnectionDiagnostic.vue';
@@ -319,10 +320,14 @@ async function savePolicy(): Promise<void> {
 }
 
 async function doKick(userId: string, name: string): Promise<void> {
-  const ok = await window.mclink.confirm({
+  // 确认走应用内弹层（lib/confirm.ts）：文案与以前的原生框逐字一致
+  const ok = await confirmInApp({
     title: '踢出成员',
     message: `确定把「${name}」移出房间吗？`,
     detail: '对方会立即断开虚拟网络。房主的 EasyTier 实例可能需要短暂重连（约 2 秒）才能让规则生效。',
+    confirmText: '踢出成员',
+    // 破坏性动作：与成员行那颗「踢出」按钮同一套语义色（见 theme-warm.css 的 .btn-danger）
+    danger: true,
   });
   if (!ok) return;
   busy.value = true;
@@ -337,10 +342,13 @@ async function doKick(userId: string, name: string): Promise<void> {
 }
 
 async function doRotate(): Promise<void> {
-  const ok = await window.mclink.confirm({
+  const ok = await confirmInApp({
     title: '轮换房间密钥',
     message: '轮换后所有成员（包括你自己）都会断开，需要用新的加入码信息重新进入。',
     detail: '网络名与密钥会一起更换，任何拿到过旧信息的人都将无法再连入。',
+    confirmText: '轮换密钥',
+    // 与房间动作区里那颗「轮换密钥」按钮保持一致：它是普通按钮，不是红色破坏键
+    danger: false,
   });
   if (!ok) return;
   busy.value = true;
@@ -354,9 +362,11 @@ async function doRotate(): Promise<void> {
 }
 
 async function doClose(): Promise<void> {
-  const ok = await window.mclink.confirm({
+  const ok = await confirmInApp({
     title: '关闭房间',
     message: '确定关闭房间吗？所有成员都会被断开。',
+    confirmText: '关闭房间',
+    danger: true,
   });
   if (!ok) return;
   busy.value = true;
@@ -377,10 +387,12 @@ async function doClose(): Promise<void> {
  * 文案里必须写明"房主不受影响、自己要用加入码才能回来"——玩家对这两个后果的预期经常是反的。
  */
 async function doLeave(): Promise<void> {
-  const ok = await window.mclink.confirm({
+  const ok = await confirmInApp({
     title: '退出房间',
     message: '确定退出这个房间吗？',
     detail: '退出后会断开虚拟网络，想再进来要重新输入加入码。房间本身不受影响，其他成员照常联机。',
+    confirmText: '退出房间',
+    danger: true,
   });
   if (!ok) return;
   busy.value = true;

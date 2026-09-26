@@ -112,6 +112,12 @@ const state = reactive({
   busy: false,
   lastError: null as string | null,
   kickedReason: null as string | null,
+  /**
+   * 给登录页看的一句话（现在只有一个来源：改密码成功后本机被登出）。
+   * 改密码必须本地登出（原因见 changePassword），而登出之后设置页已经卸载，
+   * 提示只能落在登出后玩家看到的那一屏上；成功登录后自动清掉。
+   */
+  authNotice: null as string | null,
   /** 房间内累计流量（本地统计，用于界面显示） */
   localRxBytes: 0,
   localTxBytes: 0,
@@ -346,6 +352,61 @@ export async function submitEmailCode(code: string): Promise<void> {
   await refreshEmailStatus();
 }
 
+/* ---------------------------------------------------------- 账号设置 */
+
+/**
+ * 改昵称（账号显示名，服务端最多 32 字）。
+ *
+ * 只有服务端那一份是真身：返回的 self 直接覆盖 `state.user`，
+ * 左栏头像首字母（AppRail 读 `clientState.user.displayName`）、聊天与名册
+ * 全都从这一份取值 —— 各页面不再自己存一份显示名。
+ *
+ * 房间里还要补一次 `refreshRoom()`：成员列表里的 `display_name` 是服务端
+ * `join users` 现取的，不刷新的话自己（和别人）看到的都还是旧名字。
+ */
+export async function updateDisplayName(displayName: string): Promise<void> {
+  state.user = await api.patch<UserSelf>(Routes.profile, { displayName });
+  if (state.session) await refreshRoom().catch(() => {});
+}
+
+/**
+ * 改密码。
+ *
+ * ⚠️ 服务端 `AuthService.changePassword()` 在写库之后调用
+ * `users.deleteSessionsForUser(userId)` —— 删的是这个用户的**全部**会话，
+ * 本机这条也在内。也就是说：响应回来那一刻，手里的 token 已经是废的，
+ * 之后任何要鉴权的请求都会 401（"密码已更新，请重新登录"不是客套话，是事实）。
+ * 所以这里只能立刻本地登出（清令牌 + 回登录页），并把原因写进 `authNotice`
+ * 交给登录页显示；装作还登录着的话，下一页就开始报"未授权"。
+ */
+export async function changePassword(oldPassword: string, newPassword: string): Promise<void> {
+  const res = await api.post<{ ok: true; message: string }>(Routes.changePassword, {
+    oldPassword,
+    newPassword,
+  });
+  state.authNotice =
+    `${res.message}。为安全起见，主控已让这个账号的所有登录会话失效（包括这台电脑），` +
+    '其它设备上的 McLink 也要用新密码重新登录。';
+  try {
+    await logout();
+  } catch {
+    /**
+     * 本地善后（停核心 / 通知主控 / 清状态）万一失败，也必须把界面带回未登录：
+     * 令牌此刻已经被服务端删掉了，留在设置页只会撞上一连串 401，
+     * 而玩家看到的会是一句和事实不符的报错。
+     */
+    setToken(null);
+    state.user = null;
+    state.session = null;
+    disconnectRealtime();
+  }
+}
+
+/** 玩家看过登录页上那条提示后手动关掉它 */
+export function clearAuthNotice(): void {
+  state.authNotice = null;
+}
+
 /** 这个账号现在必须去验证邮箱吗（界面据此强制跳转） */
 export const mustVerifyEmail = computed(
   () =>
@@ -358,6 +419,8 @@ export async function login(username: string, password: string): Promise<void> {
   const result = await api.post<{ token: string; user: UserSelf }>(Routes.login, { username, password });
   setToken(result.token);
   state.user = result.user;
+  // 又登进来了：上次改密码留下的那句"请重新登录"已经完成使命
+  state.authNotice = null;
   await loadRooms();
   await loadPlatformInfo();
   await refreshEmailStatus();
@@ -379,6 +442,7 @@ export async function register(
   }>(Routes.register, { username, password, displayName, email });
   setToken(result.token);
   state.user = result.user;
+  state.authNotice = null;
   await loadRooms();
   await loadPlatformInfo();
   await refreshEmailStatus();

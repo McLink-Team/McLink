@@ -57,7 +57,7 @@ export function registerAuthRoutes(router: Router, app: App): void {
   }, { auth: true });
 
   /** 更新自己的显示名/邮箱 */
-  router.patch('/auth/profile', async (ctx) => {
+  router.patch(Routes.profile, async (ctx) => {
     const auth = requireAuth(ctx);
     const body = await ctx.body();
     const displayName = typeof body.displayName === 'string' ? body.displayName.trim().slice(0, 32) : undefined;

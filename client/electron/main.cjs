@@ -1334,6 +1334,17 @@ function registerIpc() {
 
   ipcMain.handle('core:cli', async (_e, args) => runCli(Array.isArray(args) ? args.map(String) : []));
 
+  /*
+   * 原生确认框 —— **现在只作为兜底**，界面统一走应用内弹层。
+   *
+   * 渲染层的调用点已经全部改掉（原来在 pages/RoomPage.vue 的退出房间 / 关闭房间 /
+   * 轮换密钥 / 踢出成员，以及 components/ChatPanel.vue 的删除消息），现在都走
+   * src/lib/confirm.ts 的 confirmInApp() + src/components/ConfirmDialog.vue。
+   *
+   * 为什么不直接删掉这条桥：`window.mclink.confirm` 是主进程对外暴露的能力，
+   * 属于接口契约 —— 删了以后哪里想再用（例如将来某个原生才能问的问题）还得加回来；
+   * 而且 preload.cjs 里也一并暴露着。留着它 = 留一条能用的退路，不影响任何行为。
+   */
   ipcMain.handle('dialog:confirm', async (_e, { title, message, detail }) => {
     const res = await dialog.showMessageBox(mainWindow, {
       type: 'question',

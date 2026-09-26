@@ -1,6 +1,7 @@
 <script setup lang="ts">
 /**
- * 设置 —— 只放玩家自己能决定的事：本机名称、本机端口、外观、日志、关于。
+ * 设置 —— 只放玩家自己能决定的事：账号（昵称/密码/邮箱）、本机名称、本机端口、
+ * 外观、日志、关于。
  *
  * 刻意不放任何服务器/主控信息：客户端连哪台机器不是玩家能改的，
  * 摆在这里只会让人以为自己可以填错。
@@ -14,10 +15,27 @@
  *
  * 「客户端版本 / 平台 / 日志目录」这类**只读事实**用定义列表（dt + dd）而不是卡片：
  * 它们没有可操作的形态，做成卡片的后果是"一屏里六张白卡、每张只有一行字"。
+ *
+ * 「账号」卡排在「本机」前面：这一页里只有这两张卡在回答"你是谁"，而账号是
+ * **主控上的身份**（昵称、密码、邮箱），本机名称只是这台设备在成员列表里的备注。
+ * 顺序按作用域从大到小，也顺带回答了"改昵称该去哪儿"——以前这一页里唯一像昵称的
+ * 输入框其实是本机名称。
  */
-import { onMounted, ref } from 'vue';
-import { currentTheme, setThemeChoice, themeChoice, type ThemeChoice } from '@mclink/shared';
-import { clientState, openUpdatePage, relaunchElevated, setDevice, logout } from '../lib/store.ts';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { currentTheme, emailProblem, passwordProblem, setThemeChoice, themeChoice, type ThemeChoice } from '@mclink/shared';
+import {
+  changePassword,
+  clientState,
+  logout,
+  openUpdatePage,
+  refreshEmailStatus,
+  relaunchElevated,
+  setDevice,
+  startEmailVerification,
+  submitEmailCode,
+  updateDisplayName,
+} from '../lib/store.ts';
+import { friendlyError } from '../lib/api.ts';
 import { reopenOnboarding } from '../lib/onboarding.ts';
 import type { AppInfo, CloseAction } from '../lib/bridge.ts';
 
@@ -65,10 +83,182 @@ function pickTheme(choice: ThemeChoice): void {
   effective.value = currentTheme();
 }
 
+/* ------------------------------------------------------------------ 账号 */
+
+/** 用户名是主控发的，改不了 —— 只用来告诉玩家"昵称不是这个" */
+const username = computed(() => clientState.user?.username ?? '');
+
+/* ---- 昵称 ---- */
+
+const nickname = ref(clientState.user?.displayName ?? '');
+const nickBusy = ref(false);
+const nickError = ref('');
+const nickSaved = ref(false);
+
+async function saveNickname(): Promise<void> {
+  const next = nickname.value.trim();
+  if (next.length === 0) {
+    nickError.value = '昵称不能为空。';
+    return;
+  }
+  nickBusy.value = true;
+  nickError.value = '';
+  nickSaved.value = false;
+  try {
+    await updateDisplayName(next);
+    // 服务端会 trim + 截到 32 字：以它回来的那一份为准，别让输入框停在一个没生效的值上
+    nickname.value = clientState.user?.displayName ?? next;
+    nickSaved.value = true;
+    setTimeout(() => (nickSaved.value = false), 3000);
+  } catch (err) {
+    nickError.value = friendlyError(err);
+  } finally {
+    nickBusy.value = false;
+  }
+}
+
+/* ---- 密码 ---- */
+
+const oldPassword = ref('');
+const newPassword = ref('');
+const confirmPassword = ref('');
+const pwBusy = ref(false);
+const pwError = ref('');
+
+/** 与注册、与服务端 `passwordProblem()` 同一条规则（≥8 位、含字母与数字、≤128 位） */
+const newPasswordIssue = computed(() => (newPassword.value.length > 0 ? passwordProblem(newPassword.value) : null));
+const passwordMismatch = computed(
+  () => confirmPassword.value.length > 0 && confirmPassword.value !== newPassword.value,
+);
+/** 能立刻判定的错就别让请求跑一趟：三项齐了、两次一致、规则过了才让点 */
+const canChangePassword = computed(
+  () =>
+    !pwBusy.value &&
+    oldPassword.value.length > 0 &&
+    newPassword.value.length > 0 &&
+    newPasswordIssue.value === null &&
+    confirmPassword.value === newPassword.value,
+);
+
+async function submitPassword(): Promise<void> {
+  pwError.value = '';
+  // 这三个分支在按钮 disabled 时进不来（回车/别处触发时兜底），保证一定有可读的原因
+  if (oldPassword.value.length === 0) {
+    pwError.value = '请先填写原密码。';
+    return;
+  }
+  const issue = passwordProblem(newPassword.value);
+  if (issue) {
+    pwError.value = issue;
+    return;
+  }
+  if (confirmPassword.value !== newPassword.value) {
+    pwError.value = '两次输入的新密码不一致。';
+    return;
+  }
+  pwBusy.value = true;
+  try {
+    await changePassword(oldPassword.value, newPassword.value);
+    /**
+     * 走到这里本机已经被登出了：服务端在改密后吊销了该账号的全部会话
+     * （包括手里这条），store 只能本地登出并把这句提示交给登录页 —— 见
+     * lib/store.ts 的 changePassword()。所以这一页马上会卸载，这里不再写"成功"提示。
+     */
+    oldPassword.value = '';
+    newPassword.value = '';
+    confirmPassword.value = '';
+  } catch (err) {
+    // 原密码错、新密码不合规都由服务端回可读文案（"原密码不正确"…）
+    pwError.value = friendlyError(err);
+  } finally {
+    pwBusy.value = false;
+  }
+}
+
+/* ---- 邮箱 ---- */
+
+const emailInput = ref(clientState.email.email ?? clientState.user?.email ?? '');
+const codeInput = ref('');
+const mailBusy = ref(false);
+const mailError = ref('');
+const mailNotice = ref('');
+/** 重发冷却：服务端 60 秒内不收第二次（会回 429），界面必须同步禁掉按钮 */
+const cooldown = ref(0);
+let cooldownTimer: number | null = null;
+
+/** 主控有没有配邮件服务（`/meta` 的 emailServiceAvailable）——没配就不给按钮 */
+const mailReady = computed(() => clientState.platform.emailServiceAvailable);
+const currentEmail = computed(() => clientState.email.email ?? clientState.user?.email ?? '');
+const emailVerified = computed(() => clientState.email.verified || clientState.user?.emailVerified === true);
+const emailIssue = computed(() => {
+  const value = emailInput.value.trim();
+  return value.length > 0 ? emailProblem(value) : null;
+});
+/** 码发出去过（或上次发的还没过期）才显示验证码那一行，免得空着一个用不上的输入框 */
+const codeRowVisible = computed(() => cooldown.value > 0 || clientState.email.codeExpiresAt !== null);
+
+function startCooldown(seconds: number): void {
+  cooldown.value = Math.max(0, Math.floor(seconds));
+  if (cooldownTimer !== null) window.clearInterval(cooldownTimer);
+  cooldownTimer = window.setInterval(() => {
+    cooldown.value = Math.max(0, cooldown.value - 1);
+    if (cooldown.value === 0 && cooldownTimer !== null) {
+      window.clearInterval(cooldownTimer);
+      cooldownTimer = null;
+    }
+  }, 1000);
+}
+
+async function sendEmailCode(): Promise<void> {
+  const address = emailInput.value.trim();
+  const issue = emailProblem(address);
+  if (issue) {
+    mailError.value = issue;
+    return;
+  }
+  mailBusy.value = true;
+  mailError.value = '';
+  mailNotice.value = '';
+  try {
+    await startEmailVerification(address);
+    mailNotice.value = `验证码已发送到 ${address}，请查收（也看看垃圾邮件）。`;
+    startCooldown(60);
+  } catch (err) {
+    // 邮箱被别人占了、SMTP 没配好/发不出去 —— 服务端都给可读文案
+    mailError.value = friendlyError(err);
+  } finally {
+    mailBusy.value = false;
+  }
+}
+
+async function verifyEmailCode(): Promise<void> {
+  mailBusy.value = true;
+  mailError.value = '';
+  mailNotice.value = '';
+  try {
+    await submitEmailCode(codeInput.value.trim());
+    codeInput.value = '';
+    mailNotice.value = '邮箱已验证。';
+  } catch (err) {
+    mailError.value = friendlyError(err);
+  } finally {
+    mailBusy.value = false;
+  }
+}
+
 onMounted(async () => {
   info.value = await window.mclink.info();
   autoElevate.value = info.value.autoElevate !== false;
   closeAction.value = (info.value.closeAction ?? 'ask') as CloseAction;
+  nickname.value = clientState.user?.displayName ?? nickname.value;
+  // 邮箱状态以主控为准（可能刚在别处验过），顺带把冷却期接着算
+  await refreshEmailStatus();
+  if (!emailInput.value) emailInput.value = clientState.email.email ?? '';
+  if (clientState.email.resendAfterSeconds > 0) startCooldown(clientState.email.resendAfterSeconds);
+});
+
+onUnmounted(() => {
+  if (cooldownTimer !== null) window.clearInterval(cooldownTimer);
 });
 
 function save(): void {
@@ -135,6 +325,179 @@ function openDataDir(): void {
             <b>彻底退出</b>会断开连接、房间里的朋友会掉线。选「每次都问我」时，
             关窗口会弹一次询问框，那里勾了「记住我的选择」也会写进这个设置。
           </span>
+        </div>
+      </section>
+
+      <!--
+        账号：改昵称 / 改密码 / 邮箱状态。
+        三段之间只用一条发丝线分（.acct-block），不再套小卡片 —— 契约禁止卡里套卡。
+      -->
+      <section class="card stack">
+        <div class="section-head">
+          <span class="title">账号</span>
+          <span class="count mono">{{ username }}</span>
+        </div>
+
+        <!-- 昵称：账号显示名（≠ 下面的「本机名称」） -->
+        <div class="acct-block stack">
+          <div class="field">
+            <label class="label" for="acct-nick">昵称</label>
+            <input
+              id="acct-nick"
+              v-model="nickname"
+              class="input"
+              maxlength="32"
+              placeholder="会显示在房间成员列表与聊天里"
+              :disabled="nickBusy"
+            />
+            <div v-if="nickname.trim().length === 0" class="hint acct-bad">昵称不能为空。</div>
+            <div v-else class="hint">
+              房间成员列表、聊天和左下角头像都用它；用户名
+              <span class="mono">{{ username }}</span> 不可修改，「本机名称」是另一回事（只备注这台设备）。
+            </div>
+          </div>
+          <div class="ops">
+            <button
+              class="btn btn-primary"
+              type="button"
+              :disabled="nickBusy || nickname.trim().length === 0"
+              @click="saveNickname()"
+            >
+              保存昵称
+            </button>
+            <span v-if="nickSaved" class="hint acct-ok">昵称已保存。</span>
+          </div>
+          <div v-if="nickError" class="alert alert-danger">{{ nickError }}</div>
+        </div>
+
+        <!-- 密码 -->
+        <div class="acct-block stack">
+          <div class="field">
+            <label class="label" for="acct-pw-old">原密码</label>
+            <input
+              id="acct-pw-old"
+              v-model="oldPassword"
+              class="input"
+              type="password"
+              autocomplete="current-password"
+              :disabled="pwBusy"
+            />
+          </div>
+          <div class="field">
+            <label class="label" for="acct-pw-new">新密码</label>
+            <input
+              id="acct-pw-new"
+              v-model="newPassword"
+              class="input"
+              type="password"
+              autocomplete="new-password"
+              placeholder="至少 8 位，含字母与数字"
+              :disabled="pwBusy"
+            />
+            <!-- 与服务端同一条规则（shared 的 passwordProblem），在本地立刻报错 -->
+            <div v-if="newPasswordIssue" class="hint acct-bad">{{ newPasswordIssue }}</div>
+            <div v-else class="hint">至少 8 位、最多 128 位，且要同时有字母和数字。</div>
+          </div>
+          <div class="field">
+            <label class="label" for="acct-pw-new2">确认新密码</label>
+            <input
+              id="acct-pw-new2"
+              v-model="confirmPassword"
+              class="input"
+              type="password"
+              autocomplete="new-password"
+              :disabled="pwBusy"
+            />
+            <div v-if="passwordMismatch" class="hint acct-bad">两次输入的新密码不一致。</div>
+          </div>
+          <!-- 这件事必须写在按钮之前：改密会在服务端吊销全部会话，包括本机这一条 -->
+          <div class="hint">
+            改完密码后主控会立刻让这个账号的<strong>所有登录</strong>失效：这台电脑要重新登录，
+            其它设备上的 McLink 也一样；如果正开着房，房间会一起断开。
+          </div>
+          <div class="ops">
+            <button class="btn btn-primary" type="button" :disabled="!canChangePassword" @click="submitPassword()">
+              <span v-if="pwBusy" class="spinner" />
+              <span>修改密码</span>
+            </button>
+          </div>
+          <div v-if="pwError" class="alert alert-danger">{{ pwError }}</div>
+        </div>
+
+        <!-- 邮箱：状态用只读事实那一套（dt + dd），能走的只有主控的验证流程 -->
+        <div class="acct-block stack">
+          <dl class="facts">
+            <div class="fact">
+              <dt>邮箱</dt>
+              <dd>
+                <span v-if="currentEmail" class="mono acct-mail">{{ currentEmail }}</span>
+                <span v-else class="hint">未绑定</span>
+                <span class="badge" :class="emailVerified ? 'badge-ok' : currentEmail ? 'badge-warn' : 'badge-neutral'">
+                  {{ emailVerified ? '已验证' : currentEmail ? '未验证' : '未绑定' }}
+                </span>
+              </dd>
+            </div>
+          </dl>
+
+          <template v-if="mailReady">
+            <div class="field">
+              <label class="label" for="acct-email">{{ currentEmail ? '换绑邮箱' : '绑定邮箱' }}</label>
+              <div class="row">
+                <input
+                  id="acct-email"
+                  v-model="emailInput"
+                  class="input grow"
+                  type="email"
+                  autocomplete="email"
+                  placeholder="you@example.com"
+                  :disabled="mailBusy"
+                />
+                <button
+                  class="btn"
+                  type="button"
+                  :disabled="mailBusy || cooldown > 0 || emailIssue !== null || emailInput.trim().length === 0"
+                  @click="sendEmailCode()"
+                >
+                  {{ cooldown > 0 ? `${cooldown} 秒后可重发` : currentEmail ? '重新发送' : '发送验证码' }}
+                </button>
+              </div>
+              <div v-if="emailIssue" class="hint acct-bad">{{ emailIssue }}</div>
+              <div v-else class="hint">
+                一个邮箱只能绑一个账号；换邮箱要重新验证，老邮箱的验证状态不会跟着新地址走。
+              </div>
+            </div>
+
+            <div v-if="codeRowVisible" class="field">
+              <label class="label" for="acct-code">验证码</label>
+              <div class="row">
+                <input
+                  id="acct-code"
+                  v-model="codeInput"
+                  class="input mono grow"
+                  inputmode="numeric"
+                  maxlength="6"
+                  placeholder="6 位数字"
+                  :disabled="mailBusy"
+                />
+                <button
+                  class="btn btn-primary"
+                  type="button"
+                  :disabled="mailBusy || codeInput.trim().length === 0"
+                  @click="verifyEmailCode()"
+                >
+                  验证邮箱
+                </button>
+              </div>
+              <div class="hint">验证码 15 分钟内有效；没收到可以点上面的按钮重发。</div>
+            </div>
+
+            <div v-if="mailNotice" class="alert alert-ok">{{ mailNotice }}</div>
+            <div v-if="mailError" class="alert alert-danger">{{ mailError }}</div>
+          </template>
+          <!-- 主控没配 SMTP 时这条路一定走不通（服务端会回 503），所以只说明原因，不给按钮 -->
+          <div v-else class="hint">
+            主控还没有配置邮件服务（SMTP），现在无法绑定或换绑邮箱 —— 需要的话请联系管理员。
+          </div>
         </div>
       </section>
 
@@ -355,6 +718,29 @@ function openDataDir(): void {
   gap: var(--s-2);
   padding-top: var(--s-3);
   border-top: 1px solid var(--line-soft);
+  min-width: 0;
+}
+
+/*
+ * 「账号」卡里的三段（昵称 / 密码 / 邮箱）：同样只用一条发丝线分，不套小卡片。
+ * 卡片本身是 .stack，段与段之间已经有 --s-3 的间距，这里再往上垫一点，
+ * 让"线上面属于上一段"看起来成立。
+ */
+.acct-block + .acct-block {
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--line-soft);
+}
+
+/* 就地报错 / 就地报成功：都是 .hint 的字号，只换颜色（颜色全部来自令牌） */
+.acct-bad {
+  color: var(--fault);
+}
+.acct-ok {
+  color: var(--ok);
+}
+/* 邮箱最长 120 字，窄窗里必须能断开 */
+.acct-mail {
+  overflow-wrap: anywhere;
   min-width: 0;
 }
 </style>
