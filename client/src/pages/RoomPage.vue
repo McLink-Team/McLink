@@ -625,14 +625,6 @@ async function doLeave(): Promise<void> {
             <button
               class="btn btn-sm"
               type="button"
-              title="联机帮助：按游戏查房主要做什么、玩家要填什么（含要不要带端口、端口多少）"
-              @click="helpOpen = true"
-            >
-              联机帮助
-            </button>
-            <button
-              class="btn btn-sm"
-              type="button"
               title="刷新状态：重新读一次节点、链路与延迟"
               :disabled="busy"
               @click="pollPeers()"
@@ -679,6 +671,32 @@ async function doLeave(): Promise<void> {
             </button>
           </div>
         </section>
+
+        <!--
+          联机帮助入口：**整行**放在「我的网络」上面（用户指定位置与样式）。
+          为什么是整行而不是动作区里的一个按钮：它不是"下一步做什么"，是"查资料"，
+          跟分享/刷新不是一类动作；整行有标题 + 一行说明，玩家一眼看出里面有东西可查。
+          按游戏查端口的那份表有 9 个游戏、每个 4~6 行，铺在页面上会占掉一整屏，
+          所以只留这一行入口，内容进二级菜单。
+        -->
+        <button class="help-entry" type="button" @click="helpOpen = true">
+          <span class="help-mark" aria-hidden="true">
+            <svg viewBox="0 0 16 16">
+              <circle cx="8" cy="8" r="6.4" />
+              <path d="M6.1 6.1a1.95 1.95 0 1 1 2.6 1.84c-.5.2-.7.6-.7 1.06v.4" />
+              <path d="M8 12.05v.05" />
+            </svg>
+          </span>
+          <span class="grow help-entry-text">
+            <span class="help-entry-title">联机帮助</span>
+            <span class="help-entry-sub">按游戏查房主要做什么、玩家填什么（要不要带端口）</span>
+          </span>
+          <span class="help-entry-more" aria-hidden="true">
+            <svg viewBox="0 0 16 16">
+              <path d="M6 3.6l4.4 4.4L6 12.4" />
+            </svg>
+          </span>
+        </button>
 
         <!-- 我这边的读数 -->
         <section class="card stack">
