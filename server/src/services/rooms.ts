@@ -110,7 +110,10 @@ export interface CreateRoomInput {
    *
    * 只影响两件事：**自动调度选谁**、以及**兜底节点排在哪台**。
    * 用户手选的 `nodeIds` 仍然优先（先手选、再补兜底），提示不会把用户的选择顶掉。
-   * 老客户端不发这个字段 → 调度与改造前逐位一致。
+   *
+   * ⚠️ 它现在的定位是**次键**：调度排序以 `weight`（运营方权重）为第一判据，
+   * 只有权重完全相同才比延迟（见 `selectRelays` 的排序键）。
+   * 因此**老客户端（不发这个字段）的选择结果也变了** —— 详见 `selectRelays` 的注释。
    */
   latencyHints?: RelayLatencyHint[];
   /** 请求的 Host 头，用于在未显式配置公网地址时推导主控中继地址 */
@@ -198,12 +201,18 @@ export function relayScore(row: NodeRow, utilization: number): number {
 }
 
 /**
- * 延迟并列带（ms）：两个候选的实测延迟差在这个范围内就算「同一档」，交回 relayScore 决胜。
+ * 延迟并列带（ms）：**在权重（且余量）相同的前提下**，两个候选的实测延迟差在这个范围内
+ * 就算「同一档」，交回 relayScore 决胜（余量多、没降级的优先）。
  *
  * 为什么是 20ms：客户端的 tcping 是**3 次 TCP 握手取最快**，同城/同网节点上重复测量的抖动
- * 仍有 ±5–15ms（公网路由、家宽上行调度、DNS 递归）；不带并列带的严格排序等于让测量噪声决定选谁。
- * 而跨区域的真实差距（华东↔华南/华北 30–60ms，出境 100ms 起）明显大于 20ms，
- * 不会被这条带子吞掉 —— "真的差很多"时延迟永远是第一判据。
+ * 仍有 ±5–15ms（公网路由、家宽上行调度、DNS 递归）；不带并列带的严格排序等于让测量噪声决定选谁
+ * —— 权重相同的一对节点里，3ms 的"优势"不该盖过"一台快满、一台很空"。
+ * 这条带子也吞不掉跨区域的真实差距（华东↔华南/华北 30–60ms、出境 100ms 起）：
+ * 权重相同时它们照样按延迟排队。
+ *
+ * ⚠️ 生效范围（本次「权重优先」改造的重点）：并列带**只在权重相同、且两者都真有余量时才生效**。
+ * 权重不同一律由权重说了算 —— 高权重节点哪怕慢 90ms 也照样赢，因为权重是运营方的
+ * 定价/意愿表达，而延迟只是同一档位内部的体感微调。
  */
 export const LATENCY_TIE_BAND_MS = 20;
 
@@ -217,30 +226,58 @@ export interface RelayCandidate {
 /**
  * 一个候选此刻是否**真的还能接新房间**：人数与带宽两道余量都得有。
  *
- * 它只决定「延迟提示算不算数」，**不**用来把节点筛出候选池 ——
- * 提示是"在合格节点之间排序"的依据，不能把满员/吃紧的节点拉到队伍最前面，
- * 否则带提示的新客户端反而会比不带提示的老客户端选中更差的节点（升级等于变坏）。
- * 节点本身仍然留在池子里：真的一个空闲节点都没有时，它照旧按 relayScore 兜底，
- * 房间拿到的中继数量与形态完全不变。
+ * 它决定两件事：
+ *   1. 「延迟提示算不算数」—— 满员/吃紧的节点即使有提示也不参与延迟比较；
+ *   2. 排序的**第 0 个键**（`selectRelays`）—— 真有余量的节点排在满员/吃紧的节点前面。
+ *      这一条不是"偏好"而是硬条件的延伸：weight 高只能决定"同样能用时先选谁"，
+ *      不能把一台接不了新房间的节点顶到队伍最前面（否则带提示的新客户端会比老客户端选得更差）。
+ *
+ * 它**不**用来把节点筛出候选池：真的一个有余量的节点都没有时，
+ * 满员/吃紧的节点照旧按 weight → relayScore 兜底，房间拿到的中继数量与形态完全不变。
  */
 function hasHeadroom(candidate: RelayCandidate): boolean {
   return candidate.row.peers < candidate.row.capacity_peers && candidate.utilization < UTIL_SHED;
 }
 
+/** 参与排序的候选：把排序键预先算好，免得比较器里反复查表 */
+interface RankedCandidate {
+  candidate: RelayCandidate;
+  /** 键 0：真有余量（还能接新房间） */
+  headroom: boolean;
+  /** 键 ①：运营方权重 */
+  weight: number;
+  /** 键 ②：实测延迟 ms；`+∞` = 没有提示（延迟未知，不优待） */
+  ms: number;
+}
+
 /**
- * 从候选池里挑中继节点（纯函数，便于单测）：**延迟优先**，同档再比负载。
+ * 从候选池里挑中继节点（纯函数，便于单测）：**权重优先，权重相同才比延迟**。
  *
- * 规则：
- *   1. 候选池已经过全部硬条件（在线/未禁用/`weight > 0`/余量/区域），本函数既不放松也不新增 ——
- *      提示里出现池外节点（被停用、权重 0、离线、别区域…）时那条提示自然无效，
- *      拼接过的 nodeId 也拉不进任何东西。
- *   2. 有提示**且还有余量**的节点排在最前，按 ms 升序；差 ≤ LATENCY_TIE_BAND_MS 算同档，
- *      档内用现有的 `relayScore` 决胜（余量多、权重高、没降级的优先）。
- *   3. 没有提示的节点排在所有有提示的之后，它们之间仍按 relayScore 排序
- *      —— 与改造前的「分数降序 → peers 升序」逐位一致，所以 `hints` 为空时行为完全没变（老客户端安全）。
- *   4. 提示是建房那一刻测的，这里**刻意不判过期**：过期与否都只影响"先挑谁"，
- *      拿一组稍旧的相对大小排序仍然好过完全按负载排序（详见 RelayLatencyHint 的注释）。
- *   5. 不做防伪造：谎报只会让自己房间落到更差的节点上，而平台本来就允许自选节点（见 RelayLatencyHint）。
+ * 排序键（依次比较，前一条能分出胜负就不看后面）：
+ *   0. **真有余量**（`hasHeadroom`）的排前面 —— 硬条件的延伸，不是偏好（理由见该函数注释）。
+ *      真的一个有余量的候选都没有时（`scheduleRelays` 的带宽回退分支），它们之间照旧按 ①–④ 排。
+ *   ① `weight` 降序 —— **主键**
+ *   ② 权重相同才比延迟：有提示且真有余量的按 ms 升序；没有提示的排在后面
+ *      （没提示 = 延迟未知，不优待；沿用改造前"有提示的排在没提示的之前"的相对关系）
+ *   ③ 仍相同 → `relayScore` 降序（= weight × min(人数余量, 带宽余量) − 降级罚分；
+ *      权重在这一步已经相等，所以它实际比的是"哪台更空、有没有降级"）
+ *   ④ 仍相同 → `peers` 升序（改造前就有的收尾判据，保证同分结果稳定）
+ *
+ * 为什么权重是主键、延迟只是次键（用户拍板的语义）：
+ *   · `weight` 是运营方在控制台里写下的**意图**（专线/贵节点调高、临时顶不住的调低），
+ *     它必须能压过"几毫秒的体感差异"，否则权重就形同虚设；
+ *   · 延迟只用来在**同一档位**里挑更近的那台，这正是"权重一致时比延迟"的含义。
+ *   反过来的"延迟优先"会让一台运营方并不想用的节点仅凭几毫秒优势抢走流量。
+ *
+ * 硬条件一条都不放松：候选池由调用方按状态/禁用/权重/带宽/区域筛好，本函数既不放松也不新增 ——
+ * 提示里出现池外节点（被停用、权重 0、离线、别区域…）时那条提示自然无效，
+ * 拼接过的 nodeId 也拉不进任何东西。
+ *
+ * ⚠️ **老客户端（不发 `latencyHints`）的选择结果也会变**：改造前是纯 `relayScore` 排序
+ * （weight 只是打分里的一个因子），现在是"权重 → 打分"。于是"权重更低但更空的节点"
+ * 不再能越过权重更高的节点。例：权重 100、已用 400/500 人（打分 20）的节点，
+ * 以前输给权重 90、几乎全空（打分 89.1）的节点，现在它赢。
+ * 这是用户明确要的语义（权重说了算），不是副作用；权重相同时行为与改造前逐位一致。
  */
 export function selectRelays(
   candidates: readonly RelayCandidate[],
@@ -260,25 +297,34 @@ export function selectRelays(
   }
 
   const score = (candidate: RelayCandidate): number => relayScore(candidate.row, candidate.utilization);
-  /** 改造前就在用的比较规则：分数降序，同分看 peer 少的 */
+  /** 键 ③④：分数降序，同分看 peer 少的（改造前就在用的比较规则） */
   const byScore = (a: RelayCandidate, b: RelayCandidate): number => score(b) - score(a) || a.row.peers - b.row.peers;
   /** 提示只在"真的还能接新房间"的节点上算数（见 hasHeadroom） */
   const hintedMs = (candidate: RelayCandidate): number | undefined =>
     hasHeadroom(candidate) ? hintMs.get(candidate.row.id) : undefined;
 
-  // 第一趟：延迟升序、有提示的在前；没提示的（含提示不算数的）按原打分排在所有提示之后
-  const ordered = [...candidates].sort((a, b) => {
-    const ha = hintedMs(a);
-    const hb = hintedMs(b);
-    if (ha === undefined || hb === undefined) {
-      if (ha === hb) return byScore(a, b);
-      return ha === undefined ? 1 : -1;
-    }
-    return ha - hb || byScore(a, b);
-  });
+  const ranked: RankedCandidate[] = candidates.map((candidate) => ({
+    candidate,
+    headroom: hasHeadroom(candidate),
+    weight: candidate.row.weight,
+    ms: hintedMs(candidate) ?? Number.POSITIVE_INFINITY,
+  }));
 
   /**
-   * 第二趟：把延迟差在并列带内的**连续区间**当成同一档，档内再交回打分决胜。
+   * 第一趟：键 0 → ① → ② → ③④。
+   * sort 是稳定的：完全并列的候选保持调用方给的顺序（`listSchedulable` 本来就是 weight desc）。
+   */
+  ranked.sort(
+    (a, b) =>
+      Number(b.headroom) - Number(a.headroom) ||
+      b.weight - a.weight ||
+      // 两边都没提示时 `+∞ - +∞ = NaN`，而 NaN 在比较器里的行为是实现定义的 → 显式判等
+      (a.ms === b.ms ? 0 : a.ms - b.ms) ||
+      byScore(a.candidate, b.candidate),
+  );
+
+  /**
+   * 第二趟：只在**键 0 与权重都相同**的连续区间内做"延迟并列带"。
    *
    * 为什么按"连续区间"而不是两两比较来判定并列：`|a-b| ≤ 带子` 不满足传递性
    * （0ms/15ms/30ms 里首尾相差 30ms 却各自与前一个"并列"），拿它当比较器会让排序结果
@@ -286,29 +332,41 @@ export function selectRelays(
    * 区间内任意两个节点自然都在带子内，语义与结果都稳定。
    */
   const picked: NodeRow[] = [];
-  let i = 0;
-  while (i < ordered.length) {
-    const head = ordered[i];
+  for (let start = 0; start < ranked.length; ) {
+    const head = ranked[start];
     if (!head) break;
-    const headMs = hintedMs(head);
-    if (headMs === undefined) {
-      // 剩下的全是无提示节点：第一趟已经是打分顺序，直接收尾
-      for (; i < ordered.length; i += 1) {
-        const rest = ordered[i];
-        if (rest) picked.push(rest.row);
+    // 切出「同余量 + 同权重」的连续区间：跨区间的胜负在第一趟就已经定了，延迟不参与
+    let stop = start + 1;
+    while (stop < ranked.length) {
+      const next = ranked[stop];
+      if (!next || next.headroom !== head.headroom || next.weight !== head.weight) break;
+      stop += 1;
+    }
+
+    let cursor = start;
+    while (cursor < stop) {
+      const bandHead = ranked[cursor];
+      if (!bandHead) break;
+      if (!Number.isFinite(bandHead.ms)) {
+        // 剩下的全是无提示节点：第一趟已经把它们按打分排好了，直接收尾
+        for (; cursor < stop; cursor += 1) {
+          const rest = ranked[cursor];
+          if (rest) picked.push(rest.candidate.row);
+        }
+        break;
       }
-      break;
+      let end = cursor + 1;
+      while (end < stop) {
+        const ms = ranked[end]?.ms ?? Number.POSITIVE_INFINITY;
+        if (!Number.isFinite(ms) || ms - bandHead.ms > LATENCY_TIE_BAND_MS) break;
+        end += 1;
+      }
+      // sort 稳定：档内同分的节点保持延迟升序，不会因为决胜把更低延迟的挤到后面
+      const band = ranked.slice(cursor, end).sort((a, b) => byScore(a.candidate, b.candidate));
+      for (const entry of band) picked.push(entry.candidate.row);
+      cursor = end;
     }
-    let end = i + 1;
-    while (end < ordered.length) {
-      const next = ordered[end];
-      const ms = next ? hintedMs(next) : undefined;
-      if (ms === undefined || ms - headMs > LATENCY_TIE_BAND_MS) break;
-      end += 1;
-    }
-    // sort 稳定：同分节点保持延迟升序，不会因为决胜把更低延迟的挤到后面
-    for (const candidate of ordered.slice(i, end).sort(byScore)) picked.push(candidate.row);
-    i = end;
+    start = stop;
   }
   return picked.slice(0, limit);
 }
@@ -460,8 +518,8 @@ export class RoomService {
      * 兜底节点让它继续能玩，房间页再提示"当前走的是兜底"。
      * 兜底挑选时会**排除用户已选的**，避免重复占一个名额。
      *
-     * `latencyHints` 只喂给自动调度：自动模式下它就是"选谁"，手动模式下它只决定
-     * "先挑哪台当兜底"。手选节点照旧原样优先（`#validatePickedNodes` 只看硬条件，不看延迟）。
+     * `latencyHints` 只喂给自动调度：自动模式下它就是"在**同权重**的候选里选谁"，
+     * 手动模式下它只决定"先挑哪台当兜底"。手选节点照旧原样优先（`#validatePickedNodes` 只看硬条件，不看延迟）。
      */
     const picked = this.#validatePickedNodes(input.nodeIds ?? []);
     const auto = this.scheduleRelays(zone, input.latencyHints ?? [], 2);
@@ -1139,10 +1197,11 @@ export class RoomService {
    *
    * 硬条件在这一层筛完（`listSchedulable` 的状态/禁用/权重 + 带宽余量 + 区域），
    * **延迟提示一条都不放松**；通过硬条件的节点交给纯函数 `selectRelays` 排序：
-   * 有提示的按延迟升序优先，没提示的排在后面（见那里的注释）。
+   * **权重降序 → 权重相同才比延迟 → relayScore → peers**（见那里的注释）。
    *
-   * `latencyHints` 缺省（老客户端 / 改区域触发的重调度）＝ 完全按 relayScore，
-   * 行为与改造前逐位一致。指定区域时该区域无可用节点仍回退到全局（并记日志），
+   * `latencyHints` 缺省（老客户端 / 改区域触发的重调度）＝ 权重优先、同权重再按 relayScore；
+   * 注意这**不再**等于改造前的纯 relayScore 排序（权重成了第一判据，见 `selectRelays`）。
+   * 指定区域时该区域无可用节点仍回退到全局（并记日志），
    * 避免玩家因为某个区域没部署节点而完全无法联机。
    */
   scheduleRelays(zone: string, latencyHints: readonly RelayLatencyHint[] = [], max = 2): string[] {

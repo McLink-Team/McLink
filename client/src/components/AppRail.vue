@@ -8,9 +8,13 @@
  *
  * 图标是**自绘 SVG**（统一 1.6 描边、22px、currentColor）：craft floor 明确
  * 不许用 emoji 或 Unicode 字形顶替图标系统，客户端也没有图标库依赖。
+ *
+ * 图标本身住在 RailIcon.vue —— 因为 Android 端的底部导航用的是**同一批去处**，
+ * 路径数据只允许有一份（理由见那个文件的注释）。
  */
 import { computed } from 'vue';
 import BrandMark from './BrandMark.vue';
+import RailIcon from './RailIcon.vue';
 
 export type RailKey = 'home' | 'plaza' | 'bookmarks' | 'settings';
 
@@ -60,34 +64,7 @@ const initial = computed(() => (props.userName ?? '').trim().slice(0, 1).toUpper
           :aria-current="active === item.key ? 'page' : undefined"
           @click="emit('select', item.key)"
         >
-          <span class="rail-icon" aria-hidden="true">
-            <!-- 联机：手柄 -->
-            <svg v-if="item.key === 'home'" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-              <path
-                d="M7.5 8h9a4.5 4.5 0 0 1 4.4 3.6l.7 4a2.6 2.6 0 0 1-4.6 2.1l-1-1.3a2 2 0 0 0-1.6-.8h-4.8a2 2 0 0 0-1.6.8l-1 1.3a2.6 2.6 0 0 1-4.6-2.1l.7-4A4.5 4.5 0 0 1 7.5 8Z"
-                stroke-linejoin="round"
-              />
-              <path d="M8.5 12.2v2.4M7.3 13.4h2.4" stroke-linecap="round" />
-              <circle cx="15.4" cy="13.4" r="1.05" fill="currentColor" stroke="none" />
-            </svg>
-            <!-- 大厅：网格 -->
-            <svg v-else-if="item.key === 'plaza'" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-              <rect x="3.5" y="3.5" width="7" height="7" rx="2" stroke-linejoin="round" />
-              <rect x="13.5" y="3.5" width="7" height="7" rx="2" stroke-linejoin="round" />
-              <rect x="3.5" y="13.5" width="7" height="7" rx="2" stroke-linejoin="round" />
-              <rect x="13.5" y="13.5" width="7" height="7" rx="2" stroke-linejoin="round" />
-            </svg>
-            <!-- 收藏：书签 -->
-            <svg v-else-if="item.key === 'bookmarks'" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-              <path d="M6.5 4.5h11v15l-5.5-3.8L6.5 19.5v-15Z" stroke-linejoin="round" />
-            </svg>
-            <!-- 设置：滑杆（原本画的是"齿轮"，实测看起来像一个太阳/亮度图标 —— 认错等于没有图标） -->
-            <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor">
-              <path d="M4 7.5h10M19 7.5h1M4 16.5h4M13 16.5h7" stroke-linecap="round" />
-              <circle cx="16.5" cy="7.5" r="2.1" />
-              <circle cx="10.5" cy="16.5" r="2.1" />
-            </svg>
-          </span>
+          <RailIcon :name="item.key" />
           <span class="rail-label">{{ item.label }}</span>
           <span v-if="item.key === 'home' && inRoom" class="rail-dot" :class="online ? 'dot-ok' : 'dot-warn'" />
           <span v-else-if="item.key === 'settings' && updateAvailable" class="rail-dot dot-accent" />
@@ -175,17 +152,7 @@ const initial = computed(() => (props.userName ?? '').trim().slice(0, 1).toUpper
   color: var(--accent);
 }
 
-.rail-icon {
-  display: grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-}
-.rail-icon svg {
-  width: 22px;
-  height: 22px;
-  stroke-width: 1.6;
-}
+/* 图标的盒子与描边规则已随 RailIcon.vue 一起搬走（桌面与手机共用一份）。 */
 .rail-label {
   font-size: var(--fs-xs);
   font-weight: 500;

@@ -1,0 +1,27 @@
+{
+  "name": "@mclink/android",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "McLink Android 端：Capacitor 外壳 + 复用 client/src 的「暖纸台」渲染层",
+  "scripts": {
+    "build:web": "vite build",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.json",
+    "sync": "vite build && cap sync android",
+    "open": "cap open android",
+    "apk": "node scripts/build-apk.mjs"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.4.3",
+    "@capacitor/core": "^7.4.3",
+    "@mclink/shared": "workspace:*",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.4.3",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.7",
+    "vue-tsc": "^2.2.0"
+  }
+}
