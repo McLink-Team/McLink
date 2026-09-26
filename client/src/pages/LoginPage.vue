@@ -13,7 +13,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { clearAuthNotice, clientState, login, register, setDevice } from '../lib/store.ts';
 import { friendlyError } from '../lib/api.ts';
-import { emailProblem, passwordProblem } from '@mclink/shared';
+import { emailProblem, displayNameProblem, passwordProblem } from '@mclink/shared';
 
 const mode = ref<'login' | 'register'>('login');
 const username = ref('');
@@ -28,12 +28,23 @@ const error = ref('');
 /** 平台是否要求验证邮箱（来自 /meta）：是的话注册表单把邮箱变成必填 */
 const emailRequired = computed(() => clientState.platform.requireEmailVerification);
 
+/**
+ * 昵称与服务端同一条规则（shared 的 displayNameProblem）：冒充官方、匿名/占位名在输入时就报。
+ *
+ * 这里查不到"已有用户的显示名"，所以重名那一类只有服务端能判 —— 界面这份是即时提示，
+ * 服务端才是强制点，它回来的 400 文案会显示在下面的 alert 里。
+ */
+const displayNameIssue = computed(() =>
+  displayName.value.trim().length > 0 ? displayNameProblem(displayName.value.trim()) : null,
+);
+
 const canSubmit = computed(() => {
   if (busy.value) return false;
   if (!username.value.trim() || !password.value) return false;
   if (mode.value === 'register') {
     if (password.value !== password2.value) return false;
     if (passwordProblem(password.value)) return false;
+    if (displayNameIssue.value !== null) return false;
     if (emailRequired.value && email.value.trim().length === 0) return false;
     if (email.value.trim().length > 0 && emailProblem(email.value.trim()) !== null) return false;
   }
@@ -124,6 +135,9 @@ async function submit(): Promise<void> {
         <div class="field">
           <label class="label">昵称（可选）</label>
           <input v-model="displayName" class="input" placeholder="会显示在房间成员列表里" />
+          <!-- 与服务端同一条规则（shared 的 displayNameProblem）：冒充官方/匿名占位名不让提交 -->
+          <div v-if="displayNameIssue" class="hint warn-text">{{ displayNameIssue }}</div>
+          <div v-else class="hint">留空就用用户名。</div>
         </div>
       </template>
 

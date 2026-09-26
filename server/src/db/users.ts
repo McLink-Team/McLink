@@ -316,6 +316,23 @@ export class UserRepo {
     return { rows, total: this.count() };
   }
 
+  /**
+   * 反冒充用：所有用户的显示名（可排除自己那一行）。
+   *
+   * **刻意不复用 `list()`**：那个方法有 200 条上限（`listBroadcastRecipients` 的注释里
+   * 记过同一个坑），拿它判重名会静默漏检 —— 而漏掉的恰好是创建最早的那批老用户，
+   * 正是最容易被冒充的人。这里是无条件的单列只读查询，调用方要做的是"跟全量显示名比"。
+   *
+   * 比较本身在 JS 侧做（shared 的 `normalizeDisplayName`）：同形字折叠、去零宽字符
+   * 这些步骤 SQL 里表达不出来，放进去只会得到两种不一致的判重规则。
+   */
+  displayNames(excludeUserId?: string): string[] {
+    const rows = excludeUserId
+      ? this.db.all<{ display_name: string }>('select display_name from users where id <> ?', excludeUserId)
+      : this.db.all<{ display_name: string }>('select display_name from users');
+    return rows.map((row) => row.display_name);
+  }
+
   toUser(row: UserRow): User {
     return toUser(row);
   }
