@@ -13,7 +13,7 @@
  * 表单（创建/加入）与逻辑与改造前完全一致，只是换到新的组件层里渲染。
  */
 import { computed, onMounted, ref } from 'vue';
-import { Routes, regionLabel, type Room } from '@mclink/shared';
+import { Routes, regionLabel, type RelayLatencyHint, type Room } from '@mclink/shared';
 import { api } from '../lib/api.ts';
 import { probeKey, type ProbeTarget } from '../lib/bridge.ts';
 import { clientState, createRoom, joinRoom, loadRooms, openUpdatePage, reenterRoom } from '../lib/store.ts';
@@ -107,6 +107,27 @@ const latencyOf = (n: NodeOption): number | null => {
   const target = probeTargetOf(n);
   return target === null ? null : (latency.value[probeKey(target)] ?? null);
 };
+
+/**
+ * 把本机这次测到的延迟整理成建房请求的 `latencyHints`。
+ *
+ * 主控拿它**只在已经合格的候选之间排序**（自动模式选谁、手动模式先挑哪台当兜底）：
+ * 它绝不放松任何硬条件（未接入/停用/权重 0/没余量/区域不符的节点，提示也拉不进来），
+ * 也不影响手动勾选的优先级。测不到（null）的节点不报 —— "没测到"不是"延迟 0"。
+ *
+ * 过时这件事是明摆着的：值就是点「创建并连接」这一刻的握手延迟，之后网络会变。
+ * 这里**不做**刷新/校验，主控也不判过期 —— 它只是个排序偏好，
+ * 真失效的节点由主控的状态与容量兜住，用一组稍旧的相对大小排序仍然比纯按负载更贴近体感。
+ */
+function latencyHints(): RelayLatencyHint[] {
+  const out: RelayLatencyHint[] = [];
+  for (const n of nodeList.value) {
+    const ms = latencyOf(n);
+    if (ms !== null && Number.isFinite(ms)) out.push({ nodeId: n.id, ms });
+  }
+  return out;
+}
+
 /** 按延迟排序；没测到的排在最后（但**仍然可选**） */
 const sortedNodes = computed(() =>
   [...nodeList.value].sort((a, b) => {
@@ -208,6 +229,11 @@ async function doCreate(): Promise<void> {
       zone: form.value.zone,
       // 手动模式下把手选节点带上；自动模式传空数组，由平台按区域调度
       nodeIds: nodeMode.value === 'manual' ? manualNodes.value : [],
+      /**
+       * 延迟提示两种模式都带：自动模式下它决定"选谁"，
+       * 手动模式下它只决定"平台补的那个兜底先落在哪台"（手选节点永远优先）。
+       */
+      latencyHints: latencyHints(),
       access: form.value.access,
       password: form.value.access === 'password' ? form.value.password : undefined,
       visibility: form.value.visibility,
@@ -327,7 +353,7 @@ async function resume(room: Room): Promise<void> {
               {{ r.label }}{{ r.onlineNodes > 0 ? ` · ${r.onlineNodes} 个节点` : '' }}
             </option>
           </select>
-          <div class="hint">不确定就留「自动选择」，会挑一个延迟低的中继。</div>
+          <div class="hint">不确定就留「自动选择」：平台按你本机刚测到的延迟优先挑中继。</div>
         </div>
 
         <!-- 中继节点：区域只是筛选，这里才是真正选谁的问题 -->
@@ -383,10 +409,13 @@ async function resume(room: Room): Promise<void> {
               </label>
             </div>
             <div class="hint">
-              最多选 3 个；平台**始终再补一个兜底节点**，所以你选的节点掉线房间也不会断。
+              最多选 3 个；平台始终再补一个兜底节点（按同一套延迟优先规则挑），所以你选的节点掉线房间也不会断。
             </div>
           </template>
-          <div v-else class="hint">平台按区域挑延迟低、负载轻的节点，并自动留冗余。</div>
+          <div v-else class="hint">
+            平台按你本机刚测到的延迟优先挑：延迟接近的才比负载与余量，没测到的节点排在最后，并自动留冗余。
+            测速结果只用于「先挑谁」，过时了也不影响节点可用性。
+          </div>
         </div>
 
         <div class="pair">

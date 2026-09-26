@@ -1,5 +1,5 @@
 /** 路由层共用的小工具：参数读取、鉴权断言、审计封装 */
-import { DEFAULT_ROOM_POLICY, type RoomPolicy } from '@mclink/shared';
+import { DEFAULT_ROOM_POLICY, type RelayLatencyHint, type RoomPolicy } from '@mclink/shared';
 import { HttpError } from '../util/errors.ts';
 import type { Ctx } from '../http/kit.ts';
 import type { AuthContext } from '../http/kit.ts';
@@ -92,6 +92,34 @@ export function parsePolicy(body: Record<string, unknown>, base?: RoomPolicy): R
   else if ('motd' in body && body.motd === null) out.motd = null;
 
   return out;
+}
+
+/**
+ * 解析建房请求里可选的「节点延迟提示」（见 `RelayLatencyHint`）。
+ *
+ * 三件事刻意做得**宽松**，因为这只是排序偏好，不该挡住任何人建房：
+ *   · 字段缺失 / 不是数组 / 条目形状不对 → 当作"没有提示"，与老客户端完全同路；
+ *   · ms 只做范围裁剪（0–60000 的整数），NaN/Infinity/负数/字符串一律丢弃；
+ *   · 条数截断到 64 条、同一个 nodeId 出现多次取最小值（与客户端"连打 3 次取最快"一致）。
+ *
+ * 不校验真伪：谎报延迟只能影响自己房间的选路，而平台本来就允许自选节点
+ * （完整理由写在 shared 的 RelayLatencyHint 注释里）。
+ */
+export function parseLatencyHints(body: Record<string, unknown>): RelayLatencyHint[] {
+  const raw = body.latencyHints;
+  if (!Array.isArray(raw)) return [];
+  const best = new Map<string, number>();
+  for (const item of raw.slice(0, 64)) {
+    if (!item || typeof item !== 'object') continue;
+    const { nodeId, ms } = item as { nodeId?: unknown; ms?: unknown };
+    if (typeof nodeId !== 'string' || nodeId.length === 0) continue;
+    const value = typeof ms === 'number' ? ms : Number.NaN;
+    if (!Number.isFinite(value) || value < 0) continue;
+    const rounded = Math.min(60_000, Math.round(value));
+    const prev = best.get(nodeId);
+    if (prev === undefined || rounded < prev) best.set(nodeId, rounded);
+  }
+  return [...best].map(([nodeId, ms]) => ({ nodeId, ms }));
 }
 
 /** 断言已登录；返回认证上下文 */

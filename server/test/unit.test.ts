@@ -14,9 +14,11 @@ import { test, describe } from 'node:test';
 import { renderAcl, renderEasytierToml, buildLaunchArgs, tomlString, aclToJson, rpcPortalForListenPort, usableRpcPort } from '../src/easytier/config.ts';
 import { buildRoomAcl, isAclEmpty } from '../src/easytier/acl.ts';
 import { parseHumanNumber, parseLatencyMs } from '../src/easytier/manager.ts';
-import { hashRoomPassword, verifyRoomPassword, deriveNetworkName, resolveMemberLink, relayScore, nextRoomExpiry } from '../src/services/rooms.ts';
+import { hashRoomPassword, verifyRoomPassword, deriveNetworkName, resolveMemberLink, relayScore, nextRoomExpiry, selectRelays, LATENCY_TIE_BAND_MS, RoomService, type RelayCandidate } from '../src/services/rooms.ts';
+import { Db } from '../src/db/index.ts';
+import { NodeRepo } from '../src/db/nodes.ts';
 import { ewma, NodeUtilization } from '../src/services/node-utilization.ts';
-import { parsePolicy } from '../src/api/helpers.ts';
+import { parseLatencyHints, parsePolicy } from '../src/api/helpers.ts';
 import {
   buildMessage,
   encodeHeader,
@@ -49,6 +51,7 @@ import {
   normalizeEmailCode,
   slotFromIp,
   subnetForSlot,
+  type RelayLatencyHint,
   generateNetworkSecret,
   generateRoomCode,
   passwordProblem,
@@ -986,6 +989,216 @@ describe('带宽利用率与调度打分', () => {
     assert.equal(nextNodeStatus('degraded', 79, 100, 0), 'online');
     // 人数已回落但带宽还没回落 → 不能恢复
     assert.equal(nextNodeStatus('degraded', 0, 100, 0.95), null);
+  });
+});
+
+/**
+ * 「建房自动选中继」改成延迟优先后新增的调度规则。
+ *
+ * 用户拍板：延迟优先；**不做防伪造**（谎报只能影响自己房间的选路，而平台本来就允许自选节点，
+ * 谎报没有收益）。这里要钉住四件事：
+ *   1. 有提示的按 ms 升序优先，没提示的排在所有有提示的之后；
+ *   2. 差 ≤ LATENCY_TIE_BAND_MS 算同档，同档才用 relayScore 决胜；
+ *   3. 提示**绝不能**绕过硬条件（权重 0 / 停用 / 离线 / 满员 / 带宽吃紧 / 区域不符）；
+ *   4. 提示为空（= 老客户端）时行为与改造前**逐位一致**。
+ */
+describe('延迟优先调度 selectRelays / scheduleRelays', () => {
+  const cand = (id: string, over: Partial<NodeRow> = {}, utilization = 0): RelayCandidate => ({
+    row: { id, capacity_peers: 500, peers: 0, weight: 100, status: 'online', ...over } as NodeRow,
+    utilization,
+  });
+
+  const rowOf = (id: string, region: string, over: Partial<NodeRow> = {}): NodeRow =>
+    ({ id, region, capacity_peers: 500, peers: 0, weight: 100, status: 'online', ...over }) as NodeRow;
+
+  test('低延迟优先：延迟低的排前面，即使它的负载打分更低', () => {
+    const slow = cand('slow', { weight: 1000 });
+    const fast = cand('fast', { weight: 1 });
+    assert.ok(relayScore(fast.row, 0) < relayScore(slow.row, 0), '前置条件：fast 的打分本来就低于 slow');
+    const picked = selectRelays(
+      [slow, fast],
+      [
+        { nodeId: 'slow', ms: 120 },
+        { nodeId: 'fast', ms: 8 },
+      ],
+      2,
+    );
+    assert.deepEqual(picked.map((row) => row.id), ['fast', 'slow']);
+  });
+
+  test('没有提示的节点排在所有有提示的之后，它们之间仍按 relayScore 排', () => {
+    const picked = selectRelays(
+      [cand('big', { weight: 1000 }), cand('hinted', { weight: 1 }), cand('small', { weight: 10 })],
+      [{ nodeId: 'hinted', ms: 300 }],
+      3,
+    );
+    assert.deepEqual(picked.map((row) => row.id), ['hinted', 'big', 'small']);
+  });
+
+  test('并列带内用 relayScore 决胜；超出带子仍然延迟优先', () => {
+    const low = cand('low', { weight: 1 });
+    const high = cand('high', { weight: 100 });
+    // 差刚好等于带子 → 同一档 → 权重/余量更好的赢
+    assert.deepEqual(
+      selectRelays([low, high], [{ nodeId: 'low', ms: 10 }, { nodeId: 'high', ms: 10 + LATENCY_TIE_BAND_MS }], 1)
+        .map((row) => row.id),
+      ['high'],
+    );
+    // 只超出带子 1ms → 延迟优先
+    assert.deepEqual(
+      selectRelays([low, high], [{ nodeId: 'low', ms: 10 }, { nodeId: 'high', ms: 11 + LATENCY_TIE_BAND_MS }], 1)
+        .map((row) => row.id),
+      ['low'],
+    );
+    // 延迟与打分都一样时看 peer 少的（改造前就有的末位判据，不能被并列带吃掉）
+    assert.deepEqual(
+      selectRelays(
+        [cand('many', { peers: 30 }), cand('few', { peers: 3 })],
+        [{ nodeId: 'many', ms: 20 }, { nodeId: 'few', ms: 25 }],
+        1,
+      ).map((row) => row.id),
+      ['few'],
+    );
+  });
+
+  test('满员节点（peers ≥ 容量）：提示不算数，仍排在有富余的节点之后', () => {
+    const full = cand('full', { peers: 500, weight: 1000 });
+    const ok = cand('ok', { weight: 1 });
+    const picked = selectRelays([full, ok], [{ nodeId: 'full', ms: 1 }, { nodeId: 'ok', ms: 400 }], 2);
+    assert.deepEqual(picked.map((row) => row.id), ['ok', 'full']);
+  });
+
+  test('带宽吃紧（利用率 ≥90%）的节点：提示同样不算数，判定只看 relayScore', () => {
+    // 两个都吃紧 → 走"全都吃紧就按打分兜底"那条路，此时提示必须完全失效
+    const busyHigh = cand('busyHigh', { weight: 100 }, 0.95);
+    const busyLow = cand('busyLow', { weight: 1 }, 0.95);
+    const picked = selectRelays(
+      [busyHigh, busyLow],
+      [{ nodeId: 'busyLow', ms: 1 }, { nodeId: 'busyHigh', ms: 80 }],
+      2,
+    );
+    assert.deepEqual(picked.map((row) => row.id), ['busyHigh', 'busyLow']);
+  });
+
+  test('hints 为空 / 缺省 / 全是池外 id 时，与改造前的排序逐位一致', () => {
+    const list = [
+      cand('a', { weight: 10 }),
+      cand('b', { weight: 90 }),
+      cand('c', { peers: 400 }),
+      cand('d', { status: 'degraded', weight: 100 }),
+      cand('e', { peers: 3, weight: 40 }),
+    ];
+    const legacy = [...list]
+      .sort((x, y) => relayScore(y.row, 0) - relayScore(x.row, 0) || x.row.peers - y.row.peers)
+      .slice(0, 3)
+      .map((c) => c.row.id);
+    assert.deepEqual(selectRelays(list, [], 3).map((row) => row.id), legacy);
+    assert.deepEqual(selectRelays(list, undefined, 3).map((row) => row.id), legacy);
+    assert.deepEqual(selectRelays(list, [{ nodeId: 'ghost', ms: 1 }], 3).map((row) => row.id), legacy);
+  });
+
+  test('候选池外的节点（权重 0 / 停用 / 离线）——提示也拉不进来', () => {
+    const db = new Db(':memory:');
+    try {
+      const repo = new NodeRepo(db);
+      const base = { region: 'cn-east', listenPort: 11010, connectPort: 11010, tokenHash: 't', capacityPeers: 500 };
+      repo.create({ ...base, id: 'n_ok', name: 'ok', endpoint: '10.1.0.1:11010', status: 'online' });
+      repo.create({ ...base, id: 'n_w0', name: 'w0', endpoint: '10.1.0.2:11010', status: 'online', weight: 0 });
+      repo.create({ ...base, id: 'n_off', name: 'off', endpoint: '10.1.0.3:11010', status: 'offline' });
+      repo.create({ ...base, id: 'n_dis', name: 'dis', endpoint: '10.1.0.4:11010', status: 'online' });
+      repo.setDisabled('n_dis', true);
+
+      const pool: RelayCandidate[] = repo.listSchedulable().map((row) => ({ row, utilization: 0 }));
+      assert.deepEqual(pool.map((c) => c.row.id), ['n_ok'], '候选池只剩合格的那一个');
+
+      const picked = selectRelays(
+        pool,
+        [
+          { nodeId: 'n_w0', ms: 1 },
+          { nodeId: 'n_off', ms: 2 },
+          { nodeId: 'n_dis', ms: 3 },
+          { nodeId: 'n_ok', ms: 900 },
+        ],
+        2,
+      );
+      assert.deepEqual(picked.map((row) => row.id), ['n_ok']);
+    } finally {
+      db.close();
+    }
+  });
+
+  /**
+   * 只喂 `scheduleRelays` 真正用到的那几个依赖（候选查询 + 利用率采样），
+   * 这样区域过滤、带宽吃紧过滤、回退全局这些**服务层硬条件**也能被单测直接钉住。
+   */
+  function schedule(rows: NodeRow[], utilizationOf: (row: NodeRow) => number = () => 0) {
+    const fake = Object.assign(Object.create(RoomService.prototype) as RoomService, {
+      nodes: { listSchedulable: () => rows },
+      utilizationOf,
+    });
+    return (zone: string, hints: RelayLatencyHint[] = [], max = 2): string[] =>
+      RoomService.prototype.scheduleRelays.call(fake, zone, hints, max);
+  }
+
+  test('区域是硬条件：提示不能把外区域的低延迟节点拉进来', () => {
+    const pick = schedule([rowOf('east', 'cn-east'), rowOf('south', 'cn-south')]);
+    assert.deepEqual(pick('cn-east', [{ nodeId: 'south', ms: 1 }, { nodeId: 'east', ms: 300 }]), ['east']);
+  });
+
+  test('该区域没有可用节点时回退全局（老行为不变）', () => {
+    const pick = schedule([rowOf('south', 'cn-south')]);
+    assert.deepEqual(pick('cn-east', [{ nodeId: 'south', ms: 5 }]), ['south']);
+  });
+
+  test('带宽吃紧的节点被移出候选，延迟提示拉不回来', () => {
+    const pick = schedule(
+      [rowOf('busy', 'cn-east'), rowOf('idle', 'cn-east')],
+      (row) => (row.id === 'busy' ? 0.95 : 0),
+    );
+    assert.deepEqual(pick('auto', [{ nodeId: 'busy', ms: 1 }, { nodeId: 'idle', ms: 300 }]), ['idle']);
+  });
+
+  test('不传提示 = 改造前的打分顺序（老客户端安全）', () => {
+    const rows = [
+      rowOf('a', 'cn-east', { weight: 10 }),
+      rowOf('b', 'cn-east', { weight: 90 }),
+      rowOf('c', 'cn-east', { peers: 400 }),
+      rowOf('d', 'cn-east', { status: 'degraded' }),
+    ];
+    const legacy = [...rows]
+      .sort((x, y) => relayScore(y, 0) - relayScore(x, 0) || x.peers - y.peers)
+      .slice(0, 2)
+      .map((row) => row.id);
+    const pick = schedule(rows);
+    assert.deepEqual(pick('auto'), legacy);
+    assert.deepEqual(pick('auto', []), legacy);
+    assert.deepEqual(pick('cn-east'), legacy);
+  });
+
+  test('parseLatencyHints：坏形状一律丢弃，重复 id 取最小值，条数封顶', () => {
+    assert.deepEqual(parseLatencyHints({}), []);
+    assert.deepEqual(parseLatencyHints({ latencyHints: 'nope' }), []);
+    assert.deepEqual(
+      parseLatencyHints({
+        latencyHints: [
+          { nodeId: 'a', ms: 42 },
+          { nodeId: 'a', ms: 7 },
+          { nodeId: 'b', ms: -1 },
+          { nodeId: 'c', ms: Number.NaN },
+          { nodeId: 'd', ms: 1e9 },
+          { nodeId: 'e', ms: '12' },
+          { nodeId: '', ms: 5 },
+          { ms: 3 },
+          null,
+        ],
+      }),
+      [
+        { nodeId: 'a', ms: 7 },
+        { nodeId: 'd', ms: 60_000 },
+      ],
+    );
+    const many = Array.from({ length: 100 }, (_, i) => ({ nodeId: `n${i}`, ms: i }));
+    assert.equal(parseLatencyHints({ latencyHints: many }).length, 64);
   });
 });
 

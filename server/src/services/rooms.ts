@@ -25,6 +25,7 @@ import {
   type RoomTicket,
   type RoomVisibility,
   type RelayEndpoint,
+  type RelayLatencyHint,
 } from '@mclink/shared';
 import { createHash } from 'node:crypto';
 import type { ServerConfig } from '../config.ts';
@@ -104,6 +105,14 @@ export interface CreateRoomInput {
    * 选错节点不该挡住玩家开游戏。
    */
   nodeIds?: string[];
+  /**
+   * 客户端建房前实测的节点延迟提示（可选，见 `RelayLatencyHint`）。
+   *
+   * 只影响两件事：**自动调度选谁**、以及**兜底节点排在哪台**。
+   * 用户手选的 `nodeIds` 仍然优先（先手选、再补兜底），提示不会把用户的选择顶掉。
+   * 老客户端不发这个字段 → 调度与改造前逐位一致。
+   */
+  latencyHints?: RelayLatencyHint[];
   /** 请求的 Host 头，用于在未显式配置公网地址时推导主控中继地址 */
   hostHint?: string | null;
 }
@@ -186,6 +195,122 @@ export function relayScore(row: NodeRow, utilization: number): number {
   const bwHeadroom = 1 - Math.min(1, Math.max(0, utilization));
   const penalty = row.status === 'degraded' ? DEGRADED_PENALTY : 0;
   return row.weight * Math.min(peerHeadroom, bwHeadroom) - penalty;
+}
+
+/**
+ * 延迟并列带（ms）：两个候选的实测延迟差在这个范围内就算「同一档」，交回 relayScore 决胜。
+ *
+ * 为什么是 20ms：客户端的 tcping 是**3 次 TCP 握手取最快**，同城/同网节点上重复测量的抖动
+ * 仍有 ±5–15ms（公网路由、家宽上行调度、DNS 递归）；不带并列带的严格排序等于让测量噪声决定选谁。
+ * 而跨区域的真实差距（华东↔华南/华北 30–60ms，出境 100ms 起）明显大于 20ms，
+ * 不会被这条带子吞掉 —— "真的差很多"时延迟永远是第一判据。
+ */
+export const LATENCY_TIE_BAND_MS = 20;
+
+/** 调度候选：节点行 + 该节点当前的带宽利用率（由调用方采样传入，好让下面的选择函数保持纯） */
+export interface RelayCandidate {
+  row: NodeRow;
+  /** 带宽利用率 0–1；≥ UTIL_SHED 表示这一轮不再接新房间 */
+  utilization: number;
+}
+
+/**
+ * 一个候选此刻是否**真的还能接新房间**：人数与带宽两道余量都得有。
+ *
+ * 它只决定「延迟提示算不算数」，**不**用来把节点筛出候选池 ——
+ * 提示是"在合格节点之间排序"的依据，不能把满员/吃紧的节点拉到队伍最前面，
+ * 否则带提示的新客户端反而会比不带提示的老客户端选中更差的节点（升级等于变坏）。
+ * 节点本身仍然留在池子里：真的一个空闲节点都没有时，它照旧按 relayScore 兜底，
+ * 房间拿到的中继数量与形态完全不变。
+ */
+function hasHeadroom(candidate: RelayCandidate): boolean {
+  return candidate.row.peers < candidate.row.capacity_peers && candidate.utilization < UTIL_SHED;
+}
+
+/**
+ * 从候选池里挑中继节点（纯函数，便于单测）：**延迟优先**，同档再比负载。
+ *
+ * 规则：
+ *   1. 候选池已经过全部硬条件（在线/未禁用/`weight > 0`/余量/区域），本函数既不放松也不新增 ——
+ *      提示里出现池外节点（被停用、权重 0、离线、别区域…）时那条提示自然无效，
+ *      拼接过的 nodeId 也拉不进任何东西。
+ *   2. 有提示**且还有余量**的节点排在最前，按 ms 升序；差 ≤ LATENCY_TIE_BAND_MS 算同档，
+ *      档内用现有的 `relayScore` 决胜（余量多、权重高、没降级的优先）。
+ *   3. 没有提示的节点排在所有有提示的之后，它们之间仍按 relayScore 排序
+ *      —— 与改造前的「分数降序 → peers 升序」逐位一致，所以 `hints` 为空时行为完全没变（老客户端安全）。
+ *   4. 提示是建房那一刻测的，这里**刻意不判过期**：过期与否都只影响"先挑谁"，
+ *      拿一组稍旧的相对大小排序仍然好过完全按负载排序（详见 RelayLatencyHint 的注释）。
+ *   5. 不做防伪造：谎报只会让自己房间落到更差的节点上，而平台本来就允许自选节点（见 RelayLatencyHint）。
+ */
+export function selectRelays(
+  candidates: readonly RelayCandidate[],
+  hints: readonly RelayLatencyHint[] | null | undefined,
+  max: number,
+): NodeRow[] {
+  const limit = Math.min(max, candidates.length);
+  if (limit <= 0) return [];
+
+  // 同一个 nodeId 出现多次时取最小值：与客户端「连打 3 次取最快」的语义保持一致
+  const hintMs = new Map<string, number>();
+  for (const hint of hints ?? []) {
+    if (!hint || typeof hint.nodeId !== 'string' || hint.nodeId.length === 0) continue;
+    if (typeof hint.ms !== 'number' || !Number.isFinite(hint.ms) || hint.ms < 0) continue;
+    const prev = hintMs.get(hint.nodeId);
+    if (prev === undefined || hint.ms < prev) hintMs.set(hint.nodeId, hint.ms);
+  }
+
+  const score = (candidate: RelayCandidate): number => relayScore(candidate.row, candidate.utilization);
+  /** 改造前就在用的比较规则：分数降序，同分看 peer 少的 */
+  const byScore = (a: RelayCandidate, b: RelayCandidate): number => score(b) - score(a) || a.row.peers - b.row.peers;
+  /** 提示只在"真的还能接新房间"的节点上算数（见 hasHeadroom） */
+  const hintedMs = (candidate: RelayCandidate): number | undefined =>
+    hasHeadroom(candidate) ? hintMs.get(candidate.row.id) : undefined;
+
+  // 第一趟：延迟升序、有提示的在前；没提示的（含提示不算数的）按原打分排在所有提示之后
+  const ordered = [...candidates].sort((a, b) => {
+    const ha = hintedMs(a);
+    const hb = hintedMs(b);
+    if (ha === undefined || hb === undefined) {
+      if (ha === hb) return byScore(a, b);
+      return ha === undefined ? 1 : -1;
+    }
+    return ha - hb || byScore(a, b);
+  });
+
+  /**
+   * 第二趟：把延迟差在并列带内的**连续区间**当成同一档，档内再交回打分决胜。
+   *
+   * 为什么按"连续区间"而不是两两比较来判定并列：`|a-b| ≤ 带子` 不满足传递性
+   * （0ms/15ms/30ms 里首尾相差 30ms 却各自与前一个"并列"），拿它当比较器会让排序结果
+   * 依赖引擎的比较次数。第一趟已经按延迟排好序，取一段"最高与最低相差 ≤ 带子"的连续区间，
+   * 区间内任意两个节点自然都在带子内，语义与结果都稳定。
+   */
+  const picked: NodeRow[] = [];
+  let i = 0;
+  while (i < ordered.length) {
+    const head = ordered[i];
+    if (!head) break;
+    const headMs = hintedMs(head);
+    if (headMs === undefined) {
+      // 剩下的全是无提示节点：第一趟已经是打分顺序，直接收尾
+      for (; i < ordered.length; i += 1) {
+        const rest = ordered[i];
+        if (rest) picked.push(rest.row);
+      }
+      break;
+    }
+    let end = i + 1;
+    while (end < ordered.length) {
+      const next = ordered[end];
+      const ms = next ? hintedMs(next) : undefined;
+      if (ms === undefined || ms - headMs > LATENCY_TIE_BAND_MS) break;
+      end += 1;
+    }
+    // sort 稳定：同分节点保持延迟升序，不会因为决胜把更低延迟的挤到后面
+    for (const candidate of ordered.slice(i, end).sort(byScore)) picked.push(candidate.row);
+    i = end;
+  }
+  return picked.slice(0, limit);
 }
 
 /**
@@ -334,9 +459,12 @@ export class RoomService {
      * 为什么要兜底：用户 pin 的节点掉线/被禁用时，房间不能直接断 ——
      * 兜底节点让它继续能玩，房间页再提示"当前走的是兜底"。
      * 兜底挑选时会**排除用户已选的**，避免重复占一个名额。
+     *
+     * `latencyHints` 只喂给自动调度：自动模式下它就是"选谁"，手动模式下它只决定
+     * "先挑哪台当兜底"。手选节点照旧原样优先（`#validatePickedNodes` 只看硬条件，不看延迟）。
      */
     const picked = this.#validatePickedNodes(input.nodeIds ?? []);
-    const auto = this.scheduleRelays(zone, 2);
+    const auto = this.scheduleRelays(zone, input.latencyHints ?? [], 2);
     const fallback = auto.find((id) => !picked.ids.includes(id)) ?? auto[0] ?? null;
     const relayNodeIds = [...picked.ids, ...(fallback ? [fallback] : [])];
     const nodeSelection = {
@@ -1008,15 +1136,61 @@ export class RoomService {
 
   /**
    * 按区域挑选中继节点。
-   * `auto` 时按「负载最低 + 剩余容量最多」排序取前 2 个做冗余；
-   * 指定区域时只用该区域的节点，若该区域无可用节点则回退到其它区域（并记日志），
+   *
+   * 硬条件在这一层筛完（`listSchedulable` 的状态/禁用/权重 + 带宽余量 + 区域），
+   * **延迟提示一条都不放松**；通过硬条件的节点交给纯函数 `selectRelays` 排序：
+   * 有提示的按延迟升序优先，没提示的排在后面（见那里的注释）。
+   *
+   * `latencyHints` 缺省（老客户端 / 改区域触发的重调度）＝ 完全按 relayScore，
+   * 行为与改造前逐位一致。指定区域时该区域无可用节点仍回退到全局（并记日志），
    * 避免玩家因为某个区域没部署节点而完全无法联机。
    */
+  scheduleRelays(zone: string, latencyHints: readonly RelayLatencyHint[] = [], max = 2): string[] {
+    const all = this.nodes.listSchedulable();
+    if (all.length === 0) return [];
+    /**
+     * 带宽利用率在这里采样一次，筛选与打分共用同一个值。
+     * 两次调用会各读一次 EWMA —— 同一 tick 内结果相同，但写死"用的就是这一次采样"
+     * 更不容易在以后加入 await 时出现"按 A 判定还有富余、按 B 打分"的错位。
+     */
+    const candidates: RelayCandidate[] = all.map((row) => ({ row, utilization: this.utilizationOf(row) }));
+
+    /**
+     * 带宽已吃紧（利用率 ≥90%）的节点**这次不再分配新房间**。
+     *
+     * 这是"只影响新票据"的核心：不动已经跑着的房间，也不去改节点配置 ——
+     * 改配置要重启该节点的 easytier-core，会把它上面所有房间一起抖断（秒级），
+     * 为了缓解负载而制造一次全网瞬断是不划算的。房间是短命的（TTL + 空房回收），
+     * 不再分配新房间就能让这台节点自然排空。
+     *
+     * 但如果**所有**候选都吃紧，就不能空手而归：那样新房间会连中继都没有，
+     * 只剩主控兜底。这时退回全量候选并记一条日志（宁可挤一点，也别把房间挤没了）。
+     */
+    const relaxed = candidates.filter((c) => !this.isBandwidthBusy(c.row));
+    const pool = relaxed.length > 0 ? relaxed : candidates;
+    if (relaxed.length === 0) {
+      log.warn('所有可用节点的带宽都已吃紧，回退到全量候选（新房间只能挤一挤）', { zone });
+    }
+
+    if (zone === 'auto') {
+      return selectRelays(pool, latencyHints, max).map((n) => n.id);
+    }
+    const inZone = pool.filter((c) => c.row.region === zone);
+    if (inZone.length === 0) {
+      log.warn('指定区域没有可用节点，回退到全局调度', { zone });
+      return selectRelays(pool, latencyHints, max).map((n) => n.id);
+    }
+    return selectRelays(inZone, latencyHints, Math.min(max, inZone.length)).map((n) => n.id);
+  }
+
   /**
    * 校验用户手选的节点。
    *
    * 只接受**真的能承载流量**的节点：存在、未禁用、weight>0、status ∈ online/degraded。
    * 不满足的记进 rejected（带原因）交给上层回给客户端 —— 建房照常进行，降级为自动。
+   *
+   * 这里**不看延迟提示**：手选是用户的直接意图，只要节点合格就照用；
+   * 提示只影响自动调度与兜底顺序（见 CreateRoomInput.latencyHints）。
    */
   #validatePickedNodes(ids: string[]): { ids: string[]; rejected: Array<{ id: string; reason: string }> } {
     const accepted: string[] = [];
@@ -1042,39 +1216,6 @@ export class RoomService {
       if (!accepted.includes(id)) accepted.push(id);
     }
     return { ids: accepted, rejected };
-  }
-  scheduleRelays(zone: string, max = 2): string[] {
-    const all = this.nodes.listSchedulable();
-    if (all.length === 0) return [];
-    const score = (n: NodeRow): number => relayScore(n, this.utilizationOf(n));
-    const sorter = (a: NodeRow, b: NodeRow) => score(b) - score(a) || a.peers - b.peers;
-
-    /**
-     * 带宽已吃紧（利用率 ≥90%）的节点**这次不再分配新房间**。
-     *
-     * 这是"只影响新票据"的核心：不动已经跑着的房间，也不去改节点配置 ——
-     * 改配置要重启该节点的 easytier-core，会把它上面所有房间一起抖断（秒级），
-     * 为了缓解负载而制造一次全网瞬断是不划算的。房间是短命的（TTL + 空房回收），
-     * 不再分配新房间就能让这台节点自然排空。
-     *
-     * 但如果**所有**候选都吃紧，就不能空手而归：那样新房间会连中继都没有，
-     * 只剩主控兜底。这时退回全量候选并记一条日志（宁可挤一点，也别把房间挤没了）。
-     */
-    const relaxed = all.filter((n) => !this.isBandwidthBusy(n));
-    const pool = relaxed.length > 0 ? relaxed : all;
-    if (relaxed.length === 0) {
-      log.warn('所有可用节点的带宽都已吃紧，回退到全量候选（新房间只能挤一挤）', { zone });
-    }
-
-    if (zone === 'auto') {
-      return pool.sort(sorter).slice(0, max).map((n) => n.id);
-    }
-    const inZone = pool.filter((n) => n.region === zone);
-    if (inZone.length === 0) {
-      log.warn('指定区域没有可用节点，回退到全局调度', { zone });
-      return pool.sort(sorter).slice(0, max).map((n) => n.id);
-    }
-    return inZone.sort(sorter).slice(0, Math.min(max, inZone.length)).map((n) => n.id);
   }
 
   /** 这台节点的带宽利用率（0–1）；没配 capacity_bps 时恒为 0（不构成约束） */

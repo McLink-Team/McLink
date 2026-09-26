@@ -14,7 +14,13 @@ export interface RegionDef {
 }
 
 export const REGIONS: readonly RegionDef[] = [
-  { id: 'auto', label: '自动选择（延迟优先）', order: 0, hint: '由主控按实时延迟/负载推荐' },
+  /**
+   * `auto` 的标签在「建房自动选中继」改成延迟优先后**才是准确的**：
+   * 主控没有自己测延迟的能力，用的是客户端建房那一刻上报的 `latencyHints`
+   * （见 protocol.ts 的 RelayLatencyHint），延迟接近时再比负载与余量。
+   * 客户端一条都没测到时（或老客户端），退化为纯负载打分 —— 这条标签仍然描述的是平台的策略。
+   */
+  { id: 'auto', label: '自动选择（延迟优先）', order: 0, hint: '主控按客户端实测延迟优先、延迟接近时再看负载推荐' },
   { id: 'cn-east', label: '华东', order: 10, hint: '上海 / 杭州 / 南京' },
   { id: 'cn-south', label: '华南', order: 20, hint: '广州 / 深圳 / 厦门' },
   { id: 'cn-north', label: '华北', order: 30, hint: '北京 / 天津' },
