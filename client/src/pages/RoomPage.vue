@@ -55,6 +55,13 @@ const policyOpen = ref(false);
 const inviteOpen = ref(false);
 /** 「联机帮助」二级菜单：房间页上只留一行入口，内容进弹层 */
 const helpOpen = ref(false);
+/**
+ * 连接诊断默认**收起**。
+ * 它的数据来自 easytier-cli 的两次调用，进房后还要先等 5 秒 —— 常驻展开等于每次
+ * 进房都占掉右栏一大块，而它是"要看的时候才看"的东西（用户要求默认不展开）。
+ * 收起时不挂载组件，顺带省掉那两次调用与 5 秒等待。
+ */
+const diagOpen = ref(false);
 const policy = ref({
   maxPlayers: 8,
   maxBandwidthKbps: 0,
@@ -618,6 +625,14 @@ async function doLeave(): Promise<void> {
             <button
               class="btn btn-sm"
               type="button"
+              title="联机帮助：按游戏查房主要做什么、玩家要填什么（含要不要带端口、端口多少）"
+              @click="helpOpen = true"
+            >
+              联机帮助
+            </button>
+            <button
+              class="btn btn-sm"
+              type="button"
               title="刷新状态：重新读一次节点、链路与延迟"
               :disabled="busy"
               @click="pollPeers()"
@@ -689,32 +704,24 @@ async function doLeave(): Promise<void> {
           </div>
         </section>
 
-        <!-- 直连还是中继、延迟、NAT 与监听端口 -->
-        <ConnectionDiagnostic />
-
         <!--
-          联机帮助入口：一整行可点，进二级菜单。
-          按游戏查端口的那份表有 9 个游戏、每个 4~6 行 —— 铺在页面上会占掉一整屏，
-          而它是"查资料"的地方，不是常驻信息，所以只留这一行入口。
+          连接诊断：默认收起（入口一整行可点）。
+          展开时才挂载组件 —— 它要调两次 easytier-cli，进房后还要等 5 秒才出数，
+          常驻展开等于每次进房都白等一遍、还占掉右栏一大块。
         -->
-        <button class="help-entry" type="button" @click="helpOpen = true">
+        <button class="help-entry" type="button" :aria-expanded="diagOpen" @click="diagOpen = !diagOpen">
           <span class="help-mark" aria-hidden="true">
             <svg viewBox="0 0 16 16">
-              <circle cx="8" cy="8" r="6.4" />
-              <path d="M6.1 6.1a1.95 1.95 0 1 1 2.6 1.84c-.5.2-.7.6-.7 1.06v.4" />
-              <path d="M8 12.05v.05" />
+              <path d="M1.6 8.4h2.6l1.5-4.6 2.3 8.6 1.8-4h4.6" />
             </svg>
           </span>
           <span class="grow help-entry-text">
-            <span class="help-entry-title">联机帮助</span>
-            <span class="help-entry-sub">按游戏查房主要做什么、玩家填什么</span>
+            <span class="help-entry-title">连接诊断</span>
+            <span class="help-entry-sub">P2P 还是中继、延迟、NAT 与监听端口</span>
           </span>
-          <span class="help-entry-more" aria-hidden="true">
-            <svg viewBox="0 0 16 16">
-              <path d="M6 3.6l4.4 4.4L6 12.4" />
-            </svg>
-          </span>
+          <span class="help-entry-more" aria-hidden="true">{{ diagOpen ? '收起' : '展开' }}</span>
         </button>
+        <ConnectionDiagnostic v-if="diagOpen" />
       </aside>
     </div>
 

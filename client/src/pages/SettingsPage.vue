@@ -288,7 +288,9 @@ function openDataDir(): void {
 .settings-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: var(--s-4);
+  /* 分区之间 12px（原来 16px）：用户实测"间隔还是太大" —— 设置页是密集表单区，
+   * 分区间距应当跟分组走，不该跟卡片内部留白一个量级。 */
+  gap: var(--s-3);
   align-items: start;
   min-width: 0;
 }
