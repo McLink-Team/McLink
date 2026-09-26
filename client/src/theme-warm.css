@@ -1,0 +1,613 @@
+/* ============================================================================
+ * 客户端视觉世界 —— 「暖纸台 / Warm Deck」
+ *
+ * 为什么单独一套而不是改 packages/shared/src/design/tokens.css：
+ * 那份令牌同时被官网与管理台用着（「信号室」暗色世界）。这次的改造范围只有
+ * 客户端，所以新世界**只在客户端生效**：本文件在 styles.css 之后加载，
+ * 用同名令牌覆盖取值 + 新增语义名，官网那边一行都不用动。
+ *
+ * 世界从哪来：用户指定的参考是一个 Flutter 桌面启动器（AstralGame），
+ * 它的设计值是从源码里读出来的，不是眼估的：
+ *   页面底 #E6DED6 / 凹槽与侧栏 #D6CBC2 / 卡片纯白 / 强调 #9A7F70
+ *   正文 #3D3835 / 次级 #7A716A / 三级 #A89F96 / 分隔线 #C9BDB3
+ *   圆角 16·18·20 + 胶囊 999，页边距 24×20，段间距 16
+ * 取向反过来了：**底色是最深的那一层，白卡浮在上面**（不是"暗底 + 亮卡"）。
+ *
+ * 一处刻意的偏离：参考的强调色 #9A7F70 太浅 —— 当按钮底压白字只有 3.6:1、
+ * 当文字压在 #E6DED6 上只有 3.1:1，两处都过不了 AA。本项目的可读性承诺要求
+ * 正文 ≥4.5:1，所以强调色取同一色相里更深的一档 #7A5F4E（白字 5.9:1、
+ * 当文字压在页底 5.1:1），浅的那档留作 --accent-soft 只用于非文字的地方
+ * （选中指示、图标底）。对比度实测见 .cache/check-warm-contrast.mjs。
+ * ========================================================================= */
+
+:root {
+  color-scheme: light;
+
+  /* ---------------------------------------------------------------- 面
+   * 五层台阶，靠"深浅"分而不是靠描边分：页底 → 凹陷槽 → 卡片 → 卡内分区。
+   * --field 单独一档：输入框要有"可以打字"的下沉感，但又不能深到让占位文字
+   * 读不清（实测过：直接拿参考的 #D6CBC2 当填充，占位色只有 3.9:1，不合格）。 */
+  --ground: #e6ded6; /* 页面底（最深的一般面） */
+  --ground-deep: #d6cbc2; /* 侧栏 / 凹陷槽（不放弱文字） */
+  --surface: #ffffff; /* 卡片：白卡浮在深底上 */
+  --surface-2: #faf7f4; /* 卡内分区 */
+  --surface-3: #f2ece6; /* 卡内更深一档：次级按钮、代码块 */
+  --field: #efe8e1; /* 输入框填充 */
+
+  /* ---------------------------------------------------------------- 墨
+   * **三档文字 + 一档非文字**，这是实测逼出来的结构：页面底 #E6DED6 已经比较亮，
+   * 想在它上面同时排出四档"都过 AA"的灰，最弱那档必须压到 4.5:1 的极限，
+   * 与第三档几乎重合 —— 与其做一档假的层级，不如把第四档明确划给非文字
+   * （图标、分隔、失效态），文字层级只留三档。
+   * 括号里是实测对比度（页底 / 白卡）。 */
+  --ink: #3d3835; /* 8.7:1 / 11.6:1 —— 正文 */
+  --ink-2: #57504a; /* 6.0:1 / 7.9:1 —— 次级标题、侧栏标签 */
+  --ink-3: #6a615a; /* 4.6:1 / 5.4:1 —— 说明文字（允许出现在页底、白卡、卡内分区、输入框，不允许压在 --ground-deep 上） */
+  --ink-faint: #7f766d; /* 非文字：图标、分隔、不可用态（仍守住 UI 元件 3:1） */
+
+  /* ---------------------------------------------------------------- 线 */
+  --line: #c9bdb3;
+  --line-strong: #b2a498;
+  --line-soft: rgba(61, 56, 53, 0.09);
+
+  /* ---------------------------------------------------------------- 强调
+   * 同色相比参考再深一档：浅的那档（#9A7F70）当按钮底压白字 3.6:1、当文字压
+   * 页底 3.1:1，两处都过不了 AA。留下 --accent-soft 专供非文字的地方
+   * （选中指示条、图标底、装饰线），文字与按钮一律用 --accent。 */
+  --accent: #6b5245; /* 白字 7.2:1；当文字压页底 5.4:1、压侧栏 4.5:1 */
+  --accent-strong: #5a4438; /* hover：亮色世界里"更深"才叫反馈 */
+  --accent-soft: #9a7f70; /* 参考原色，非文字专用 */
+  --accent-wash: rgba(107, 82, 69, 0.12);
+  --on-accent: #ffffff;
+
+  /* ---------------------------------------------------------------- 语义
+   * 压低饱和度，与暖纸底同族；每一档都能当文字用（压页底 ≥4.5:1）。 */
+  --ok: #45683d; /* 已连接 / 成功：4.8:1 */
+  --ok-wash: rgba(69, 104, 61, 0.12);
+  --warn: #7a5312; /* 5.1:1 */
+  --warn-wash: rgba(122, 83, 18, 0.12);
+  --fault: #9e3a2a; /* 5.1:1 */
+  --fault-wash: rgba(158, 58, 42, 0.1);
+  --info: #35607f; /* 5.1:1 */
+  --info-wash: rgba(53, 96, 127, 0.1);
+
+  /* ---------------------------------------------------------------- 投影
+   * 只有真浮起来的东西（胶囊动作条、弹层、侧栏品牌块）。白卡本身靠色差浮起，
+   * 不需要投影 —— 这是这套世界与"到处发光"的暗色世界最大的区别。 */
+  --shadow: 0 8px 24px rgba(61, 56, 53, 0.12), 0 1px 2px rgba(61, 56, 53, 0.06);
+  --shadow-lg: 0 18px 48px rgba(61, 56, 53, 0.18);
+  --shadow-card: 0 1px 2px rgba(61, 56, 53, 0.05);
+
+  /* ---------------------------------------------------------------- 圆角
+   * 参考的 16 / 18 / 20 是"控件就已经很圆"的世界，最小的那一档也远大于常见网页。 */
+  --r-xs: 8px;
+  --r-sm: 12px;
+  --r-md: 16px;
+  --r-lg: 20px;
+  --r-xl: 20px;
+  --r-pill: 999px;
+
+  /* ---------------------------------------------------------------- 字体
+   * UI 与正文用与参考一致的系统栈（它自带字体只有图标，中文走微软雅黑）；
+   * 展示层继续用仓库里已自托管的 Archivo —— craft floor 不允许"系统字体当展示声音"，
+   * 而客户端离线可用，不能引 CDN 字体。 */
+  --font-ui: 'Noto Sans', 'Noto Sans SC', 'Microsoft YaHei UI', 'Microsoft YaHei', system-ui,
+    -apple-system, 'Segoe UI', sans-serif;
+
+  /* 浏览器原生面（选区、光标、滚动条、焦点环）—— 它们也属于这套世界 */
+  --scrim: rgba(45, 38, 32, 0.42);
+  --well: rgba(61, 56, 53, 0.05);
+  --scroll-thumb: rgba(61, 56, 53, 0.22);
+  --scroll-thumb-hover: rgba(61, 56, 53, 0.36);
+  --rule-hover: rgba(61, 56, 53, 0.24);
+  --surface-hair: rgba(61, 56, 53, 0.04);
+  --surface-hair-strong: rgba(61, 56, 53, 0.07);
+}
+
+/* ============================================================================
+ * 深色变体 —— 同一个世界的夜里那一版（用户要求保留深色主题）
+ *
+ * 不是把亮色反过来：底仍然比卡片深，白卡换成"暖灰卡"，强调色提亮到能在
+ * 深底上当前景色用。参考项目自己的深色主题（darkCoffee）也是这个思路。
+ * ========================================================================= */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --ground: #1a1816;
+  --ground-deep: #131110;
+  --surface: #242120;
+  --surface-2: #2b2826;
+  --surface-3: #332f2c;
+  --field: #1f1c1a;
+
+  --ink: #f2eee9; /* 13.9:1 on --ground */
+  --ink-2: #d3cbc2; /* 10.9:1 */
+  --ink-3: #a79e95; /* 6.5:1 */
+  --ink-faint: #78716a; /* 非文字 */
+
+  --line: #3a3633;
+  --line-strong: #4a4541;
+  --line-soft: rgba(242, 238, 233, 0.08);
+
+  --accent: #d0ac8b; /* 当文字压深底 8.6:1；当按钮底配深墨 8.4:1 */
+  --accent-strong: #e0bd9c;
+  --accent-soft: #c4a882;
+  --accent-wash: rgba(208, 172, 139, 0.16);
+  --on-accent: #241b12;
+
+  --ok: #9dc08b;
+  --ok-wash: rgba(157, 192, 139, 0.14);
+  --warn: #d9b06a;
+  --warn-wash: rgba(217, 176, 106, 0.14);
+  --fault: #dd9285;
+  --fault-wash: rgba(221, 146, 133, 0.14);
+  --info: #9dbdd4;
+  --info-wash: rgba(157, 189, 212, 0.14);
+
+  --shadow: 0 10px 28px rgba(0, 0, 0, 0.42);
+  --shadow-lg: 0 22px 56px rgba(0, 0, 0, 0.55);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3);
+
+  --scrim: rgba(8, 7, 6, 0.62);
+  --well: rgba(0, 0, 0, 0.22);
+  --scroll-thumb: rgba(242, 238, 233, 0.18);
+  --scroll-thumb-hover: rgba(242, 238, 233, 0.3);
+  --rule-hover: rgba(242, 238, 233, 0.26);
+  --surface-hair: rgba(242, 238, 233, 0.04);
+  --surface-hair-strong: rgba(242, 238, 233, 0.07);
+}
+
+/* ============================================================================
+ * 兼容映射：让既有组件（约 190 处旧名）**不改一行**就落到新世界
+ *
+ * 旧名来自「信号室」：ink=底色、paper=文字、signal=琥珀、rule=发丝线。
+ * 这里的映射按**角色**对齐，而不是按亮度对齐 —— 于是"抬升面"在新世界里
+ * 变成更白的卡（旧世界是更深的墨），这正是两个世界的差别所在。
+ * ========================================================================= */
+:root {
+  --ink-950: var(--ground-deep); /* 最凹的一层 */
+  --ink-900: var(--ground); /* 页面底 */
+  --ink-850: var(--surface-3);
+  --ink-800: var(--field); /* 抬升面旧义 → 新世界的输入框填充（下沉槽） */
+  --ink-700: var(--surface); /* 悬浮面：弹层 */
+  --ink-600: var(--line);
+
+  --rule: var(--line-soft);
+  --rule-strong: var(--line);
+  --rule-faint: rgba(61, 56, 53, 0.05);
+
+  --paper: var(--ink);
+  --paper-2: var(--ink-2);
+  --paper-dim: var(--ink-3);
+  /* 旧世界有第四档"最弱文字"；新世界里那一档过不了 AA，所以文字最弱就到
+   * --ink-3 为止，第四档改作非文字（图标/分隔/失效态）的 --ink-faint。 */
+  --paper-faint: var(--ink-3);
+
+  --signal: var(--accent);
+  --signal-dim: var(--accent-strong);
+  --signal-wash: var(--accent-wash);
+  --signal-bright: var(--accent-strong);
+
+  --cta-bg: var(--accent);
+  --cta-bg-hover: var(--accent-strong);
+  --cta-fg: var(--on-accent);
+  --on-signal: var(--on-accent);
+
+  --link: var(--ok);
+  --link-wash: var(--ok-wash);
+  /* 注意：--warn / --warn-wash / --fault / --fault-wash **不要**在这里再写一遍。
+   * 它们在新世界里已经是最终值，写成 `--warn: var(--warn)` 是自引用 ——
+   * CSS 里自引用的自定义属性在计算期无效，会让整条 var(--warn) 变成空值，
+   * 表现是告警框突然没颜色（这个坑是 .cache/check-warm-contrast.mjs 抓出来的）。 */
+  --sky: var(--info);
+  --sky-wash: var(--info-wash);
+
+  /* 状态描边：新世界里卡片不靠描边分层，所以语义描边统一压到很轻 */
+  --signal-line: color-mix(in srgb, var(--accent) 34%, transparent);
+  --link-line: color-mix(in srgb, var(--ok) 34%, transparent);
+  --warn-line: color-mix(in srgb, var(--warn) 34%, transparent);
+  --fault-line: color-mix(in srgb, var(--fault) 34%, transparent);
+  --sky-line: color-mix(in srgb, var(--info) 34%, transparent);
+
+  /* 语义文字：wash 底色上的文字（wash 会吃掉一点对比度，所以用更深的同色） */
+  --link-text: color-mix(in srgb, var(--ok) 82%, var(--ink));
+  --warn-text: color-mix(in srgb, var(--warn) 82%, var(--ink));
+  --fault-text: color-mix(in srgb, var(--fault) 82%, var(--ink));
+  --sky-text: color-mix(in srgb, var(--info) 82%, var(--ink));
+
+  /* 旧别名层（控制台时代留下的名字） */
+  --bg-0: var(--ground-deep);
+  --bg-1: var(--ground);
+  --bg-2: var(--surface-3);
+  --bg-3: var(--surface);
+  --surface-strong: var(--surface-3);
+  --border: var(--line-soft);
+  --border-strong: var(--line);
+  --text: var(--ink);
+  --text-dim: var(--ink-3);
+  --text-faint: var(--ink-4);
+  --brand: var(--accent);
+  --brand-strong: var(--accent-strong);
+  --danger: var(--fault);
+  --danger-bg: var(--fault-wash);
+  --info-bg: var(--info-wash);
+  --ok-bg: var(--ok-wash);
+  --warn-bg: var(--warn-wash);
+  --grad-brand: var(--accent);
+  --grad-card: var(--surface-3);
+  --grad-hero: var(--ground);
+  --glow-brand: 0 0 0 1px var(--line);
+  --shadow-sm: var(--shadow-card);
+}
+
+/* ============================================================================
+ * 组件层：把客户端既有组件翻译到新世界
+ *
+ * 只改"形与色"，不动行为选择器（.btn-primary 还是那个按钮）。新外壳自己
+ * 的类（.deck-* / .rail-*）写在各组件的 scoped 样式里，不在这里。
+ * ========================================================================= */
+
+body,
+.app-shell {
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--font-ui);
+}
+
+/* 数据（IP、端口、延迟、流量、加入码）仍然是等宽 + 等宽数字：跳动时数字不抖 */
+.mono,
+.code-input,
+code,
+pre {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+a {
+  color: var(--accent);
+}
+
+h1,
+h2,
+h3,
+h4,
+.display {
+  font-family: var(--font-display);
+  letter-spacing: var(--track-display);
+}
+
+/* ------------------------------------------------------------ 浏览器原生面 */
+::selection {
+  background: var(--accent-wash);
+  color: var(--ink);
+}
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-xs);
+}
+input,
+textarea {
+  caret-color: var(--accent);
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-thumb-hover);
+}
+
+/* ------------------------------------------------------------ 底部动作胶囊
+ * 参照稿右下角那颗"动作条"的形态：一个**白色胶囊容器**里装着主次两个动作，
+ * 主动作是实心强调色胶囊，次动作是纯文字。容器是底部唯一带投影的东西 ——
+ * 它浮在页底之上，所以它才有资格投影。
+ * 其它页面往同一个位置送动作时，也会自动落进这个容器。 */
+#deck-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 6px 6px 10px;
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+#deck-actions:empty {
+  display: none;
+}
+#deck-actions .btn {
+  min-height: 38px;
+}
+#deck-actions .btn-frame {
+  background: transparent;
+  border-color: transparent;
+}
+#deck-actions .btn-ghost {
+  padding-inline: var(--s-3);
+}
+
+/* ------------------------------------------------------------ 卡片 */
+.card {
+  background: var(--surface);
+  border: 0;
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-card);
+}
+
+/* ------------------------------------------------------------ 按钮
+ * 参考里只有两种按钮：实心胶囊（创建）与幽灵胶囊（加入）。这里把它们推广成
+ * 组件层的默认：主按钮一律胶囊，次一级用"白底 + 发丝线"，再次一级纯文字。 */
+.btn {
+  min-height: 40px;
+  padding: 9px var(--s-4);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: var(--surface-3);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease),
+    transform var(--dur-fast) var(--ease);
+}
+.btn:hover:not(:disabled) {
+  background: var(--ground-deep);
+}
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-radius: var(--r-pill);
+  padding-inline: var(--s-5);
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-strong);
+}
+
+.btn-frame {
+  background: var(--surface);
+  border-color: var(--line);
+  border-radius: var(--r-pill);
+  padding-inline: var(--s-5);
+}
+.btn-frame:hover:not(:disabled) {
+  background: var(--surface-2);
+  border-color: var(--line-strong);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--ink-2);
+}
+.btn-ghost:hover:not(:disabled) {
+  background: var(--accent-wash);
+  color: var(--ink);
+}
+
+.btn-sm {
+  min-height: 32px;
+  padding: 5px var(--s-3);
+  font-size: var(--fs-xs);
+  border-radius: var(--r-pill);
+}
+
+/* ------------------------------------------------------------ 表单 */
+.label {
+  color: var(--ink-2);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+.input,
+.select,
+textarea.input {
+  /* 参考的输入框是"下沉槽"（填充比页底更深），不是白底描边框 —— 一眼就能看出
+   * 哪些地方可以打字。焦点态加一圈强调色，填充保持不变。
+   * 填充色用 --field 而不是 --ground-deep：后者太深，占位文字只有 3.9:1。 */
+  background: var(--field);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  color: var(--ink);
+  min-height: 40px;
+  padding: 9px var(--s-3);
+}
+.input::placeholder {
+  color: var(--ink-3);
+}
+.input:focus,
+.select:focus,
+textarea.input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-wash);
+}
+.select {
+  /* 原生下拉箭头在深色填充上发灰，换成自绘的 */
+  appearance: none;
+  padding-right: var(--s-6);
+  background-image: linear-gradient(45deg, transparent 50%, var(--ink-2) 50%),
+    linear-gradient(135deg, var(--ink-2) 50%, transparent 50%);
+  background-position:
+    calc(100% - 18px) calc(50% + 1px),
+    calc(100% - 13px) calc(50% + 1px);
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+.hint {
+  color: var(--ink-3);
+  font-size: var(--fs-xs);
+  text-wrap: pretty;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+}
+
+/* ------------------------------------------------------------ 徽标 / 状态 */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--surface-3);
+  color: var(--ink-2);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+.badge-ok {
+  background: var(--ok-wash);
+  color: var(--link-text);
+}
+.badge-neutral {
+  background: var(--surface-3);
+  color: var(--ink-2);
+}
+.badge-brand {
+  background: var(--accent-wash);
+  color: var(--accent);
+}
+.badge-warn {
+  background: var(--warn-wash);
+  color: var(--warn-text);
+}
+.badge-danger {
+  background: var(--fault-wash);
+  color: var(--fault-text);
+}
+
+/* 状态灯：新世界里它不是"发光的小灯"，而是一枚实色圆点 + 文字说明 */
+.led {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ink-4);
+  flex: none;
+}
+.led-ok {
+  background: var(--ok);
+}
+.led-warn {
+  background: var(--warn);
+}
+.led-fault {
+  background: var(--fault);
+}
+.led-signal {
+  background: var(--accent);
+}
+
+/* ------------------------------------------------------------ 列表 / 提示 */
+.roster {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.roster-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: 9px var(--s-3);
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  transition: background var(--dur-fast) var(--ease);
+}
+.roster-row:hover {
+  background: var(--surface-3);
+}
+.roster-name {
+  color: var(--ink);
+  font-weight: 600;
+}
+.roster-sub {
+  color: var(--ink-3);
+  font-size: var(--fs-xs);
+}
+
+.alert {
+  padding: 10px var(--s-3);
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--surface-3);
+  color: var(--ink);
+  font-size: var(--fs-sm);
+}
+.alert-danger {
+  background: var(--fault-wash);
+  color: var(--fault-text);
+}
+.alert-warn {
+  background: var(--warn-wash);
+  color: var(--warn-text);
+}
+.alert-ok {
+  background: var(--ok-wash);
+  color: var(--link-text);
+}
+
+.section-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+}
+.section-head .title {
+  color: var(--ink);
+  font-weight: 650;
+  font-size: var(--fs-lg);
+}
+.section-head .count {
+  color: var(--ink-3);
+  font-size: var(--fs-sm);
+}
+
+/* ------------------------------------------------------------ 弹层 */
+.modal-mask {
+  background: var(--scrim);
+}
+.modal-card {
+  background: var(--surface);
+  border: 0;
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+}
+
+/* ------------------------------------------------------------ 其它小件 */
+.update-note {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: 8px var(--s-3);
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--warn-wash);
+  color: var(--warn-text);
+  font-size: var(--fs-sm);
+}
+.room-strip {
+  border: 0;
+  background: var(--accent-wash);
+  color: var(--ink);
+  border-radius: var(--r-md);
+}
+.room-strip:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.spinner {
+  border-color: var(--line);
+  border-top-color: var(--accent);
+}
+.hint.center {
+  text-align: center;
+}

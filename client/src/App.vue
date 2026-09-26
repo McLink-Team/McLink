@@ -1,18 +1,31 @@
 <script setup lang="ts">
 /**
- * 客户端外壳 —— 窄窗口 + 单列子页 + 自绘标题栏 + 底部状态行。
+ * 客户端外壳 —— 「暖纸台」的横向骨架。
  *
- * 结构参照 MCTier 这类桌面工具，而不是宽屏仪表盘：窗口默认 520×780，
- * 内容一列排下来，不横向铺开。
+ * 结构取自用户指定的参照（一个 Flutter 桌面启动器）：
+ *   左侧 76px 图标栏 ｜ 右侧一列：标题条 → 页面 → 底部一行（版本/系统 + 动作胶囊）
  *
- * 导航是一个小栈：主页 / 房间 / 设置 / 日志。**返回不会断开房间**——
- * 房间连接是常驻的，返回只是不看那个页面；主页顶部会留一条"正在联机"的窄条。
- * ESC 返回上一页（与 MCTier 的习惯一致）。
+ * 两处按 McLink 的事实做的改动：
+ *   · 参照的"服务器"这一栏在我们这里是**公开大厅**（用户明确指的那一项）；
+ *   · 图标栏只有四个去处（联机/大厅/收藏/设置）。房间**不是**一栏 —— 开好房就直接
+ *     把房间内容铺在「联机」这一屏里（用户的要求），退房再回到开房前的那一屏。
+ *
+ * 底部那一行右侧留了一个传送点 `#deck-actions`：主页把「创建 / 加入」胶囊送到那里，
+ * 于是无论哪个页面在渲染，动作都在同一个位置、同一只手上。
  */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { copyText } from './lib/clipboard.ts';
-import { bootstrap, clearError, clearKicked, clientState, hasRoom, isOnline, mustVerifyEmail } from './lib/store.ts';
+import {
+  bootstrap,
+  clearError,
+  clearKicked,
+  clientState,
+  hasRoom,
+  isOnline,
+  mustVerifyEmail,
+} from './lib/store.ts';
 import { onboardingVisible } from './lib/onboarding.ts';
+import AppRail, { type RailKey } from './components/AppRail.vue';
 import TitleBar from './components/TitleBar.vue';
 import ElevationBanner from './components/ElevationBanner.vue';
 import CloseConfirm from './components/CloseConfirm.vue';
@@ -20,24 +33,39 @@ import LoginPage from './pages/LoginPage.vue';
 import CreateJoin from './components/CreateJoin.vue';
 import RoomPage from './pages/RoomPage.vue';
 import SettingsPage from './pages/SettingsPage.vue';
+import PublicPlaza from './components/PublicPlaza.vue';
+import RoomShortcuts from './components/RoomShortcuts.vue';
 import LogPanel from './components/LogPanel.vue';
 import OnboardingWizard from './components/OnboardingWizard.vue';
 import VerifyEmail from './components/VerifyEmail.vue';
 
-type View = 'home' | 'room' | 'settings' | 'logs';
+type View = RailKey | 'logs';
 
 const view = ref<View>('home');
 const booting = ref(true);
 const appVersion = ref('');
+const osDetail = ref('');
 
 const loggedIn = computed(() => clientState.user !== null);
 const coreState = computed(() => clientState.coreStatus?.state ?? 'stopped');
 
-/** 标题栏里那一行状态字：玩家最关心"现在通不通" */
+const PAGE_TITLE: Record<View, string> = {
+  home: '联机',
+  plaza: '公开大厅',
+  bookmarks: '收藏',
+  settings: '设置',
+  logs: '日志',
+};
+
+/** 标题条左边那行字：房间在的时候它就是房间名（用户最想确认"我在哪个房"） */
+const pageTitle = computed(() =>
+  hasRoom.value && view.value === 'home' ? (clientState.session?.room.name ?? '联机') : PAGE_TITLE[view.value],
+);
+
+/** 标题条右边那行状态：玩家最关心"现在通不通" */
 const statusLabel = computed(() => {
-  if (!clientState.user) return '未登录';
   if (clientState.session) {
-    if (coreState.value === 'running') return `已联机 · ${clientState.session.room.name}`;
+    if (coreState.value === 'running') return `已联机 · ${clientState.session.room.code}`;
     if (coreState.value === 'error') return '连接异常';
     return '正在建立连接…';
   }
@@ -45,37 +73,33 @@ const statusLabel = computed(() => {
   return '未联机';
 });
 
-/** 底部提示行：只在能返回时提示 ESC，不常驻占地方 */
-const escHint = computed(() => (view.value === 'home' ? '' : '按 ESC 返回上一页'));
+/** 底部左侧：版本 + 系统（参照稿那个位置放的就是这两样） */
+const bottomMeta = computed(() => {
+  const parts = [`McLink v${appVersion.value}`];
+  if (osDetail.value) parts.push(osDetail.value);
+  return parts.join(' · ');
+});
 
-const navItems: Array<{ key: View; label: string }> = [
-  { key: 'home', label: '联机' },
-  { key: 'room', label: '房间' },
-  { key: 'settings', label: '设置' },
-  { key: 'logs', label: '日志' },
-];
+/** 图标栏高亮：日志页挂在「设置」上（它是排查用的，属于设置那一族） */
+const railActive = computed<RailKey>(() => (view.value === 'logs' ? 'settings' : view.value));
 
 function goto(next: View): void {
-  if (next === 'room' && !hasRoom.value) return;
   view.value = next;
 }
 
 function onKeydown(event: KeyboardEvent): void {
   const target = event.target as HTMLElement | null;
-  // 正在输入框里打字时不拦截 ESC，避免顶掉玩家的输入状态
+  // 正在输入框里打字时不拦截 ESC，避免顶掉玩家的输入
   if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
   if (event.key === 'Escape' && view.value !== 'home') view.value = 'home';
 }
 
 /**
- * 房间进出时的落点：
- *   · 进房 → 直接落到房间页。玩家接下来的动作一定是「把联机地址发给朋友」，
- *     停在主页还要先点一下「返回房间」才能看到地址，是白多一步；
- *   · 退房/被踢 → 若正停在房间页，退回主页，避免留在一个空页面上。
+ * 房间进出的落点：进房 → 回到「联机」这一屏（房间内容就在那里），
+ * 退房/被踢 → 若还停在房间页，也退回同一屏，不留空页面。
  */
-watch(hasRoom, (value) => {
-  if (value) view.value = 'room';
-  else if (view.value === 'room') view.value = 'home';
+watch(hasRoom, () => {
+  view.value = 'home';
 });
 
 function copy(text: string): void {
@@ -86,6 +110,7 @@ onMounted(async () => {
   window.addEventListener('keydown', onKeydown);
   const info = await window.mclink.info();
   appVersion.value = info.version;
+  osDetail.value = info.osDetail ?? '';
   await bootstrap();
   booting.value = false;
 });
@@ -94,21 +119,16 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown));
 </script>
 
 <template>
-  <div class="app-shell">
-    <TitleBar :state="coreState" :label="statusLabel" />
-
+  <div class="app-root">
     <!--
-      未提权横幅：放在 v-if/v-else-if 链**之前**，所以登录页、验证邮箱页、
-      主界面每一屏都能看到 —— 玩家没提权时最常停在登录页，放链里等于看不到。
-      （也不能插在链中间：v-else-if 必须紧跟上一个分支，否则整条链会断。）
+      未提权横幅放在最上面：登录页、验证邮箱页、主界面每一屏都能看到 ——
+      玩家没提权时最常停在登录页，放里面等于看不到。
     -->
     <ElevationBanner />
-    <!-- 关闭窗口时问"彻底退出还是最小化"（主进程发 app:ask-close 触发，见 CloseConfirm.vue） -->
-    <CloseConfirm />
 
-    <div v-if="booting" class="boot">
+    <div v-if="booting" class="splash">
       <span class="spinner" />
-      <span class="muted">正在初始化…</span>
+      <span class="hint">正在初始化…</span>
     </div>
 
     <LoginPage v-else-if="!loggedIn" :version="appVersion" />
@@ -116,72 +136,89 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown));
     <!-- 平台要求验证邮箱时先过这一关：服务端会拒绝未验证账号建房/进房 -->
     <VerifyEmail v-else-if="mustVerifyEmail" />
 
-    <template v-else>
-      <div class="app-body">
-        <!-- 常驻的"正在联机"窄条：返回主页后依然知道自己还在房间里 -->
-        <button v-if="hasRoom && view !== 'room'" class="room-strip" type="button" @click="goto('room')">
-          <span class="led" :class="isOnline ? 'led-ok led-live' : 'led-signal'" />
-          <span class="truncate">{{ clientState.session?.room.name }}</span>
-          <span class="mono faint">{{ clientState.session?.room.code }}</span>
-          <span class="grow" />
-          <span class="faint nowrap">返回房间</span>
-        </button>
+    <div v-else class="deck">
+      <AppRail
+        :active="railActive"
+        :in-room="hasRoom"
+        :online="isOnline"
+        :update-available="Boolean(clientState.update)"
+        :user-name="clientState.user?.displayName"
+        @select="goto"
+      />
 
-        <div v-if="clientState.kickedReason" class="alert alert-danger">
-          <span class="grow">{{ clientState.kickedReason }}</span>
-          <button class="btn btn-sm btn-ghost" type="button" @click="clearKicked()">知道了</button>
-        </div>
-        <div v-if="clientState.lastError" class="alert alert-warn">
-          <span class="grow">{{ clientState.lastError }}</span>
-          <button class="btn btn-sm btn-ghost" type="button" @click="clearError()">关闭</button>
-        </div>
+      <div class="deck-column">
+        <TitleBar :title="pageTitle" :state="coreState" :label="statusLabel" />
 
-        <CreateJoin v-if="view === 'home'" :version="appVersion" @open-settings="goto('settings')" />
-        <RoomPage v-else-if="view === 'room'" />
-        <SettingsPage v-else-if="view === 'settings'" />
-        <LogPanel v-else :logs="clientState.coreLogs" @copy="copy" />
-      </div>
-
-      <footer class="app-foot">
-        <nav class="foot-nav">
+        <div class="deck-scroll">
+          <!-- 常驻的"正在联机"条：离开「联机」那一屏后依然知道自己还在房间里 -->
           <button
-            v-for="item in navItems"
-            :key="item.key"
+            v-if="hasRoom && view !== 'home'"
+            class="room-strip"
             type="button"
-            class="foot-tab"
-            :class="{ active: view === item.key }"
-            :disabled="item.key === 'room' && !hasRoom"
-            @click="goto(item.key)"
+            @click="goto('home')"
           >
-            {{ item.label }}
-            <span
-              v-if="item.key === 'room' && hasRoom"
-              class="foot-dot"
-              :class="isOnline ? 'dot-ok' : 'dot-warn'"
-            />
-            <!-- 有新版本时在「设置」上点一个小点：不打扰，但看一眼就知道有更新 -->
-            <span
-              v-else-if="item.key === 'settings' && clientState.update"
-              class="foot-dot dot-signal"
-              title="有新版本"
-            />
+            <span class="led" :class="isOnline ? 'led-ok' : 'led-signal'" />
+            <span class="truncate">{{ clientState.session?.room.name }}</span>
+            <span class="mono faint">{{ clientState.session?.room.code }}</span>
+            <span class="grow" />
+            <span class="faint nowrap">回到房间</span>
           </button>
-        </nav>
-        <div class="foot-meta faint">
-          <span class="truncate">{{ escHint || clientState.user?.displayName || '' }}</span>
-          <!-- 主屏自己底部居中带一行版本号，这里就不再重复 -->
-          <span v-if="view !== 'home'" class="mono nowrap">McLink v{{ appVersion }}</span>
-        </div>
-      </footer>
-    </template>
 
+          <div v-if="clientState.kickedReason" class="alert alert-danger">
+            <span class="grow">{{ clientState.kickedReason }}</span>
+            <button class="btn btn-sm btn-ghost" type="button" @click="clearKicked()">知道了</button>
+          </div>
+          <div v-if="clientState.lastError" class="alert alert-warn">
+            <span class="grow">{{ clientState.lastError }}</span>
+            <button class="btn btn-sm btn-ghost" type="button" @click="clearError()">关闭</button>
+          </div>
+
+          <!-- 开好房就直接铺房间内容；没房才是"开房前的那一屏" -->
+          <RoomPage v-if="view === 'home' && hasRoom" />
+          <CreateJoin v-else-if="view === 'home'" @open-settings="goto('settings')" />
+
+          <section v-else-if="view === 'plaza'" class="card pane stack">
+            <PublicPlaza />
+          </section>
+          <section v-else-if="view === 'bookmarks'" class="card pane stack">
+            <RoomShortcuts />
+          </section>
+          <SettingsPage v-else-if="view === 'settings'" />
+          <LogPanel v-else :logs="clientState.coreLogs" @copy="copy" />
+        </div>
+
+        <footer class="deck-foot">
+          <span class="deck-meta mono">{{ bottomMeta }}</span>
+          <button
+            v-if="view !== 'logs'"
+            class="btn btn-sm btn-ghost deck-logs"
+            type="button"
+            @click="goto('logs')"
+          >
+            日志
+          </button>
+          <!-- 页面的主动作由页面自己 Teleport 到这里（见 CreateJoin.vue） -->
+          <div id="deck-actions" class="deck-actions" />
+        </footer>
+      </div>
+    </div>
+
+    <!-- 关闭窗口时问"彻底退出还是最小化"（主进程发 app:ask-close 触发） -->
+    <CloseConfirm />
     <!-- 首次使用向导：整屏遮罩；「不再显示」后可在设置页重新打开 -->
     <OnboardingWizard v-if="!booting && onboardingVisible" />
   </div>
 </template>
 
 <style scoped>
-.boot {
+.app-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--ground);
+}
+
+.splash {
   flex: 1;
   display: grid;
   place-items: center;
@@ -189,95 +226,69 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown));
   grid-auto-flow: row;
 }
 
-/* 窄窗里内容一列排下来；横向不铺开 */
-.app-body {
+/* 横向骨架：图标栏 + 右侧一列 */
+.deck {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.deck-column {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 页面区自己滚动；底部那一行永远在 */
+.deck-scroll {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: var(--s-3) var(--s-3) var(--s-4);
+  padding: var(--s-3) var(--s-5) var(--s-4);
   display: flex;
   flex-direction: column;
   gap: var(--s-3);
+  min-height: 0;
 }
 
-/* 常驻的"正在联机"窄条 */
+.pane {
+  padding: var(--s-5);
+}
+
 .room-strip {
   display: flex;
   align-items: center;
   gap: var(--s-2);
   width: 100%;
-  padding: 7px var(--s-3);
-  border: 1px solid var(--link-line);
-  border-radius: var(--r-sm);
-  background: var(--link-wash);
-  color: var(--paper);
+  padding: 9px var(--s-3);
   font-size: var(--fs-sm);
   cursor: pointer;
   text-align: left;
-  transition: border-color var(--dur-fast) var(--ease);
-}
-.room-strip:hover {
-  border-color: var(--link);
 }
 
-/* 底部：主导航 + ESC 提示 + 版本号（一行装完） */
-.app-foot {
+/* 底部一行：左边版本/系统，右边页面动作 */
+.deck-foot {
   flex: none;
-  border-top: 1px solid var(--rule);
-  background: var(--ink-950);
-}
-.foot-nav {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-}
-.foot-tab {
-  position: relative;
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 5px;
-  height: 38px;
-  border: 0;
-  background: transparent;
-  color: var(--paper-faint);
-  font-size: var(--fs-sm);
-  cursor: pointer;
-  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
-}
-.foot-tab:hover:not(:disabled) {
-  color: var(--paper);
-  background: var(--surface-hair);
-}
-.foot-tab.active {
-  color: var(--signal);
-}
-/* 当前页用一条顶部细线标记，而不是整块底色 */
-.foot-tab.active::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 24%;
-  right: 24%;
-  height: 1px;
-  background: var(--signal);
-}
-.foot-tab:disabled {
-  opacity: 0.34;
-  cursor: not-allowed;
-}
-.foot-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-}
-.foot-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   gap: var(--s-3);
-  /* 底部留 10px：无边框窗口下 6px 会让这一行贴着窗口下沿，看起来像被切掉了半行 */
-  padding: 0 var(--s-4) 10px;
+  padding: 0 var(--s-5) var(--s-4);
+  min-height: 56px;
+}
+.deck-meta {
+  color: var(--ink-2);
   font-size: var(--fs-xs);
-  min-height: 17px;
+}
+.deck-logs {
+  margin-left: auto;
+}
+.deck-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.deck-logs + .deck-actions {
+  margin-left: 0;
 }
 </style>

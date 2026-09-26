@@ -937,12 +937,33 @@ async function applyAcl(aclToml) {
  *   · 双击标题栏最大化/还原，由渲染层发 IPC 实现
  *   · `titleBarStyle: 'hidden'` 让系统只保留阴影与圆角，不给标题栏
  */
+/**
+ * 系统版本一行字（底部左下角显示）。
+ *
+ * Windows 上 `os.version()` 给的是 "Windows 11 Pro"、`os.release()` 给的是
+ * "10.0.22631" —— 两个拼起来才是玩家认得的说法。非 Windows 直接给原始值：
+ * 客户端目前只有 Windows 发行版，不为没发行的平台编故事。
+ */
+function osDetailLine() {
+  if (process.platform !== 'win32') return `${os.type()} ${os.release()}`;
+  const name = typeof os.version === 'function' ? os.version() : 'Windows';
+  const build = /^\d+\.\d+\.(\d+)/.exec(os.release())?.[1];
+  return build ? `${name} · Build ${build}` : name;
+}
+
+/**
+ * 窗口默认尺寸：**横向宽窗**。
+ *
+ * 原来是 460×720 的窄竖窗（单列）。改成 940×580 是因为外壳换成了
+ * 「左图标栏 + 右侧一列」的横向骨架 —— 这套骨架在窄窗里会把链路牌挤成两行、
+ * 底部动作条也没地方放。最小值守住 780×520：再窄下去图标栏与内容会开始打架。
+ */
 const WINDOW_DEFAULTS = {
-  width: 460,
-  height: 720,
-  minWidth: 400,
-  minHeight: 640,
-  maxWidth: 1100,
+  width: 940,
+  height: 580,
+  minWidth: 780,
+  minHeight: 520,
+  maxWidth: 1400,
   /**
    * 窗口底色只能在原生层给（这时还读不到 CSS 变量）：
    * 取 tokens.css 里 --ink-900 / --paper 的同一对值，跟随系统亮暗，
@@ -1216,6 +1237,11 @@ function registerIpc() {
     /** true = 正在用软件渲染（此前观测到 GPU 进程异常，或设了 MCLINK_DISABLE_GPU=1） */
     softwareRendering,
     hostname: os.hostname(),
+    /**
+     * 系统版本一行字（形如 `Windows 11 Pro · Build 22631`），显示在底部左下角。
+     * 参照稿那个位置放的就是它 —— 排查问题时"他是什么系统"往往第一个被问。
+     */
+    osDetail: osDetailLine(),
   }));
 
   /**
