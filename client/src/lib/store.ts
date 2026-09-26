@@ -25,6 +25,25 @@ import { api, friendlyError, getDeviceName, getMasterUrl, getToken, setDeviceNam
 import type { CoreLogEntry, CoreStatus } from './core-types.ts';
 import { recordRecent } from './shortcuts.ts';
 import { parsePeers, type PeerView } from './easytier-parse.ts';
+import {
+  AB_OBSERVE_MS,
+  AB_REVERT_COOLDOWN_MS,
+  SAMPLE_WINDOW_MS,
+  TRIGGER_WINDOWS,
+  PROBE_BASE_MS,
+  bestRoutes,
+  formatLoss,
+  loadAutoFallback,
+  loadForceRelay,
+  nextProbeDelay,
+  p2pQuality,
+  relayLooksWorse,
+  saveAutoFallback,
+  saveForceRelay,
+  withDisableP2p,
+  type RelaySource,
+  type RouteSample,
+} from './relay-fallback.ts';
 
 export type { PeerView } from './easytier-parse.ts';
 export { parsePeers } from './easytier-parse.ts';
@@ -78,6 +97,22 @@ const state = reactive({
   },
   session: null as ActiveSession | null,
   peers: [] as PeerView[],
+  /**
+   * 「强制走中继」—— 本机把这条链路钉到中继上（票据里注入 `disable_p2p = true`）。
+   *
+   * 为什么放在**玩家侧**而不是房间规则里：房间规则里的「允许 P2P 直连」是全体生效的，
+   * 而链路劣化通常只发生在一个人身上（他家的宽带到某个对端那一段在丢包）。
+   * 为一个人关掉全房间的直连，等于让另外几个人一起绕远路。
+   */
+  forceRelay: false,
+  /** 谁钉的：manual = 玩家自己点的（任何自动化都不许撤销）；auto = 自动回落 */
+  forceRelaySource: null as RelaySource | null,
+  /** 正在重启核心换配置：界面显示「切换中…」，自动回落也让位 */
+  relaySwitching: false,
+  /** 给房间卡显示的一行结果（切换完成 / 失败 / 自动回落的结论） */
+  relayNotice: null as string | null,
+  /** 自动回落开关（默认关，见 lib/relay-fallback.ts） */
+  autoFallback: false,
   /** 本机客户端版本（来自 Electron 的 app.getVersion()） */
   localVersion: '',
   /**
@@ -131,6 +166,21 @@ export const hasRoom = computed(() => state.session !== null);
 export const isHost = computed(() => state.session?.isHost === true);
 export const shareAddress = computed(() => state.session?.ticket.hostVirtualIp ?? null);
 
+/**
+ * 房间页那个开关的四种状态（**唯一判据**，别在页面里另写一套 `v-if`）：
+ *   policy    —— 房主在房间规则里关掉了「允许 P2P 直连」，全房间都走中继。
+ *                这时玩家侧的开关是**只读**的：他改不了，也不该以为自己能改。
+ *   switching —— 正在重启核心换配置（几秒断流）。
+ *   on        —— 本机已走中继（手动或自动回落）。
+ *   off       —— 走 P2P 直连。
+ */
+export type RelayMode = 'policy' | 'switching' | 'on' | 'off';
+export const relayMode = computed<RelayMode>(() => {
+  if (state.session?.room.policy.allowP2p === false) return 'policy';
+  if (state.relaySwitching) return 'switching';
+  return state.forceRelay ? 'on' : 'off';
+});
+
 let heartbeatTimer: number | null = null;
 let ws: WebSocket | null = null;
 let wsReconnect: number | null = null;
@@ -173,6 +223,7 @@ export async function bootstrap(): Promise<void> {
     });
     state.coreLogs = await window.mclink.core.logs(300);
     state.localVersion = info.version;
+    state.autoFallback = loadAutoFallback();
     /**
      * 新版本发现：登不登录都要查（玩家可能在登录页就卡在一个旧版本上）。
      * 之后每 6 小时复查一次 —— 客户端常年开着不关的场景很常见。
@@ -561,6 +612,15 @@ export async function enterRoom(roomId: string, ticket: RoomTicket): Promise<voi
     virtualIp: ticket.virtualIp,
   };
   state.sessionEpoch += 1;
+  /**
+   * 恢复这个房间上次的「强制走中继」选择 —— 必须在 startNetwork() **之前**设置：
+   * 配置是在启动那一刻注入的，晚了就只能多断一次。
+   * 这也是"重启客户端后开关仍然生效"的落点：偏好存在本机 localStorage 里，
+   * 重启后重新进同一个房间就恢复（换房间不继承：劣化是"我和谁之间"的事）。
+   */
+  state.forceRelay = loadForceRelay(roomId) !== null;
+  state.forceRelaySource = loadForceRelay(roomId);
+  state.relayNotice = null;
   // 记一笔「最近进入」，方便下次从列表里一键重进（只存在本机）
   recordRecent({
     roomId,
@@ -572,6 +632,7 @@ export async function enterRoom(roomId: string, ticket: RoomTicket): Promise<voi
   subscribeRoom(roomId);
   await startNetwork();
   startHeartbeat();
+  startRelayGuard();
 }
 
 export async function reenterRoom(roomId: string): Promise<void> {
@@ -616,9 +677,24 @@ export async function closeRoom(): Promise<void> {
 
 /* ---------------------------------------------------------- 网络控制 */
 
-async function startNetwork(): Promise<void> {
+/**
+ * 真正交给 easytier-core 的配置。
+ *
+ * 票据永远是**原始**的那一份，`disable_p2p` 只在启动这一刻按开关注入 ——
+ * 而不是"打开时改票据、关闭时删掉那一行"。
+ * 理由：删行会把房主设的 `disable_p2p = true`（房间规则里关了 P2P）一起删掉，
+ * 等于玩家用一个本机开关绕过了房间规则；只做单向注入就永远不可能出现这种越权。
+ */
+function effectiveConfigToml(): string {
   const session = state.session;
-  if (!session) return;
+  if (!session) return '';
+  const raw = String(session.ticket.configToml);
+  return state.forceRelay ? withDisableP2p(raw) : raw;
+}
+
+async function startNetwork(): Promise<CoreStatus | null> {
+  const session = state.session;
+  if (!session) return null;
   /**
    * ⚠️ 这里必须把票据字段「拆成原始值」再交给 IPC。
    *
@@ -629,7 +705,7 @@ async function startNetwork(): Promise<void> {
    * 这个坑是实测用 CDP 连上客户端才定位到的。
    */
   const payload = {
-    configToml: String(session.ticket.configToml),
+    configToml: effectiveConfigToml(),
     launchArgs: session.ticket.launchArgs.map((arg) => String(arg)),
     instanceName: String(session.ticket.instanceName),
   };
@@ -637,18 +713,24 @@ async function startNetwork(): Promise<void> {
   state.coreStatus = status;
   if (status.state === 'error') {
     state.lastError = describeCoreError(status.lastError);
-    return;
+    return status;
   }
   // 房主需要把自己实例上的 ACL 应用上去（踢人/限速）
   if (session.isHost && session.ticket.aclToml) {
     await applyHostAclIfNeeded(true);
   }
   await pollPeers();
+  return status;
 }
 
 async function stopNetwork(): Promise<void> {
   stopHeartbeat();
+  stopRelayGuard();
   state.peers = [];
+  // 开关的持久值留着（下次进同一个房间要恢复），但当前会话的运行时状态要清掉
+  state.forceRelay = false;
+  state.forceRelaySource = null;
+  state.relayNotice = null;
   state.coreStatus = await window.mclink.core.stop();
 }
 
@@ -690,6 +772,242 @@ export async function pollPeers(): Promise<void> {
   state.localRxBytes = rx;
   state.localTxBytes = tx;
   state.peers = peers;
+}
+
+/* ==================================================== 强制走中继（玩家侧开关） */
+
+/**
+ * 打开 / 关闭「强制走中继」。
+ *
+ * 落地动作只有两步：把 `disable_p2p = true` 注入票据 TOML → 重启 easytier-core。
+ * 这是仓库既有的"改配置→重启实例"路径（房间规则生效时走的就是它），
+ * 代价是**几秒断流** —— 所以界面上必须有明确的进行中状态与确认弹层。
+ *
+ * 不做"热更新"：`disable_p2p` 属于启动期决策（打洞策略在 policy.rs 里按它分支），
+ * EasyTier 没有对应的运行期接口。想少断一次就只能不改，没有第三条路。
+ */
+export async function setForceRelay(on: boolean, source: RelaySource): Promise<void> {
+  const session = state.session;
+  if (!session) return;
+  if (state.relaySwitching) return;
+  // 房主已经让全房间走中继时，玩家侧的开关是只读的：改了也不会发生任何事
+  if (session.room.policy.allowP2p === false) return;
+
+  const nextSource: RelaySource | null = on ? source : null;
+  const alreadyOn = state.forceRelay === on && state.forceRelaySource === nextSource;
+  state.forceRelay = on;
+  state.forceRelaySource = nextSource;
+  saveForceRelay(session.room.id, nextSource);
+  // 只是把"手动"接管成"自动"（或反过来）不需要重启核心 —— 配置没变
+  if (alreadyOn || state.coreStatus?.state !== 'running') return;
+
+  state.relaySwitching = true;
+  state.relayNotice = null;
+  try {
+    // 显式停一次：既保证旧进程真的没了，也让 coreStatus 走完整轨迹
+    // stopped → starting → running（界面靠它显示"切换中"，验证脚本也断言这条轨迹）
+    await window.mclink.core.stop();
+    state.peers = [];
+    const status = await startNetwork();
+    if (status?.state === 'error') {
+      state.relayNotice = `切换后核心没有起来：${state.lastError ?? '未知原因'}`;
+      return;
+    }
+    state.relayNotice = on
+      ? '已切到中继：所有流量经中继转发，P2P 直连已停用。'
+      : '已切回 P2P 直连：流量重新尝试打洞直连。';
+  } catch (err) {
+    state.relayNotice = `切换失败：${friendlyError(err)}`;
+  } finally {
+    state.relaySwitching = false;
+  }
+}
+
+/** 玩家手动点开关（走确认弹层的是界面那一侧，这里只负责执行） */
+export async function toggleForceRelay(): Promise<void> {
+  if (state.forceRelay && state.forceRelaySource === 'auto') {
+    // 玩家接管自动回落的成果：从此不再自动放 P2P 重试
+    await setForceRelay(false, 'manual');
+    return;
+  }
+  await setForceRelay(!state.forceRelay, 'manual');
+}
+
+/* ====================================================== 自动回落（默认关闭） */
+
+/** 守卫的运行阶段；每个阶段的"下一步"都写在 guardTick 里 */
+type GuardPhase = 'off' | 'watch' | 'ab' | 'serving' | 'probing';
+
+const guard = {
+  timer: null as number | null,
+  phase: 'off' as GuardPhase,
+  /** 连续超标的窗口数（只有 allOver 的窗口才累加） */
+  streak: 0,
+  /** 降级那一刻的 P2P 快照 —— A/B 对照的基线 */
+  baseline: [] as RouteSample[],
+  /** 当前阶段的到期时刻 */
+  deadline: 0,
+  /** A/B 判定"中继更差"后的静默期 */
+  cooldownUntil: 0,
+  /** 下一次 P2P 重试的等待时长（指数退避档位） */
+  probeDelayMs: PROBE_BASE_MS,
+};
+
+function resetGuard(phase: GuardPhase): void {
+  guard.phase = phase;
+  guard.streak = 0;
+  guard.baseline = [];
+  guard.deadline = 0;
+}
+
+/**
+ * 自动回落的主循环。每 SAMPLE_WINDOW_MS 跑一次，只读 `clientState.peers`
+ * （不自己调 easytier-cli：心跳已经在每 10 秒拉一次，重复调用只是白开机房进程）。
+ *
+ * 阶段流转（括号里是停留时长）：
+ *   watch(≥3 个窗口) --超标--> ab(20s) --中继不差--> serving(退避档) --到点--> probing(36s)
+ *                                    \--中继更差--> watch + 冷却 30 分钟
+ *   probing --P2P 恢复--> watch（退避归零）   \--还是差--> ab（退避翻倍）
+ */
+function guardTick(): void {
+  const session = state.session;
+  if (!session) {
+    stopRelayGuard();
+    return;
+  }
+  // 正在换配置：这一刻的 peers 是半新半旧的，什么都不能判
+  if (state.relaySwitching) return;
+  if (!state.autoFallback) {
+    resetGuard('off');
+    return;
+  }
+  // 玩家自己钉住的中继：自动化让位，绝不替他撤销
+  if (state.forceRelay && state.forceRelaySource === 'manual') {
+    resetGuard('off');
+    return;
+  }
+  // 核心没在跑（启动失败/被踢/切换中）：这一轮采样没有意义，也不该清零观察
+  if (state.coreStatus?.state !== 'running') return;
+
+  const now = Date.now();
+  const quality = p2pQuality(state.peers);
+
+  if (guard.phase === 'off') resetGuard('watch');
+
+  if (guard.phase === 'watch') {
+    if (state.forceRelay) {
+      resetGuard('off');
+      return;
+    }
+    if (now < guard.cooldownUntil) {
+      guard.streak = 0;
+      return;
+    }
+    // 这一次没测到丢包 → 这个窗口作废：既不累加（那不是证据），也不清零
+    // （清零会让"每次采样都恰好漏掉一个节点"的房间永远无法触发）
+    if (quality.measured === 0) return;
+    if (!quality.allOver) {
+      guard.streak = 0;
+      return;
+    }
+    guard.streak += 1;
+    if (guard.streak < TRIGGER_WINDOWS) return;
+    guard.baseline = bestRoutes(state.peers);
+    guard.deadline = now + AB_OBSERVE_MS;
+    guard.phase = 'ab';
+    void setForceRelay(true, 'auto');
+    return;
+  }
+
+  if (guard.phase === 'ab') {
+    // 玩家中途自己关了 → 这次判断作废
+    if (!state.forceRelay) {
+      resetGuard('off');
+      return;
+    }
+    if (now < guard.deadline) return;
+    if (relayLooksWorse(guard.baseline, bestRoutes(state.peers))) {
+      guard.cooldownUntil = now + AB_REVERT_COOLDOWN_MS;
+      state.relayNotice = '中继反而更差，已切回 P2P 直连；30 分钟内不再自动切换。';
+      resetGuard('watch');
+      void setForceRelay(false, 'auto');
+      return;
+    }
+    guard.deadline = now + guard.probeDelayMs;
+    guard.phase = 'serving';
+    return;
+  }
+
+  if (guard.phase === 'serving') {
+    if (!state.forceRelay) {
+      resetGuard('watch');
+      return;
+    }
+    if (now < guard.deadline) return;
+    // 放一次 P2P 重试：关掉 flag 让它重新打洞
+    guard.deadline = now + SAMPLE_WINDOW_MS * TRIGGER_WINDOWS;
+    guard.phase = 'probing';
+    void setForceRelay(false, 'auto');
+    return;
+  }
+
+  // probing
+  if (state.forceRelay) {
+    // 观察期内又被判成更差 → 直接回到 ab，不重复计数
+    guard.deadline = now + AB_OBSERVE_MS;
+    guard.phase = 'ab';
+    return;
+  }
+  if (now < guard.deadline) return;
+  if (quality.measured > 0 && !quality.allOver) {
+    state.relayNotice = `P2P 直连已恢复（最高丢包 ${formatLoss(quality.worstLoss)}），继续走直连。`;
+    guard.probeDelayMs = PROBE_BASE_MS;
+    resetGuard('watch');
+    return;
+  }
+  // 还是差 → 重新降级，并把下一次重试推远一档
+  guard.probeDelayMs = nextProbeDelay(guard.probeDelayMs);
+  guard.baseline = bestRoutes(state.peers);
+  guard.deadline = now + AB_OBSERVE_MS;
+  guard.phase = 'ab';
+  void setForceRelay(true, 'auto');
+}
+
+function startRelayGuard(): void {
+  stopRelayGuard();
+  guard.phase = 'watch';
+  guard.streak = 0;
+  guard.probeDelayMs = PROBE_BASE_MS;
+  guard.timer = window.setInterval(guardTick, SAMPLE_WINDOW_MS);
+}
+
+function stopRelayGuard(): void {
+  if (guard.timer !== null) {
+    window.clearInterval(guard.timer);
+    guard.timer = null;
+  }
+  resetGuard('off');
+}
+
+/**
+ * 自动回落开关（设置页那一项）。
+ *
+ * 关掉时**不动当前状态**：已经切到中继的继续用中继（那是既成事实，
+ * 悄悄切回去又是一次几秒断流，玩家只会觉得"关了设置反而断了一下"）。
+ * 只让它不再做新的判断。
+ */
+export function setAutoFallback(on: boolean): void {
+  state.autoFallback = on;
+  saveAutoFallback(on);
+  if (on && state.session) {
+    startRelayGuard();
+  } else {
+    stopRelayGuard();
+  }
+  if (!on) {
+    guard.cooldownUntil = 0;
+    guard.probeDelayMs = PROBE_BASE_MS;
+  }
 }
 
 /* -------------------------------------------------------------- 心跳 */

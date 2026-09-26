@@ -36,11 +36,14 @@ import {
   leaveRoom,
   pollPeers,
   refreshRoom,
+  relayMode,
   rotateSecret,
   shareAddress,
+  toggleForceRelay,
   updateRoomPolicy,
 } from '../lib/store.ts';
 import type { PeerView } from '../lib/easytier-parse.ts';
+import { LOSS_THRESHOLD, formatLoss } from '../lib/relay-fallback.ts';
 import { friendlyError } from '../lib/api.ts';
 import { copyText } from '../lib/clipboard.ts';
 import { confirmInApp } from '../lib/confirm.ts';
@@ -222,6 +225,127 @@ const memberPeers = computed(() => visiblePeers.value.filter(isMemberPeer));
 const relayPeers = computed(() => visiblePeers.value.filter((p) => !isMemberPeer(p)));
 /** 走过流量的路径才算"在用"：只有字节数能说明哪条真的承载了业务流量 */
 const carriesTraffic = (p: PeerView): boolean => p.rxBytes + p.txBytes > 0;
+
+/* ------------------------------------------------------- 丢包与回落中继 */
+
+/**
+ * 丢包读数与提示。
+ *
+ * 判据只在 **P2P 那一侧**：经中继的路径丢包是"中继/上游的事"，
+ * 劝玩家"强制走中继"对他毫无帮助（他已经在走中继了）。
+ * 颜色只是强化 —— 数字本身（`丢包 5.3%` vs `丢包 0.0%`）就是文字通道，
+ * 而且高出阈值时下面还会多出那条带动作的提示，不靠颜色单独传达任何东西。
+ */
+const isHighLoss = (p: PeerView): boolean => p.lossRate !== null && p.lossRate > LOSS_THRESHOLD;
+
+const p2pLoss = computed<number | null>(() => {
+  const direct = visiblePeers.value.filter((p) => p.cost.startsWith('p2p') && p.lossRate !== null);
+  if (direct.length === 0) return null;
+  return Math.max(...direct.map((p) => p.lossRate ?? 0));
+});
+
+/** 已经走中继时不再劝他走中继 —— 提示只在"还能选择"的时候出现 */
+const lossTipVisible = computed(() => relayMode.value === 'off' && p2pLoss.value !== null && p2pLoss.value > LOSS_THRESHOLD);
+
+function lossTitle(p: PeerView): string {
+  const base = 'EasyTier 统计的丢包率（最近 100 次探测的滑动窗口）';
+  if (!isHighLoss(p)) return base;
+  return p.cost.startsWith('p2p') ? `${base}：这条直连在丢包，可以强制走中继` : `${base}：这条路径在丢包`;
+}
+
+/* ------------------------------------------------ 「强制走中继」开关的四种状态 */
+
+/**
+ * 文案与禁用条件全部由 store 的 `relayMode` 一个判据派生（见 store.ts）。
+ * 房主在房间规则里关掉 P2P 时，这个开关是**只读**的：让他看得出"不是我能改的事"。
+ */
+const relayLabel = computed(() => {
+  switch (relayMode.value) {
+    case 'policy':
+      return '全员走中继';
+    case 'switching':
+      return '切换中…';
+    case 'on':
+      return '已走中继';
+    default:
+      return '强制走中继';
+  }
+});
+
+const relayDisabled = computed(
+  () => relayMode.value === 'policy' || relayMode.value === 'switching' || busy.value || !isOnline.value,
+);
+
+const relayTitle = computed(() => {
+  switch (relayMode.value) {
+    case 'policy':
+      return '房主在房间规则里关闭了「允许 P2P 直连」，全房间都走中继，本机无法单独改回';
+    case 'switching':
+      return '正在用新配置重启本地核心，连接会中断几秒';
+    case 'on':
+      return '点一下切回 P2P 直连（会重启本地核心，中断几秒）';
+    default:
+      return '强制走中继：所有流量经中继转发，绕开丢包的 P2P 直连（会重启本地核心，中断几秒）';
+  }
+});
+
+/**
+ * 状态行只在"有事要说"时出现（切换中 / 已切到中继 / 房主设定 / 刚切回来的结果），
+ * 静止的"正在直连"不占一行 —— 房间卡里每一行都要有存在的理由。
+ */
+const relayStateText = computed(() => {
+  if (relayMode.value === 'policy') return '房主已关闭 P2P 直连，全房间走中继。';
+  if (relayMode.value === 'switching') return '正在切换，几秒内恢复。';
+  if (clientState.relayNotice) return clientState.relayNotice;
+  if (relayMode.value === 'on') {
+    return clientState.forceRelaySource === 'auto'
+      ? '已自动切到中继：P2P 直连丢包持续偏高。'
+      : '已切到中继：所有流量经中继转发。';
+  }
+  return '';
+});
+
+const relayLedClass = computed(() => (relayMode.value === 'switching' ? 'led-warn' : 'led-ok'));
+
+/**
+ * 切换确认。两个方向都要问：无论开关还是关，本地核心都会重启、连接都会断几秒，
+ * 这不是"改一个偏好"，是一次真实的中断（与「轮换密钥」「关闭房间」同一量级，
+ * 所以走同一套应用内确认弹层）。
+ */
+async function doToggleRelay(): Promise<void> {
+  const mode = relayMode.value;
+  if (mode === 'policy' || mode === 'switching') return;
+  const turningOn = mode !== 'on';
+  const ok = await confirmInApp(
+    turningOn
+      ? {
+          title: '强制走中继',
+          message: '所有流量改走中继，P2P 直连停用。',
+          detail:
+            '本机会用新配置重启一次 EasyTier 核心，连接中断约 3 秒。房间里其他人不受影响；这个选择会记住，重启客户端后仍然生效。',
+          confirmText: '走中继',
+          danger: false,
+        }
+      : {
+          title: '切回 P2P 直连',
+          message: '重新尝试和其它成员打洞直连。',
+          detail:
+            '本机会用新配置重启一次 EasyTier 核心，连接中断约 3 秒。如果当初是为了绕开丢包才切过来的，直连恢复后可能又会丢包。',
+          confirmText: '切回直连',
+          danger: false,
+        },
+  );
+  if (!ok) return;
+  busy.value = true;
+  error.value = '';
+  try {
+    await toggleForceRelay();
+  } catch (err) {
+    error.value = friendlyError(err);
+  } finally {
+    busy.value = false;
+  }
+}
 
 const favorite = computed(() => {
   void shortcutsRevision.value;
@@ -505,6 +629,19 @@ async function doLeave(): Promise<void> {
             </span>
           </div>
 
+          <!--
+            丢包提示：一句话结论 + 一个动作（用户明确要求，不在这里解释内部机制）。
+            放在**分组之上**：这一栏里其它东西都是"读一眼"，只有它是"要做点什么"，
+            而玩家的窗口本来就常常是被切出去看一眼再切回来的（见 PRODUCT.md），
+            埋在两张分组表下面等于没人看见。已经走中继时不再出现。
+          -->
+          <div v-if="lossTipVisible" class="alert alert-warn loss-tip">
+            <span class="grow">P2P 直连在丢包（最高 {{ formatLoss(p2pLoss) }}）。</span>
+            <button class="btn btn-sm" type="button" :disabled="relayDisabled" @click="doToggleRelay()">
+              强制走中继
+            </button>
+          </div>
+
           <template v-if="visiblePeers.length > 0">
             <!-- 房间成员：这里才是"我和谁连上了、是直连还是绕路" -->
             <div v-if="memberPeers.length > 0" class="path-group">
@@ -523,6 +660,13 @@ async function doLeave(): Promise<void> {
                   </span>
                   <span class="mono faint roster-sub roster-num">
                     {{ p.latencyMs === null ? '—' : `${p.latencyMs.toFixed(1)} ms` }}
+                  </span>
+                  <span
+                    class="mono faint roster-sub roster-num"
+                    :class="{ 'loss-high': isHighLoss(p) }"
+                    :title="lossTitle(p)"
+                  >
+                    丢包 {{ formatLoss(p.lossRate) }}
                   </span>
                   <span class="mono faint roster-sub roster-num">{{ formatBytes(p.rxBytes + p.txBytes) }}</span>
                 </div>
@@ -552,6 +696,13 @@ async function doLeave(): Promise<void> {
                   <span v-else class="badge badge-neutral" title="冗余入口：只在主路径不可用时才转发">备用</span>
                   <span class="mono faint roster-sub roster-num">
                     {{ p.latencyMs === null ? '—' : `${p.latencyMs.toFixed(1)} ms` }}
+                  </span>
+                  <span
+                    class="mono faint roster-sub roster-num"
+                    :class="{ 'loss-high': isHighLoss(p) }"
+                    :title="lossTitle(p)"
+                  >
+                    丢包 {{ formatLoss(p.lossRate) }}
                   </span>
                   <span class="mono faint roster-sub roster-num">{{ formatBytes(p.rxBytes + p.txBytes) }}</span>
                 </div>
@@ -681,6 +832,30 @@ async function doLeave(): Promise<void> {
             >
               退出房间
             </button>
+
+            <!--
+              「强制走中继」占整行：它是这一族里唯一**改变链路怎么走**的动作，
+              和"分享地址/刷新状态"这种读一读、发一发不是一件事。挤在半个格子里
+              会让它看起来同样无关紧要（参照稿的动作胶囊也是把主次分开的）。
+              `aria-pressed` 让读屏软件知道它是个开关，而不是一个普通的动作按钮。
+            -->
+            <button
+              class="btn btn-sm relay-toggle"
+              :class="{ 'is-on': relayMode === 'on', 'is-locked': relayMode === 'policy' }"
+              type="button"
+              :aria-pressed="relayMode === 'on' || relayMode === 'policy'"
+              :title="relayTitle"
+              :disabled="relayDisabled"
+              @click="doToggleRelay()"
+            >
+              <span v-if="relayMode === 'switching'" class="spinner" />
+              <span>{{ relayLabel }}</span>
+            </button>
+          </div>
+
+          <div v-if="relayStateText" class="relay-state">
+            <span class="led" :class="relayLedClass" aria-hidden="true" />
+            <span class="grow">{{ relayStateText }}</span>
           </div>
         </section>
 
@@ -1098,6 +1273,82 @@ async function doLeave(): Promise<void> {
 }
 .room-acts .btn-danger {
   grid-column: 1 / -1;
+}
+
+/*
+ * 强制走中继：整行，且"已开启"有**静态**的形（浅强调底 + 强调色字 + 描边），
+ * 不是只靠颜色闪一下 —— 颜色不单独承载状态是本仓库的硬规则。
+ * 描边用 --accent-soft（非文字专用色）而不是 --accent：这一圈只是"选中"的形，
+ * 不是要读的字，压白卡当装饰线正好（当文字用会过不了 AA）。
+ */
+.relay-toggle {
+  grid-column: 1 / -1;
+}
+.relay-toggle.is-on {
+  background: var(--accent-wash);
+  border-color: var(--accent-soft);
+  color: var(--accent);
+}
+.relay-toggle.is-on:hover:not(:disabled) {
+  background: var(--accent-wash);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+/*
+ * 只读态（房主在房间规则里让全房间走中继）必须**照实显示"在中继上"**。
+ *
+ * styles.css 的 `.btn:disabled { opacity: .5 }` 会把这个状态淡成"没开"的样子 ——
+ * 而它恰恰是"已经走中继"，读反了玩家就会以为房间里没人走中继。禁用是为了不让点
+ * （点了也不生效），不是为了让状态变模糊；所以这里把不透明度拉回来，并保留
+ * "开"的形（浅强调底 + 强调色字）。本文件的选择器是 0,3,0，压得住那条 0,2,0。
+ */
+.relay-toggle.is-locked {
+  opacity: 1;
+  cursor: not-allowed;
+  background: var(--accent-wash);
+  border-color: var(--accent-soft);
+  color: var(--accent);
+}
+
+/*
+ * 切换结果/当前链路决策：与账号卡里那几段同一手法 —— 一条发丝线 + 字号降一档，
+ * 不套小卡片（契约禁止卡里套卡）。文字允许换行，窄窗里不会被切掉半句。
+ */
+.relay-state {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--line-soft);
+  color: var(--ink-3);
+  font-size: var(--fs-xs);
+  text-wrap: pretty;
+  min-width: 0;
+}
+
+/* ------------------------------------------------------------ 丢包读数与提示 */
+/*
+ * 高出阈值的丢包：加深 + 加粗 + title。数字本身就是文字通道（丢包 5.3% / 丢包 0.0%），
+ * 颜色只做强化；动作写在下面那条提示里，不指望玩家自己从颜色里读出该干什么。
+ *
+ * ⚠️ 选择器必须是 `.roster-row .loss-high`（0,3,0），不能只写 `.loss-high`。
+ * 这一行同时带着 `.roster-sub`，而 styles.css 里那条 `.app-shell .roster-sub`
+ * 也是 0,2,0 —— **实测打包产物里 styles.css 排在 SFC 样式之后**，
+ * 于是同特异性比打包顺序，颜色被它盖掉：屏幕上看到的是普通的灰（--paper-faint），
+ * 只有字重变成 600（那条属性没人和我抢）。加一层 `.roster-row` 就稳定赢，
+ * 不用 !important 也不用去改别人文件里的规则。
+ */
+.roster-row .loss-high {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+/* 提示条：一句话结论 + 一个动作。用 .alert alert-warn 的既有语义色，不新造一层皮 */
+.loss-tip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s-2);
 }
 
 /* ------------------------------------------------------------------ 帮助入口 */
