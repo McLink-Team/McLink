@@ -524,6 +524,35 @@ update settings
  where key = 'platform'
    and json_extract(value, '$.clientDownloadUrl') = '/downloads/McLink-Setup-1.0.5-x64.exe';
 `;
+/**
+ * V20：客户端版本 1.0.6 → 1.0.7。
+ *
+ * 1.0.7 只改了一件事，但改在玩家每天都会碰到的地方：**建房页那一列的延迟读数**。
+ * 以前是 ICMP ping（调系统 `ping` 再正则解析输出），现在是对中继**链接端口**做一次
+ * TCP 握手（tcping）。原因：ICMP 只证明主机活着，而玩家要连的是那个端口 ——
+ * 线上两种误判都出现过（主机屏蔽 ICMP 却完全可用；ICMP 12ms 但端口被安全组挡着）。
+ * 界面文案与降级行为不变：测不到仍然显示「—」，仍然只用于展示与排序。
+ *
+ * 顺带说明为什么这个迁移只动版本号：这次没有任何**库结构**变化
+ * （`relay_nodes` 的 listen_port / connect_port 早在 V6 就有了），
+ * 需要迁移的只是"平台对外宣称的客户端版本与下载地址"。
+ *
+ * 纪律同前：只动"还停在上一版默认值"的部署，管理员手改过的一律不碰；
+ * 从更老的版本升上来会依次跑 V15 → … → V20，最终都落在 1.0.7。
+ */
+const V20_CLIENT_1_0_7 = `
+update settings
+   set value = json_set(value, '$.clientVersion', '1.0.7'),
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ where key = 'platform'
+   and json_extract(value, '$.clientVersion') = '1.0.6';
+
+update settings
+   set value = json_set(value, '$.clientDownloadUrl', '/downloads/McLink-Setup-1.0.7-x64.exe'),
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ where key = 'platform'
+   and json_extract(value, '$.clientDownloadUrl') = '/downloads/McLink-Setup-1.0.6-x64.exe';
+`;
 export const MIGRATIONS: readonly string[] = [
   V1_INITIAL,
   V2_RELAY_ROOM_MAP,
@@ -544,6 +573,7 @@ export const MIGRATIONS: readonly string[] = [
   V17_CLIENT_1_0_4,
   V18_CLIENT_1_0_5,
   V19_CLIENT_1_0_6,
+  V20_CLIENT_1_0_7,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
