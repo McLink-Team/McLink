@@ -135,8 +135,8 @@ if ($SkipFetch) {
 $commit = (& git -C $SrcDir rev-parse --short HEAD).Trim()
 Ok ('commit = ' + $commit + '（桌面端 easytier 是 2.6.4-8428a89d，应与之一致）')
 
-# ---------------------------------------------------------------- 3. 施加两处清单改动
-Step 3 '把 ffi 改成静态链入（幂等；源码本身不改）'
+# ---------------------------------------------------------------- 3. 施加三处源码侧改动
+Step 3 '把 ffi 改成静态链入（幂等；EasyTier 的业务源码不改）'
 $ffiToml = Join-Path $SrcDir 'easytier-contrib\easytier-ffi\Cargo.toml'
 $jniToml = Join-Path $SrcDir 'easytier-contrib\easytier-android-jni\Cargo.toml'
 $before = Get-Content $ffiToml -Raw
@@ -149,6 +149,26 @@ if ($before2 -notmatch 'easytier-ffi') {
     [IO.File]::WriteAllText($jniToml, $after2, (New-Object Text.UTF8Encoding($false)))
     Ok 'jni: 加 easytier-ffi 依赖'
 } else { Ok 'jni: 已加过' }
+
+# 第三处 —— **最容易漏的一个，真机上炸过**：
+# 光把依赖写进 Cargo.toml 不够。这个 crate 里没有任何 Rust 代码 `use` 到 easytier-ffi，
+# 于是 rustc 不会把它的 rlib 交给链接器（未使用的依赖会被丢掉）。后果极其隐蔽：
+#   编译"成功"（cdylib 的 -shared 允许未定义符号）→ 装机后 dlopen 报
+#   `cannot locate symbol "collect_network_infos"`（0.2.0 就是这么炸的）。
+# 必须显式 `extern crate` 建立真实的链接边。
+$libRs = Join-Path $SrcDir 'easytier-contrib\easytier-android-jni\src\lib.rs'
+$libSrc = Get-Content $libRs -Raw
+if ($libSrc -match 'extern crate easytier_ffi') {
+    Ok 'lib.rs: 已有 extern crate easytier_ffi'
+} else {
+    $at = $libSrc.IndexOf('#[repr(C)]')
+    if ($at -lt 0) { Fail 'lib.rs 里找不到 #[repr(C)] 锚点，需要人工处理' }
+    $note = "// 把 FFI 实现静态链接进来。没有这一行，rustc 不会把 rlib 交给链接器，`n" +
+        "// 编出来的 .so 会带着未定义符号出厂，装机后 dlopen 直接失败（见 README §9.2）。`n" +
+        "extern crate easytier_ffi;`n`n"
+    [IO.File]::WriteAllText($libRs, $libSrc.Insert($at, $note), (New-Object Text.UTF8Encoding($false)))
+    Ok 'lib.rs: 插入 extern crate easytier_ffi'
+}
 
 # ---------------------------------------------------------------- 4. 编译
 Step 4 '交叉编译（首次 15–40 分钟，之后增量很快）'
@@ -186,12 +206,21 @@ if ($bytes[4] -ne 2) { Fail '不是 64 位 ELF' }
 $machine = $bytes[18] + ($bytes[19] -shl 8)
 if ($machine -ne 183) { Fail ('e_machine = ' + $machine + '，期望 183(AArch64)') }
 Ok '64 位 / AArch64 ✓'
+
+# 这一步是**硬门禁**，不是参考信息：未定义符号的库能让编译通过、装机才炸（§9.2）。
+$checker = Join-Path $RepoRoot 'android\scripts\check-undefined-symbols.mjs'
+if (Test-Path $checker) {
+    Write-Host '  （用 android/scripts/check-undefined-symbols.mjs 检查残留未定义符号）'
+    & node $checker $so 2>&1 | Select-String -Pattern 'DYNSYM|EXPORTED Java_|未定义的 FFI|✓|✗' | ForEach-Object { '    ' + $_.Line.Trim() }
+    if ($LASTEXITCODE -ne 0) { Fail '产物里有残留的 FFI 未定义符号 —— 装机后必然 dlopen 失败，不要装这个包' }
+    Ok '未定义符号检查通过'
+} else {
+    Fail ('找不到符号检查脚本 ' + $checker + ' —— 这道检查不能省（0.2.0 就是这么出的问题）')
+}
 $scan = Join-Path $RepoRoot '.cache\scan-so.mjs'
 if (Test-Path $scan) {
-    Write-Host '  （用 .cache/scan-so.mjs 解析导出符号与 DT_NEEDED）'
-    & node $scan $so 2>&1 | Select-String -Pattern 'Java_com_easytier|DT_NEEDED|undefined|AArch64|ET_DYN' | Select-Object -First 12 | ForEach-Object { '    ' + $_.Line.Trim() }
-} else {
-    Write-Host '  （没有 .cache/scan-so.mjs，跳过符号解析）' -ForegroundColor Yellow
+    Write-Host '  （附：scan-so.mjs 的 DT_NEEDED 与导出符号）'
+    & node $scan $so 2>&1 | Select-String -Pattern 'DT_NEEDED|ET_DYN|Java_com_easytier' | Select-Object -First 4 | ForEach-Object { '    ' + $_.Line.Trim() }
 }
 
 Write-Host "`n完成。下一步：重建 APK 并跑验收脚本" -ForegroundColor Green

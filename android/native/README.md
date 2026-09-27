@@ -402,7 +402,7 @@ EasyTier 核心时可作为参考；但它**不提供** JNI 接口，也不能�
 产物来源：上游 tag **`v2.6.4`**，commit **`8428a89`** —— 与桌面端 `client/vendor/easytier/`
 里的 `2.6.4-8428a89d` **同一个 commit**。
 
-### 9.2 相对上游的两处清单改动（源码一行未改）
+### 9.2 相对上游的三处改动（EasyTier 业务源码一行未改）
 
 ```toml
 # easytier-contrib/easytier-ffi/Cargo.toml
@@ -412,11 +412,37 @@ crate-type = ["cdylib", "rlib"]
 easytier-ffi = { path = "../easytier-ffi" }
 ```
 
+```rust
+// easytier-contrib/easytier-android-jni/src/lib.rs —— **第三处，最容易漏的一个**
+extern crate easytier_ffi;
+```
+
 **为什么**：上游 v2.6.4 的 JNI crate 用 `unsafe extern "C"` 声明外部符号却不依赖 `easytier-ffi`，
 编出来的库对外部符号**没有 `DT_NEEDED`**，运行时靠加载顺序碰运气（`cannot locate symbol "set_tun_fd"`）。
-改成静态链入后**只需要一个 .so**，没有加载顺序问题 —— 上游 main(2.7.0) 后来做的也是同一件事。
+改成静态链入后**只需要一个 .so** —— 上游 main(2.7.0) 后来做的也是同一件事。
 
-### 9.3 构建这条链上踩到的 5 个坑
+> **⚠️ 只改 Cargo.toml 是不够的 —— 这一条是用真机事故换来的。**
+>
+> 第一版（APK 0.2.0）只改了那两处清单、**没有** `extern crate`。结果：
+> - 编译**成功**（cdylib 的 `-shared` 允许未定义符号，链接器不报错）；
+> - 产物只有 6.29 MB，比"真链上"的版本小 13 MB —— 因为整块 FFI 实现根本没进去；
+> - 装到手机上点连接立刻报：
+>
+> ```
+> java.lang.UnsatisfiedLinkError: dlopen failed:
+> cannot locate symbol "collect_network_infos" referenced by ".../libeasytier_android_jni.so"
+> ```
+>
+> 根因：这个 crate 里**没有任何 Rust 代码 `use` 到 `easytier_ffi`**，rustc 就把它当未使用的依赖、
+> 不会把 rlib 交给链接器。`extern crate` 建立的才是真正的链接边。
+>
+> **两个教训都固化进流程了**：
+> 1. "编译通过"判断不了 JNI 库能不能 `dlopen` —— 必须查符号表；
+> 2. 校验脚本原来的正则是 `easytier|Java_`，而 `collect_network_infos` / `set_tun_fd` 这类名字
+>    **两个都不含** → 静默漏报。现在改用 `android/scripts/check-undefined-symbols.mjs` 按**符号名清单**判定，
+>    且 `verify-android-apk.ps1` 会**从 APK 里解出 .so 再查一遍**（第 5 组检查，硬门禁）。
+
+### 9.3 构建这条链上踩到的 6 个坑
 
 1. **宿主工具链要用 GNU，且必须有 MinGW 的 `dlltool.exe`**：本机没有 MSVC，所以 rustup 装的是
    `x86_64-pc-windows-gnu`；但 GNU 宿主编译 `windows-sys` 需要 dlltool，缺了报
@@ -434,26 +460,37 @@ easytier-ffi = { path = "../easytier-ffi" }
    而 `Cargo.lock` 钉了 7 个 git 依赖全在 github.com 上 → 必须走本地代理
    （`HTTP(S)_PROXY` + `CARGO_NET_GIT_FETCH_WITH_CLI=true`，让 cargo 用系统 git）。
    另外 **cargo-ndk 的 `-p` 是它自己的 `--platform`**，别当 cargo 的 `--package` 用（会 panic）。
+6. **⚠️ 只改 Cargo.toml 而不写 `extern crate` ＝ 编出来的 .so 是个空壳**（APK 0.2.0 的真机事故，详见 §9.2）。
+   判断信号很直观：**编译成功，但 .so 体积明显偏小**（0.2.0 是 6.29 MB，真链上之后是 19.93 MB）。
+   所以任何一次"体积突然变小"的构建都要当成故障查，而不是当成优化。
 
-### 9.4 产物与二进制取证
+### 9.4 产物与二进制取证（0.2.1，已修好链接）
 
 | 项 | 值 |
 | --- | --- |
 | 文件 | `android/android/app/src/main/jniLibs/arm64-v8a/libeasytier_android_jni.so` |
-| 字节数 | **6,291,128 B（6.00 MiB）** |
-| SHA-256 | `403da415626528e22d852e704d8af53ca8f187d63e5903d07eef0b8d9bcc533c` |
+| 字节数 | **19,933,600 B（19.01 MiB）** |
+| SHA-256 | `9ec0e50025ab117926d54b2a7472dbd32c32dee1c1433ee49f45578448db0e8f` |
 | ELF | 64-bit / LE / ET_DYN / `e_machine=183 (AArch64)` |
 | `DT_NEEDED` | 只有 `liblog.so`、`libc.so`、`libdl.so` —— **不含 `libeasytier_ffi.so`**，即单库自包含 |
-| 导出符号 | 6 个，全是 `Java_com_easytier_jni_EasyTierJNI_{setTunFd,parseConfig,runNetworkInstance,retainNetworkInstance,collectNetworkInfos,getLastError}` |
+| 导出符号 | 13 个：6 个 `Java_com_easytier_jni_EasyTierJNI_*` + 7 个 ffi 的 `#[no_mangle]` 函数 |
 | `JNI_OnLoad` / `RegisterNatives` | **没有**（与上游源码一致：名字约定导出） |
-| 未定义的 easytier 符号 | **0 个** |
-| 编译耗时 | 首次全量约 20 分钟；`easytier` 核心 crate 单次 7 分 49 秒（增量） |
+| 未定义的 FFI 符号 | **0 个**（`android/scripts/check-undefined-symbols.mjs` 判定，退出码 0） |
+| 其余未定义符号 | 111 个，**全部是 bionic 提供的**：105 个 GLOBAL（`malloc`/`socket`/`pthread_*`/`__android_log_write`… 由 `libc`/`liblog`/`libdl` 提供）+ 6 个 WEAK（`gettid`/`getrandom`/`ZSTD_trace_*`，解析不到为 0，不会让 `dlopen` 失败） |
+| 编译耗时 | 首次全量约 20 分钟；改一行源码后的增量约 10 分钟 |
 
-进包后：APK 从 4.26 MB（无原生库）→ **10.02 MB**，`native-code: 'arm64-v8a'`
-（`build.gradle` 里 `abiFilters 'arm64-v8a'` 锁死，别加 x86_64 除非要跑模拟器）。
+> **版本对比（说明"编译通过 ≠ 能加载"）**：0.2.0 那个 `.so` 是 6,291,128 B —— 小 13 MB 不是优化，
+> 是 **FFI 实现整块没链进去**（详见 §9.2）。**看到 .so 体积明显变小就要怀疑这一条。**
+
+进包后：APK 从 4.26 MB（无原生库）→ **23.05 MB**（`.so` 由 aapt 以 stored 方式打包，增量≈1:1），
+`native-code: 'arm64-v8a'`（`build.gradle` 里 `abiFilters 'arm64-v8a'` 锁死，别加 x86_64 除非要跑模拟器）。
 
 ### 9.5 仍未验证的
 
-**这个 `.so` 从未在 Android 设备上被加载或运行过。** 上面全部是静态取证（ELF 头、符号表、
-包内比对）。`dlopen` 是否成功、`setTunFd` 之后隧道是否真的通，只有真机装机才能证明 ——
-清单见 `docs/android-vpn.md` §5.1。
+- **修好后的 0.2.1 还没有在真机上跑过**：0.2.0 那次真机验证证明了"加载会失败"和链路前端是通的
+  （UI → 插件 → Service → JNI 都走到了，错误被捕获并显示出来），但**修好之后的 `dlopen` 与隧道连通性
+  仍未验证**。
+- `panic = "abort"`：工作区 `[profile.release]` 是 `panic = "abort"`，所以内核 panic 会直接**终止整个应用进程**
+  （而不是抛成 Java 异常让界面显示错误）。上游 Terracotta 在 Android 上特意改成 `panic = "unwind"` 就是为此。
+  要改的话用 `CARGO_PROFILE_RELEASE_PANIC=unwind` 重编（约 20 分钟全量），本轮没做。
+- 真机测试清单见 `docs/android-vpn.md` §5.1。

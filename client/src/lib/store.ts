@@ -358,9 +358,27 @@ function absoluteDownloadUrl(url: string): string {
   return `${getMasterUrl()}${url.startsWith('/') ? '' : '/'}${url}`;
 }
 
+interface MetaArtifact {
+  url: string;
+  filename: string;
+  size: number;
+  sha256: string | null;
+  /** 从文件名解析出来的版本号（主控侧 versionOf()）；老主控没有这个字段 */
+  version?: string | null;
+  platform?: string;
+}
+
 interface MetaForUpdate {
   clientVersion?: string;
   clientDownloadUrl?: string;
+  /**
+   * 按平台分好的产物（主控 side buildClientDownloads）。
+   *
+   * 为什么更新检查要看它：`clientVersion` / `clientDownloadUrl` 是**桌面端**那条线
+   * （平台设置里的「客户端版本」，现在是 1.0.7）。安卓有自己的版本线（0.2.x），
+   * 拿桌面版本去比就会出现"手机上提示有新版本 1.0.7，点开给的是 Windows 安装包"。
+   */
+  clientDownloads?: { android?: MetaArtifact | null } | null;
 }
 
 /**
@@ -376,6 +394,29 @@ export async function checkForUpdate(meta?: MetaForUpdate): Promise<void> {
       state.localVersion = info.version;
     }
     const m = meta ?? (await api.get<MetaForUpdate>(Routes.meta));
+
+    /*
+     * 安卓走自己的产物，不碰桌面的 clientVersion/clientDownloadUrl。
+     *
+     * 拿不到 android 产物时**不提示**（而不是退回桌面那套）：手机上升级只能是装新 APK，
+     * 指一个 .exe 过去比不提示更糟。等主控部署了带 android 字段的版本再自然生效。
+     */
+    if (platform === 'android') {
+      const apk = m.clientDownloads?.android ?? null;
+      const latest = (apk?.version ?? '').trim();
+      if (!apk || !latest || compareVersions(latest, state.localVersion) <= 0) {
+        state.update = null;
+        return;
+      }
+      const url = absoluteDownloadUrl(apk.url);
+      if (!url) {
+        state.update = null;
+        return;
+      }
+      state.update = { latest, url, sizeBytes: apk.size ?? null, sha256: apk.sha256 ?? null };
+      return;
+    }
+
     const latest = (m.clientVersion ?? '').trim();
     if (!latest || compareVersions(latest, state.localVersion) <= 0) {
       state.update = null;

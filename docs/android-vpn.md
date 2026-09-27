@@ -81,7 +81,7 @@ v2.6.4 的 JNI crate 用 `unsafe extern "C" { fn set_tun_fd(...) ... }` 声明�
 | ① 补链接参数 | 构建时加 `-C link-arg=-Wl,--no-as-needed -C link-arg=-leasytier_ffi`，让 JNI 库自己带上 `DT_NEEDED` | 依赖链接器行为、还给 Java 侧留下"加载顺序"这个隐含前提。**没选** |
 | ② 改成静态链入 | `easytier-ffi` 的 `crate-type` 加 `rlib`，并让 JNI crate 依赖它 | **选了**：只产出一个自包含的 `.so`，没有任何加载顺序问题（这也正是上游 main/2.7.0 后来做的同一件事） |
 
-**改动只有两行构建清单，EasyTier 的源码一行没动**：
+**改动是两处构建清单 + 一行 `extern crate`，EasyTier 的业务源码一行没动**：
 
 ```toml
 # easytier-contrib/easytier-ffi/Cargo.toml
@@ -91,9 +91,22 @@ crate-type = ["cdylib", "rlib"]
 easytier-ffi = { path = "../easytier-ffi" }
 ```
 
+```rust
+// easytier-contrib/easytier-android-jni/src/lib.rs
+extern crate easytier_ffi;   // ← 少了这一行，编出来的 .so 是个空壳
+```
+
+> **⚠️ 这第三处是 APK 0.2.0 的真机事故换来的，别删。**
+> 只把那两处写进 Cargo.toml 时，`easytier-ffi` 是个**没有任何 Rust 代码使用的依赖**，
+> rustc 于是不把它的 rlib 交给链接器；而 cdylib 的 `-shared` 又允许未定义符号，
+> 所以**编译成功**、装机后 `dlopen` 立刻失败：
+> `cannot locate symbol "collect_network_infos"`。
+> 识别信号：**.so 体积异常小**（空壳 6.29 MB vs 真链上 19.93 MB）。
+> 门禁：`android/scripts/check-undefined-symbols.mjs`（按符号名清单判定），
+> 并被 `verify-android-apk.ps1` 第 5 组检查从 **APK 内的 .so** 上再跑一遍。
+
 代价与收益要一起说清楚：
-- **收益**：APK 里只有一个 `.so`（约 7 MB 而不是两个加起来十几 MB）；没有 `dlopen` 顺序问题；
-  `libeasytier_ffi.so` 根本不需要进包。
+- **收益**：APK 里只有一个 `.so`；没有 `dlopen` 顺序问题；`libeasytier_ffi.so` 根本不需要进包。
 - **代价**：我们交付的二进制是从"上游源码 + 两行清单改动"构建的，所以**构建实录必须公开**
   （`android/native/README.md` §9 + `android/native/build-jni.ps1`），LGPL 的"未经修改"这句话
   要精确到"源码未改、只改了两处 crate 配置"。这一点不能含糊。
