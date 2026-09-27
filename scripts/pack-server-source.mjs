@@ -53,6 +53,8 @@ for (const need of [
   'deploy/vendor/linux-x86_64/easytier-cli',
   'deploy/install-server.sh',
   'deploy/agent.mjs',
+  'deploy/install-node.sh',
+  'deploy/register-self-node.mjs',
   'pnpm-lock.yaml',
   'server/src/index.ts',
 ]) {

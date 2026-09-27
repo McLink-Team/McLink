@@ -188,6 +188,42 @@ sudo bash deploy/install-node.sh \
 * 注册后先出现为 `pending`，首次心跳（≤20 秒）后变 `online`。
 * 令牌落在 `/etc/mclink/node-token.json`（600），之后重启不再需要密钥。
 
+#### 2.3.1 把主控自己注册成子节点（单机部署必做）
+
+2026-09-27 起主控**不再当中继兜底**：票据里的中继全部来自 `relay_nodes` 里可调度的子节点，
+一台都没有时建房直接 503「当前没有可用的中继节点」。只有一台服务器时，
+就在那台机器上再跑一个节点实例（`install-server.sh` 装的主控与 `install-node.sh` 装的节点是
+两套互不干扰的目录与 systemd 单元）：
+
+```bash
+# 在主控机器上（root）。默认路径：关掉主控自带中继，本机节点接管 11010
+sudo node /opt/mclink/app/deploy/register-self-node.mjs --region oversea --disable-master-relay
+
+# 先看它要做什么（会真登录、真签一把一次性密钥，但不改配置、不装节点）
+sudo node /opt/mclink/app/deploy/register-self-node.mjs --region oversea --dry-run
+
+# 想保留主控自带中继、用一个新端口跑节点（记得放行该端口 TCP+UDP）
+sudo node /opt/mclink/app/deploy/register-self-node.mjs --region oversea --listen-port 11011
+```
+
+脚本依次做：读 `/etc/mclink/mclink.env` → 校验区域/端口/endpoint 冲突 →
+用管理员密码登录主控（走 `127.0.0.1`，不依赖 nginx）→ 签发一次性注册密钥 →
+（`--disable-master-relay` 时）把 `MCLINK_AUTOSTART_RELAY=false` 写进 env 并重启 `mclink-server` →
+执行 `deploy/install-node.sh` → 轮询到该节点 `online` 并打印善后提示。
+
+手工等价的三步（脚本不好用时照这个来）：
+
+```bash
+# ① 关掉主控自带中继（它和本机节点会抢同一个 11010）
+sudo sed -i 's/^MCLINK_AUTOSTART_RELAY=.*/MCLINK_AUTOSTART_RELAY=false/' /etc/mclink/mclink.env
+sudo systemctl restart mclink-server
+# ② 管理台「节点」→ 签发注册密钥（区域选 oversea，endpoint 填这台机器的公网地址:11010）
+# ③ 在主控这台机器上粘贴管理台给出的那条命令即可（与区域服务器完全一样）
+```
+
+⚠️ 停机窗口：①→③ 之间没有任何可调度节点，此时建房会 503（已有房间不受影响）。
+脚本失败时会打印回滚命令（把 `MCLINK_AUTOSTART_RELAY` 改回 `true` 再重启）。
+
 ### 2.4 浏览器访问
 
 打开 `https://cnnic.link` → 用 `admin` + 初始密码登录 → 立即在「账号设置」改密
