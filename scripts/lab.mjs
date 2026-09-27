@@ -700,12 +700,11 @@ async function main() {
   check('管理员登录成功', Boolean(adminToken), `角色=${admin.user.role}`);
 
   /*
-   * 先跑邮箱验证实验，并把开关恢复为关闭。
-   * 顺序有意放在最前面：它是唯一会改动平台级开关的实验，
-   * 放前面能保证后面的实验（需要"注册即可用"的账号）不受影响。
+   * ⚠️ 顺序：**先注册子节点，再跑邮箱验证实验**。
+   * 主控自 2026-09-27 起不再兜底，建房必须有一个可调度子节点；而那个实验的第 7 步
+   * 会真的建一个房间（"验证后立刻可以建房"），一个可调度节点都没有时建房直接 503，
+   * 实验会在那里中断（b89515f 之后的实际踩坑）。
    */
-  await runEmailVerificationLab(adminToken);
-
   step('注册一个子节点（区域中继）');
   /*
    * 数据面用的这个节点跑在 127.0.0.1 上，两个端口相同 —— 单机环境下
@@ -760,6 +759,13 @@ async function main() {
   const nodeRow = nodeList.find((n) => n.id === registered.node?.id);
   check('子节点状态转为在线', nodeRow?.status === 'online' || nodeRow?.status === 'degraded', `status=${nodeRow?.status}`);
 
+  /*
+   * 再跑邮箱验证实验，并把开关恢复为关闭。
+   * 除子节点注册（必须排在它前面，见上）之外，它仍排在其它实验之前：
+   * 它是唯一会改动平台级开关的实验，放前面能保证后面的实验（需要"注册即可用"的账号）不受影响。
+   */
+  await runEmailVerificationLab(adminToken);
+
   step('创建测试账号并建房');
   const mkUser = async (name) => {
     const username = `${name}${RUN_ID}`;
@@ -794,9 +800,27 @@ async function main() {
     roomA.ticket.relays.some((r) => r.nodeId === registered.node?.id),
     roomA.ticket.relays.map((r) => `${r.label}(${r.url})`).join(', '),
   );
+  /*
+   * 2026-09-27 起主控不再兜底，所以这条断言反过来钉：票据里**不能**有 master。
+   *
+   * 现行行为（`RoomService.ticket()`）：票据里的中继**只**来自建房时写进 `room.relayNodeIds`
+   * 的调度结果（`relay_nodes` 里可调度的子节点）；自动模式取排序前两名 —— 主中继 + 兜底中继，
+   * 两个不同节点。以前那条无条件的 `masterRelayEndpoint()`（`nodeId: 'master'`、
+   * label「主控中继（兜底）」）已经被删掉，不再追加进 `relays`。
+   */
+  const relayIdsA = roomA.ticket.relays.map((r) => r.nodeId);
   check(
-    '票据始终包含主控中继作为兜底入口',
-    roomA.ticket.relays.some((r) => r.nodeId === 'master'),
+    '票据里没有主控中继（nodeId=master）：主控不再兜底',
+    roomA.ticket.relays.every((r) => r.nodeId !== 'master'),
+    relayIdsA.join(', ') || '票据里没有中继',
+  );
+  check(
+    '票据里的中继就是调度结果：全是子节点、不重复、至多 2 条（主中继 + 兜底中继）',
+    relayIdsA.length > 0 &&
+      relayIdsA.length <= 2 &&
+      new Set(relayIdsA).size === relayIdsA.length &&
+      [...relayIdsA].sort().join(',') === [...(roomA.room.relayNodeIds ?? [])].sort().join(','),
+    `ticket=${JSON.stringify(relayIdsA)} room.relayNodeIds=${JSON.stringify(roomA.room.relayNodeIds)}`,
   );
   /*
    * 端口分离最关键的一条：给客户端的必须是对外的**链接端口**，

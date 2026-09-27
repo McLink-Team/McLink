@@ -204,21 +204,24 @@ journalctl -u mclink-server | grep -E 'node\.(online|offline)'
 
 ---
 
-## 5. 房间创建失败：「当前没有可用的中继节点，请联系管理员」
+## 5. 房间创建失败：「当前没有可用的中继节点，暂时无法建房」
 
 **判定逻辑**（`RoomService.create()`）：
 
 ```
 relayNodeIds = scheduleRelays(zone)      # 只从 online/degraded 且 disabled=0 且 weight>0 的节点里挑
-if (relayNodeIds.length === 0 && !masterRelayAvailable()) throw 503 当前没有可用的中继节点
+if (relayNodeIds.length === 0) throw 503 当前没有可用的中继节点
 ```
 
-`masterRelayAvailable()` = `MCLINK_AUTOSTART_RELAY=true` **且** `MCLINK_RELAY_PORT > 0`。
+2026-09-27 起**主控不再兜底**：以前这里是 `&& !masterRelayAvailable()`，现在只要
+`relayNodeIds` 为空就报错（`masterRelayAvailable()` = `MCLINK_AUTOSTART_RELAY=true`
+**且** `MCLINK_RELAY_PORT > 0` 仍然保留，但只服务于单机自查与"把主控注册成普通子节点"，
+不再影响建房判定）。
 
 **原因与处置**：
 
-1. 部署时用了 `--no-relay`（`MCLINK_AUTOSTART_RELAY=false`）且没有任何在线子节点
-   → 至少让一个子节点 `online`，或删掉该行并重启主控。
+1. 一个可调度的在线子节点都没有（`--no-relay` / `MCLINK_AUTOSTART_RELAY=false` 不再有影响：
+   主控自己不再兜底）→ 至少让一个子节点 `online`。
 2. 有子节点但都在 `pending` / `offline` → 见 §4。
 3. 子节点 `weight = 0`（管理员设过）→ 调度器**不会**选它
    （`listSchedulable()` 要求 `weight > 0`）。管理台把它改回 100。
@@ -269,10 +272,12 @@ type "%APPDATA%\mclink\easytier\relay.toml" | findstr bind_device
 
 ### 6.3 中继地址不可达
 
-票据里的 `relays[]` 来自「子节点 endpoint」+「主控兜底地址」。主控兜底地址按
-`MCLINK_RELAY_PUBLIC_HOST` → `MCLINK_PUBLIC_BASE_URL` → 请求 `Host` 头的顺序推导。
-**如果都为空**，就会用请求里的 Host —— 于是用 `http://127.0.0.1:8787` 建的房间，
-票据里会出现 `tcp://127.0.0.1:11010`，别的机器当然连不上。
+票据里的 `relays[]` **只**来自子节点（2026-09-27 起主控不再兜底），地址取的是节点
+`endpoint` 的**链接端口**（不是本机运行端口，规则在 `db/nodes.ts` 的 `nodeClientEndpoint()`）。
+历史上票里还会多一条"主控兜底"地址，它按
+`MCLINK_RELAY_PUBLIC_HOST` → `MCLINK_PUBLIC_BASE_URL` → 请求 `Host` 头推导，
+用 `http://127.0.0.1:8787` 建房就会下发 `tcp://127.0.0.1:11010`；**这条已经取消** ——
+票据里不可能再出现主控端点，所以"地址不可达"现在一定是子节点 `endpoint` 本身的问题。
 
 ```bash
 # 看看票据到底给了什么地址
@@ -280,15 +285,9 @@ curl -s -H "Authorization: Bearer <token>" \
   "http://127.0.0.1:8787/api/v1/rooms/<roomId>/ticket" | grep -o 'tcp://[^"]*'
 ```
 
-**处置**：在 `/etc/mclink/mclink.env` 里显式配置并重启：
-
-```
-MCLINK_RELAY_PUBLIC_HOST=relay.cnnic.link
-MCLINK_PUBLIC_BASE_URL=https://cnnic.link
-```
-
-（`install-server.sh --public-url` / `--relay-public-host` 会自动写入。）
-另外管理台上修改节点 `endpoint` 也要确保是公网可达的 `host:port`。
+**处置**：管理台上该节点的 `endpoint` 必须是公网可达的 `host:port`（票据下发的就是它，端口取
+「链接端口」）。`MCLINK_RELAY_PUBLIC_HOST` / `install-server.sh --relay-public-host` 只在
+「把主控注册成一台普通子节点」时才有意义，改它**不会**再影响任何票据。
 
 ### 6.4 端口没放行
 
