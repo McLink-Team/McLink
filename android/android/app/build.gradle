@@ -7,7 +7,7 @@ android {
         applicationId "link.cnnic.mclink"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 3
+        versionCode 4
         /*
          * 版本号与 android/package.json 的 version **必须一致**。
          *
@@ -15,7 +15,7 @@ android {
          * 同一个包在三个地方有三个版本号，玩家报问题时说不清装的是哪个。
          * 0.2.0 = 第一条能真正联机的安卓版本线（里程碑 2）。
          */
-        versionName "0.2.1"
+        versionName "0.2.2"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         /*
          * 只打 arm64-v8a。
