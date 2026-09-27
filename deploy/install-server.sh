@@ -79,7 +79,8 @@ mclink 主控一键安装 / 升级脚本（Debian 12 x86_64）
   --relay-port <端口>        主控中继的公共端口（TCP+UDP 同一端口），默认 11010
   --admin-password <密码>    初始管理员密码；不传则随机生成并只打印一次
   --public-url <URL>         对外访问地址，例如 https://cnnic.link
-  --relay-public-host <主机> 客户端连接中继用的公网主机名/IP；默认从 --public-url 推导
+  --relay-public-host <主机> 客户端连接中继用的公网主机名/IP，**只写主机名**（不带 http:// 与端口，
+                             端口由 --relay-port 决定）；不传就不写这个变量
   --github-proxy <前缀>      GitHub 加速前缀（国内机器下载 EasyTier 用），
                             例如 https://ghproxy.net/；留空则直连 GitHub
   --no-relay                 不启动主控自带中继（MCLINK_AUTOSTART_RELAY=false），
