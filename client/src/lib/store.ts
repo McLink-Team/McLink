@@ -23,6 +23,7 @@ import {
 } from '@mclink/shared';
 import { REGIONS, reconnectDelayMs } from '@mclink/shared';
 import { api, friendlyError, getDeviceName, getMasterUrl, getToken, setDeviceName, setToken } from './api.ts';
+import { probeKey, type ProbeTarget } from './bridge.ts';
 import type { CoreLogEntry, CoreStatus } from './core-types.ts';
 import { recordRecent } from './shortcuts.ts';
 import { parsePeers, type PeerView } from './easytier-parse.ts';
@@ -67,6 +68,23 @@ export interface ActiveSession {
   virtualIp: string;
 }
 
+/**
+ * 中继节点（`GET /nodes` 的形状；**需登录**，所以探测只能放在登录之后）。
+ *
+ * `port` 是**链接端口**：客户端做 TCP 延迟探测、以及真正加入房间时连的都是它，
+ * 由主控按与票据同一套规则下发（见 server/src/db/nodes.ts）。老主控可能缺这一项，
+ * 那时用 `/meta` 的平台端口兜底（见 relayProbeTarget）。
+ */
+export interface RelayNodeOption {
+  id: string;
+  name: string;
+  region: string;
+  host: string;
+  port?: number;
+  peers: number;
+  capacity: number;
+}
+
 const state = reactive({
   /** 是否已连上主控并登录 */
   ready: false,
@@ -95,6 +113,30 @@ const state = reactive({
      * 那时用它兜底；`0` = 不知道，就别去猜端口了。
      */
     relayPort: 0,
+  },
+  /**
+   * 中继节点列表 + 本机测到的延迟（**应用初始化时就探一次**，见 probeRelayNodes）。
+   *
+   * 为什么放在应用级而不是建房页里：以前"拉节点列表 + tcping"只在建房页挂载时跑一遍，
+   * 于是两条退化路径都会让主控收不到延迟提示 —— 手速快过测速、或列表拉取失败（静默 catch）
+   * —— 主控那侧就只能按"权重 × 余量"排序（延迟键失效）。缓存到这份状态后，
+   * 建房页与房间页读的是同一份结果，探测也不再依赖"玩家打开过建房页"。
+   */
+  relayNodes: [] as RelayNodeOption[],
+  /** `host:port` → 最小时延（ms）；null = 这次握手没成功（只用于展示与排序，不代表节点不可用） */
+  relayLatency: {} as Record<string, number | null>,
+  /**
+   * 探测状态（给界面显示用）。
+   *
+   * ⚠️ `probing` **只用来换文案，绝不用来禁用建房按钮** ——
+   * 弱网或节点不可达时会永远建不了房（探测失败不该有任何阻断力）。
+   */
+  relayProbe: {
+    probing: false,
+    /** 最近一次**成功**探测的完成时间（ISO）；null = 还没测到过 */
+    lastProbedAt: null as string | null,
+    /** 最近一次探测是否拿到了节点列表（失败静默，保留上一份缓存） */
+    ok: false,
   },
   /** 邮箱验证状态（来自 /auth/email） */
   email: {
@@ -287,6 +329,13 @@ export async function bootstrap(): Promise<void> {
       await loadPlatformInfo();
       await refreshEmailStatus();
       connectRealtime();
+      /**
+       * 中继探测放在**登录成功之后**：`GET /nodes` 是需登录的接口
+       * （`server/src/api/public.ts` 里 `{ auth: true }`），未登录调只会拿到 401。
+       * 这里**不 await**（后台跑、失败静默）：初始化不该被一轮 tcping 拖住，
+       * 而 `loadPlatformInfo()` 已经在上一步拿到 relayPort —— 老主控缺端口时要用它兜底。
+       */
+      ensureRelayProbe();
     } catch {
       setToken(null);
       state.user = null;
@@ -327,6 +376,129 @@ export async function loadPlatformInfo(): Promise<void> {
       .catch(() => null);
   } catch {
     state.regions = REGIONS.map((r) => ({ ...r, onlineNodes: 0, peers: 0, capacity: 0 }));
+  }
+}
+
+/* ------------------------------------------------------------ 中继节点探测 */
+
+/**
+ * 探测目标 = 节点的 `host:port`。
+ *
+ * 端口缺了就用 `/meta` 的平台端口兜底（只有没升级的老主控会缺这一项），
+ * 还是拿不到就返回 null —— 与其猜一个端口连出个假数字，不如让界面显示「—」。
+ */
+export function relayProbeTarget(node: RelayNodeOption): ProbeTarget | null {
+  const port = node.port && node.port > 0 ? node.port : state.platform.relayPort;
+  return port > 0 ? { host: node.host, port } : null;
+}
+
+/** 这台节点本机测到的延迟（ms）；null = 没测到（只用于展示与排序） */
+export function relayLatencyOf(node: RelayNodeOption): number | null {
+  const target = relayProbeTarget(node);
+  return target === null ? null : (state.relayLatency[probeKey(target)] ?? null);
+}
+
+/**
+ * 把缓存里的延迟整理成建房请求的 `latencyHints`。
+ *
+ * 主控拿它**只在已经合格的候选之间排序**（自动模式选谁、手动模式先挑哪台当兜底）：
+ * 它绝不放松任何硬条件（未接入/停用/权重 0/没余量/区域不符的节点，提示也拉不进来），
+ * 也不影响手动勾选的优先级。测不到（null）的节点不报 —— "没测到"不是"延迟 0"。
+ *
+ * 过时这件事是明摆着的：值就是测速那一刻的握手延迟，之后网络会变。
+ * 这里**不做**刷新/校验，主控也不判过期 —— 它只是个排序偏好，
+ * 真失效的节点由主控的状态与容量兜住，用一组稍旧的相对大小排序仍然比纯按负载更贴近体感。
+ */
+export function relayLatencyHints(): RelayLatencyHint[] {
+  const out: RelayLatencyHint[] = [];
+  for (const node of state.relayNodes) {
+    const ms = relayLatencyOf(node);
+    if (ms !== null && Number.isFinite(ms)) out.push({ nodeId: node.id, ms });
+  }
+  return out;
+}
+
+/** 正在进行的探测：并发调用共用同一个 Promise，不叠加请求（重复点「重新测速」也一样） */
+let probeInFlight: Promise<void> | null = null;
+
+/**
+ * 探测一次：拉节点列表 → 对每个节点的**链接端口**做 TCP 握手（tcping）→ 写进缓存。
+ *
+ * 测的是 tcping 而不是 ICMP：DNS + 路由 + 端口放行 + 握手全算在内，与真正建房走的是同一条路径；
+ * 每个节点连打 3 次取最快的一次，免得偶发丢包让整行显示「—」
+ * （桌面见 electron/tcping.cjs，安卓见 android/web/src/mobile-bridge.ts 的原生实现）。
+ *
+ * 全程静默失败（拉不到列表就保留上一份缓存）：这份数据**只用于"先挑谁"**，
+ * 过时或缺失都不影响节点可用性，也绝不该挡住建房。
+ */
+export function probeRelayNodes(): Promise<void> {
+  if (probeInFlight) return probeInFlight;
+  probeInFlight = (async () => {
+    state.relayProbe.probing = true;
+    try {
+      const res = await api.get<{ nodes: RelayNodeOption[] }>(Routes.clientNodes);
+      const nodes = Array.isArray(res.nodes) ? res.nodes : [];
+      const targets = nodes.map(relayProbeTarget).filter((t): t is ProbeTarget => t !== null);
+      const latency = targets.length > 0 ? await window.mclink.tcping(targets) : {};
+      state.relayNodes = nodes;
+      state.relayLatency = latency;
+      state.relayProbe.ok = true;
+      state.relayProbe.lastProbedAt = new Date().toISOString();
+    } catch {
+      /* 静默：探测失败保留上一份缓存，界面显示「—」或上次测速时间 */
+      state.relayProbe.ok = false;
+    } finally {
+      state.relayProbe.probing = false;
+    }
+  })().finally(() => {
+    probeInFlight = null;
+  });
+  return probeInFlight;
+}
+
+/**
+ * 「有数据就别再测」的后台探测：应用初始化（bootstrap）与登录成功后各调一次。
+ *
+ * 只在**完全没有缓存**时发起：列表拉到了就一直用（见 relayLatencyHints 的"过时不影响可用性"），
+ * 免得每次登录都白跑一轮 tcping；真的想重测就是建房页那颗「重新测速」（probeRelayNodes）。
+ * 调用方**不要 await** —— 初始化不该被一轮 tcping 拖住，失败也静默。
+ */
+export function ensureRelayProbe(): void {
+  if (state.relayNodes.length > 0 || probeInFlight) return;
+  void probeRelayNodes();
+}
+
+/** 建房提交前最多等多久正在进行的探测（毫秒）；见 waitForRelayProbe */
+export const RELAY_PROBE_WAIT_MS = 1500;
+
+/**
+ * 有界等待正在进行的那次探测。
+ *
+ * 为什么需要它：tcping 是异步的，而建房按钮**不禁用**（弱网下禁用会让人永远建不了房），
+ * 所以"手速快过测速"是真实会发生的 —— 那一刻 `relayLatencyHints()` 是空数组，
+ * 主控那侧的延迟键随即失效（退化成"权重 × 余量"排序），正是本轮要修掉的退化路径。
+ * 于是"探测还在跑"时先等一小会儿（最多 `RELAY_PROBE_WAIT_MS`）再取提示。
+ *
+ * ⚠️ 边界（硬要求）：**探测失败/超时绝不能挡住建房** ——
+ * 没有在跑的探测立刻返回 false；在跑的探测最多等这么久；等不到就照常发请求
+ * （空提示照样能建房，只是主控按负载排）。这个函数**不抛异常**。
+ */
+export async function waitForRelayProbe(timeoutMs = RELAY_PROBE_WAIT_MS): Promise<boolean> {
+  const inFlight = probeInFlight;
+  if (!inFlight || !(timeoutMs > 0)) return false;
+  let timer: number | undefined;
+  try {
+    const timeout = new Promise<false>((resolve) => {
+      timer = window.setTimeout(() => resolve(false), timeoutMs);
+    });
+    // 探测本身已经吞掉了所有失败；这里再兜一层，保证"等待"永远不会把错误抛给调用方
+    const done = inFlight.then(
+      () => true,
+      () => true,
+    );
+    return await Promise.race([done, timeout]);
+  } finally {
+    if (timer !== undefined) window.clearTimeout(timer);
   }
 }
 
@@ -563,6 +735,8 @@ export async function login(username: string, password: string): Promise<void> {
   await loadPlatformInfo();
   await refreshEmailStatus();
   connectRealtime();
+  /** 中继探测要等登录之后（`/nodes` 需鉴权）；后台跑，不 await（见 ensureRelayProbe） */
+  ensureRelayProbe();
 }
 
 /** 注册。填了邮箱时主控会顺带寄验证码（返回体里带 emailSent / emailError） */
@@ -585,6 +759,8 @@ export async function register(
   await loadPlatformInfo();
   await refreshEmailStatus();
   connectRealtime();
+  /** 注册完就是登录态了：探测照 login() 一样在后台补一次（`/nodes` 需鉴权） */
+  ensureRelayProbe();
   return { emailSent: result.emailSent === true, emailError: result.emailError ?? null };
 }
 
@@ -630,6 +806,9 @@ export async function createRoom(input: {
    * 主控用它把**已经合格的**候选排个序：自动模式决定"选谁"，手动模式决定"先挑哪台当兜底"。
    * 手选的 nodeIds 仍然优先；传空数组（或干脆不传）＝ 主控完全按负载打分，老行为不变。
    * 延迟是这一刻测的，之后会变 —— 主控不做过期判断，只当排序偏好用。
+   *
+   * ⚠️ 调用方（建房页）在探测还在进行时应当先 `await waitForRelayProbe()`
+   * 再调 `relayLatencyHints()`，否则"手速快过测速"会让这里永远收到空数组（见那里的说明）。
    */
   latencyHints?: RelayLatencyHint[];
 }): Promise<Room> {

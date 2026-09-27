@@ -195,26 +195,48 @@ export function resolveMemberLink(rows: PeerReport[], hostIp: string, isHost: bo
  */
 export function relayScore(row: NodeRow, utilization: number): number {
   const peerHeadroom = Math.max(0, row.capacity_peers - row.peers) / Math.max(1, row.capacity_peers);
-  const bwHeadroom = 1 - Math.min(1, Math.max(0, utilization));
+  const bwHeadroom = freeBandwidth(utilization);
   const penalty = row.status === 'degraded' ? DEGRADED_PENALTY : 0;
   return row.weight * Math.min(peerHeadroom, bwHeadroom) - penalty;
 }
 
 /**
- * 延迟并列带（ms）：**在权重（且余量）相同的前提下**，两个候选的实测延迟差在这个范围内
- * 就算「同一档」，交回 relayScore 决胜（余量多、没降级的优先）。
+ * 空余带宽比例 `1 − utilization`（夹到 0–1）。
  *
- * 为什么是 20ms：客户端的 tcping 是**3 次 TCP 握手取最快**，同城/同网节点上重复测量的抖动
- * 仍有 ±5–15ms（公网路由、家宽上行调度、DNS 递归）；不带并列带的严格排序等于让测量噪声决定选谁
- * —— 权重相同的一对节点里，3ms 的"优势"不该盖过"一台快满、一台很空"。
+ * 它与 `relayScore` 里的带宽余量、以及档内决胜的键 ③ 是**同一个量**，
+ * 所以口径只在这里写一次，别处都调它 —— 三处各算一遍迟早会漂。
+ * 注意它**只**看带宽：档内先比它，是因为延迟已经落在 5ms 之内（见 LATENCY_TIE_BAND_MS），
+ * 那点差别不值得纠结，而"这台还有多少带宽"是实打实的。
+ */
+export function freeBandwidth(utilization: number): number {
+  return 1 - Math.min(1, Math.max(0, utilization));
+}
+
+/**
+ * 延迟并列带（ms）：**在权重（且余量）相同的前提下**，实测延迟落在同一段区间内的候选
+ * 就算「同一档」，交回「空余带宽 → relayScore」决胜（谁更空、有没有降级）。
+ *
+ * 为什么是 5ms（本轮从 20ms 收紧）：客户端的 tcping 是**3 次 TCP 握手取最快**，
+ * 同城/同网节点上重复测量的抖动本来就小（取最快之后典型只有 1–3ms），
+ * **同档容差 5ms** 已经足够盖住这点测量噪声；而档内的胜负本轮已经交给"空余带宽"
+ * （见 selectRelays 的键 ③），所以带子不需要、也不该再宽到 20ms ——
+ * 那样会把"确实差了一截（10-20ms）"的节点也算成并列，让更空的远节点抢走本该更近的那台。
+ * 反过来，落在 5ms 之内的几毫秒差异不值得纠结：那点差别是噪声，而"一台快满、一台很空"是事实。
  * 这条带子也吞不掉跨区域的真实差距（华东↔华南/华北 30–60ms、出境 100ms 起）：
  * 权重相同时它们照样按延迟排队。
  *
- * ⚠️ 生效范围（本次「权重优先」改造的重点）：并列带**只在权重相同、且两者都真有余量时才生效**。
+ * ⚠️ 语义是**区间极差**，不是两两比较：同一档 = 一段连续区间，
+ * 区间内 `(最大 ms − 最小 ms) ≤ 本带子`。用户的原话是"取各个节点的差值，差值不超过 5ms
+ * 才算同一档"，但那**不满足传递性**（0/4/8：0↔4 ✓、4↔8 ✓、0↔8 ✗），
+ * 拿它当排序依据会让结果依赖引擎的比较次数（同样的输入可能排出不同结果）。
+ * 用区间极差实现则稳定、可复现，而且语义更严格：
+ * 一档里最远的两台相差也不超过 5ms，任意两台自然都在带内。
+ *
+ * ⚠️ 生效范围（「权重优先」改造的重点）：并列带**只在权重相同、且两者都真有余量时才生效**。
  * 权重不同一律由权重说了算 —— 高权重节点哪怕慢 90ms 也照样赢，因为权重是运营方的
  * 定价/意愿表达，而延迟只是同一档位内部的体感微调。
  */
-export const LATENCY_TIE_BAND_MS = 20;
+export const LATENCY_TIE_BAND_MS = 5;
 
 /** 调度候选：节点行 + 该节点当前的带宽利用率（由调用方采样传入，好让下面的选择函数保持纯） */
 export interface RelayCandidate {
@@ -248,6 +270,8 @@ interface RankedCandidate {
   weight: number;
   /** 键 ②：实测延迟 ms；`+∞` = 没有提示（延迟未知，不优待） */
   ms: number;
+  /** 键 ③（只在延迟并列带内比）：空余带宽 `1 − utilization`，越大越优先 */
+  bwFree: number;
 }
 
 /**
@@ -255,13 +279,22 @@ interface RankedCandidate {
  *
  * 排序键（依次比较，前一条能分出胜负就不看后面）：
  *   0. **真有余量**（`hasHeadroom`）的排前面 —— 硬条件的延伸，不是偏好（理由见该函数注释）。
- *      真的一个有余量的候选都没有时（`scheduleRelays` 的带宽回退分支），它们之间照旧按 ①–④ 排。
+ *      真的一个有余量的候选都没有时（`scheduleRelays` 的带宽回退分支），它们之间照旧按 ①–⑤ 排。
  *   ① `weight` 降序 —— **主键**
  *   ② 权重相同才比延迟：有提示且真有余量的按 ms 升序；没有提示的排在后面
  *      （没提示 = 延迟未知，不优待；沿用改造前"有提示的排在没提示的之前"的相对关系）
- *   ③ 仍相同 → `relayScore` 降序（= weight × min(人数余量, 带宽余量) − 降级罚分；
+ *   ③ **延迟落在并列带内（区间极差 ≤ `LATENCY_TIE_BAND_MS`）时，先比空余带宽**
+ *      `1 − utilization` 降序 —— "延迟在 5ms 之内就别纠结那几毫秒，挑带宽最空的"。
+ *      `utilization` 是调用方采样好传进来的（见 `RelayCandidate`），这里不重新采一次。
+ *   ④ 仍相同 → `relayScore` 降序（= weight × min(人数余量, 带宽余量) − 降级罚分；
  *      权重在这一步已经相等，所以它实际比的是"哪台更空、有没有降级"）
- *   ④ 仍相同 → `peers` 升序（改造前就有的收尾判据，保证同分结果稳定）
+ *   ⑤ 仍相同 → `peers` 升序（改造前就有的收尾判据，保证同分结果稳定）
+ *
+ * "主中继 + 兜底中继"就是**一次取前两名**：同一个函数、同一套规则、同一份候选池，
+ * 只是 `max = 2`（见 `RoomService.create`）。所以兜底不是"另一套降级规则"，
+ * 而是"这套规则下的第二名"；两个名次天然不重复（同一个节点在候选池里只出现一次）。
+ * 每次票据请求都重新算一遍（`utilization` 也是实时采样），于是"这台满了就先挑另一台"
+ * 会在下一张票据里自动生效 —— 不需要任何"浮动切换"状态机。
  *
  * 为什么权重是主键、延迟只是次键（用户拍板的语义）：
  *   · `weight` 是运营方在控制台里写下的**意图**（专线/贵节点调高、临时顶不住的调低），
@@ -297,8 +330,18 @@ export function selectRelays(
   }
 
   const score = (candidate: RelayCandidate): number => relayScore(candidate.row, candidate.utilization);
-  /** 键 ③④：分数降序，同分看 peer 少的（改造前就在用的比较规则） */
+  /** 键 ④⑤：分数降序，同分看 peer 少的（改造前就在用的比较规则） */
   const byScore = (a: RelayCandidate, b: RelayCandidate): number => score(b) - score(a) || a.row.peers - b.row.peers;
+  /**
+   * 键 ③④：**档内决胜** —— 先比空余带宽降序，再回到 byScore。
+   *
+   * 为什么带宽在档内排第一：延迟已经落进 5ms 的并列带（`LATENCY_TIE_BAND_MS`），
+   * 那几毫秒是测量噪声级别的差别，不值得纠结；而"这台还剩多少带宽"是实打实的事实
+   * —— 同样是 12ms 的两台，一台用掉 8 成、一台空着，当然挑空的那台。
+   * 注意这里**只**比带宽余量：人数余量与降级罚分留给 byScore，口径不重复。
+   */
+  const byBand = (a: RankedCandidate, b: RankedCandidate): number =>
+    b.bwFree - a.bwFree || byScore(a.candidate, b.candidate);
   /** 提示只在"真的还能接新房间"的节点上算数（见 hasHeadroom） */
   const hintedMs = (candidate: RelayCandidate): number | undefined =>
     hasHeadroom(candidate) ? hintMs.get(candidate.row.id) : undefined;
@@ -308,10 +351,15 @@ export function selectRelays(
     headroom: hasHeadroom(candidate),
     weight: candidate.row.weight,
     ms: hintedMs(candidate) ?? Number.POSITIVE_INFINITY,
+    bwFree: freeBandwidth(candidate.utilization),
   }));
 
   /**
-   * 第一趟：键 0 → ① → ② → ③④。
+   * 第一趟：键 0 → ① → ②（+ 一个稳定的收尾键）。
+   *
+   * 这一趟只负责把**档序**排出来：同权重、同余量的节点按 ms 升序，好让第二趟切"连续区间"。
+   * 收尾键仍是老的 `byScore`，所以**没上报延迟的那一队（ms = +∞）内部顺序与改造前逐位一致**
+   * （它们不参与档内决胜）；有提示的档会在第二趟被 byBand 重排，这里排成什么不影响结果。
    * sort 是稳定的：完全并列的候选保持调用方给的顺序（`listSchedulable` 本来就是 weight desc）。
    */
   ranked.sort(
@@ -327,9 +375,13 @@ export function selectRelays(
    * 第二趟：只在**键 0 与权重都相同**的连续区间内做"延迟并列带"。
    *
    * 为什么按"连续区间"而不是两两比较来判定并列：`|a-b| ≤ 带子` 不满足传递性
-   * （0ms/15ms/30ms 里首尾相差 30ms 却各自与前一个"并列"），拿它当比较器会让排序结果
-   * 依赖引擎的比较次数。第一趟已经按延迟排好序，取一段"最高与最低相差 ≤ 带子"的连续区间，
-   * 区间内任意两个节点自然都在带子内，语义与结果都稳定。
+   * （0ms/4ms/8ms 里首尾相差 8ms 却各自与前一个"并列"），拿它当比较器会让排序结果
+   * 依赖引擎的比较次数（同一份输入可能排出不同结果）。第一趟已经按延迟排好序，
+   * 这里取一段"最高与最低相差 ≤ 带子"的连续区间（**区间极差**，见常量注释），
+   * 区间内任意两个节点自然都在带子内，语义与结果都稳定、可复现。
+   *
+   * 带子内部不是按延迟排 —— 顺序由 byBand（空余带宽 → 打分）决定，
+   * 所以「主中继」= 这一档里最空的那台，而不是"最快但快得没意义"的那台。
    */
   const picked: NodeRow[] = [];
   for (let start = 0; start < ranked.length; ) {
@@ -349,6 +401,7 @@ export function selectRelays(
       if (!bandHead) break;
       if (!Number.isFinite(bandHead.ms)) {
         // 剩下的全是无提示节点：第一趟已经把它们按打分排好了，直接收尾
+        // （没上报延迟的节点永远排在最后，不参与档内决胜 —— 本轮没动这条）
         for (; cursor < stop; cursor += 1) {
           const rest = ranked[cursor];
           if (rest) picked.push(rest.candidate.row);
@@ -361,8 +414,8 @@ export function selectRelays(
         if (!Number.isFinite(ms) || ms - bandHead.ms > LATENCY_TIE_BAND_MS) break;
         end += 1;
       }
-      // sort 稳定：档内同分的节点保持延迟升序，不会因为决胜把更低延迟的挤到后面
-      const band = ranked.slice(cursor, end).sort((a, b) => byScore(a.candidate, b.candidate));
+      // sort 稳定：档内并列（空余带宽与打分都相同）的节点保持延迟升序，不会因为决胜把更低延迟的挤到后面
+      const band = ranked.slice(cursor, end).sort(byBand);
       for (const entry of band) picked.push(entry.candidate.row);
       cursor = end;
     }
@@ -512,28 +565,46 @@ export class RoomService {
 
     const zone = input.zone && input.zone !== '' ? input.zone : 'auto';
     /**
-     * 中继节点：用户指定优先，**平台始终补一个兜底**。
+     * 中继节点：用户指定优先，**平台再补一个兜底**，且与已选的不重复。
      *
-     * 为什么要兜底：用户 pin 的节点掉线/被禁用时，房间不能直接断 ——
-     * 兜底节点让它继续能玩，房间页再提示"当前走的是兜底"。
-     * 兜底挑选时会**排除用户已选的**，避免重复占一个名额。
+     * 自动模式（没有手选）固定下发 **2 个不同节点**：`selectRelays` 的**第一顺位 = 主中继**、
+     * **第二顺位 = 兜底中继** —— 两个名次来自**同一套规则**（权重 → 5ms 并列带 → 空余带宽 → 打分，
+     * 见 `selectRelays`），只是一次取两个。所以"兜底"不是另一套降级规则，而是这套规则下的第二名；
+     * 同一个节点在候选池里只出现一次，两名天然不重复。
      *
-     * `latencyHints` 只喂给自动调度：自动模式下它就是"在**同权重**的候选里选谁"，
-     * 手动模式下它只决定"先挑哪台当兜底"。手选节点照旧原样优先（`#validatePickedNodes` 只看硬条件，不看延迟）。
+     * 手选模式：手选节点照旧原样优先（`#validatePickedNodes` 只看硬条件、不看延迟），
+     * 兜底从调度结果里挑第一个**没被手选**的，避免重复占名额。
+     *
+     * `latencyHints` 只喂给自动调度：自动模式下它就是"在同权重、延迟又要并列的候选里选谁"，
+     * 手动模式下它只决定"先挑哪台当兜底"。
+     *
+     * ⚠️ **浮动切换是天然的，不需要状态机**：票据每次请求都现算，`utilization` 也是实时采样
+     * （见 `scheduleRelays`），所以"这台满了 → 下次先挑另一台"会在**下一张票据**里自动生效。
+     * 已经进了房间的玩家**不会**因为这次切换被踢：他们的 peer 列表来自加入时那张票据，
+     * 只有重连/重进（重新拉票据）才会拿到新的中继排序。
      */
     const picked = this.#validatePickedNodes(input.nodeIds ?? []);
     const auto = this.scheduleRelays(zone, input.latencyHints ?? [], 2);
-    const fallback = auto.find((id) => !picked.ids.includes(id)) ?? auto[0] ?? null;
-    const relayNodeIds = [...picked.ids, ...(fallback ? [fallback] : [])];
+    /** 平台补的那一个兜底：自动模式 = 第二顺位；手动模式 = 调度结果里第一个没被手选的 */
+    const fallback =
+      picked.ids.length > 0 ? (auto.find((id) => !picked.ids.includes(id)) ?? null) : (auto[1] ?? null);
+    const relayNodeIds = picked.ids.length > 0 ? [...picked.ids, ...(fallback ? [fallback] : [])] : auto;
     const nodeSelection = {
       requested: input.nodeIds ?? [],
       accepted: picked.ids,
       rejected: picked.rejected,
       fallback,
     };
-    // 没有子节点时，主控自身中继仍可作为唯一入口，别让单机部署无法建房
-    if (relayNodeIds.length === 0 && !this.masterRelayAvailable()) {
-      throw HttpError.unavailable('当前没有可用的中继节点，请联系管理员');
+    /**
+     * 硬守卫：**一个可调度的子节点都没有，就不给建房**。
+     *
+     * 以前这里靠"主控自身中继还开着（`masterRelayAvailable`）"放行，于是单机部署时
+     * 票据里会出现主控地址（反代在国内之外时下发的是反代那台，正是本轮要根除的行为）。
+     * 本轮取消了主控兜底，就只剩"明确报错"这一条路：宁可不给建房，也不下发一个连不上的入口。
+     * 文案要让玩家自己看得懂、也知道找谁 —— 客服照这句话就能判断是"平台没有在线子节点"。
+     */
+    if (relayNodeIds.length === 0) {
+      throw HttpError.unavailable('当前没有可用的中继节点，暂时无法建房，请稍后再试或联系客服');
     }
 
     const networkSecret = generateNetworkSecret(randomBytesBuf, 32);
@@ -904,8 +975,14 @@ export class RoomService {
   /**
    * 主控自身中继端点。
    *
-   * 它不在 relay_nodes 表里（那是「子节点」），但永远可用，因此把它作为
-   * 票据里的兜底入口——这样只部署一台主控、还没铺子节点时也能正常联机。
+   * ⚠️ **它不再参与票据生成**（本轮改动）。以前 `ticket()` 会无条件把它追加成
+   * "兜底入口"，于是地址只能按 `relayPublicHost → publicBaseUrl → 请求 Host 头` 三级推导 ——
+   * 反代在国内之外的部署会把**反代那台**的地址下发给玩家（玩家当然连不上），
+   * 这正是本轮要根除的行为。现在每房的中继**全部**来自 `relay_nodes` 的调度结果
+   * （主 + 兜底两个不同子节点，见 `create()`）。
+   *
+   * 函数本身保留：将来把主控注册成一台普通子节点之后，它就和其他节点一样走正常调度，
+   * 那时这个地址推导（包括 Host 头这一级）仍然用得上。
    */
   masterRelayEndpoint(hostHint?: string | null): RelayEndpoint | null {
     const et = this.config.easytier;
@@ -929,12 +1006,25 @@ export class RoomService {
     };
   }
 
-  /** 主控中继是否被配置为可用（单机部署的最低要求） */
+  /**
+   * 主控中继是否被配置为可用（`MCLINK_AUTOSTART_RELAY=true` 且端口 > 0）。
+   *
+   * ⚠️ 本轮起**没有任何调度路径读它**：主控不再作为票据兜底，建房守卫改成
+   * "一个可调度子节点都没有就明确报错"（见 `create()`）。保留它是给单机部署自查
+   * 与将来"主控注册成普通节点"用 —— **不要**再拿它当兜底依据。
+   */
   masterRelayAvailable(): boolean {
     return this.config.autoStartRelay && this.config.easytier.relayPort > 0;
   }
 
-  /** 生成客户端启动 EasyTier 所需的一切 */
+  /**
+   * 生成客户端启动 EasyTier 所需的一切。
+   *
+   * `hostHint` 本轮起**不再被使用**：它唯一的用途是推导主控自身中继的地址
+   * （请求的 Host 头是最后一级回退），而主控已经不参与票据了。
+   * 参数保留是为了不改动 API 层（`api/rooms.ts` 仍在传 `ctx.req.headers.host`）；
+   * 等主控注册成普通子节点时，它会重新在 `masterRelayEndpoint()` 里派上用场。
+   */
   ticket(
     roomId: string,
     userId: string,
@@ -977,15 +1067,31 @@ export class RoomService {
       };
     });
 
-    const master = this.masterRelayEndpoint(hostHint);
-    if (master && !relays.some((r) => r.url === master.url)) relays.push(master);
+    /*
+     * 这里以前会无条件把 `masterRelayEndpoint(hostHint)` 追加进 relays（主控自身中继兜底）。
+     * 本轮取消：票据里的中继**只**来自房间调度结果（建房时写进 `room.relayNodeIds` 的那 1–2 个
+     * 子节点），不再有"主控那条"。理由见 `masterRelayEndpoint()` 的注释。
+     */
+    if (relays.length === 0) {
+      /*
+       * 房间建好之后它的节点全被停用/下线才会走到这里（建房时已经保证至少一个）。
+       * 票据照发（客户端仍能起来），但没有可连的中继入口 —— 留一条 warn，
+       * 让客服能按房间号在主控日志里查到"他为什么连不上"。
+       */
+      log.warn('票据里没有任何可用中继：房间的中继节点都不可用了', { room: roomId });
+    }
 
     const virtualIp = member.virtual_ip ?? hostIpCidr(room.subnetSlot);
     const hostMember = this.rooms.findMember(roomId, room.hostUserId);
     const hostVirtualIp = (hostMember?.virtual_ip ?? hostIpCidr(room.subnetSlot)).replace(/\/\d+$/, '');
     const isHost = room.hostUserId === userId;
 
-    // 客户端启动时至少要有 1 个中继入口，否则无法加入虚拟网络
+    /*
+     * 客户端启动时至少要有 1 个中继入口，否则无法加入虚拟网络。
+     * 主控不再兜底之后，`relays` 为空确实是可能的（见上面的 warn）——那时 peers 为空数组，
+     * 客户端实例会起来但谁也连不上；这条不做二次兜底（用户明确要求不再加别的兜底路径），
+     * 界面侧由房间页的「连不上」诊断与这条日志负责说清。
+     */
     const peers = relays.length > 0
       ? relays.flatMap((r) => [{ uri: r.url }, { uri: r.udpUrl }])
       : [];
@@ -1197,12 +1303,18 @@ export class RoomService {
    *
    * 硬条件在这一层筛完（`listSchedulable` 的状态/禁用/权重 + 带宽余量 + 区域），
    * **延迟提示一条都不放松**；通过硬条件的节点交给纯函数 `selectRelays` 排序：
-   * **权重降序 → 权重相同才比延迟 → relayScore → peers**（见那里的注释）。
+   * **权重降序 → 权重相同才比延迟 → 延迟并列带（区间极差 ≤5ms）内先比空余带宽
+   * → relayScore → peers**（见那里的注释）。
+   *
+   * `max = 2` 时返回的就是「主中继 + 兜底中继」两个**不同**节点（一次取前两名）。
    *
    * `latencyHints` 缺省（老客户端 / 改区域触发的重调度）＝ 权重优先、同权重再按 relayScore；
    * 注意这**不再**等于改造前的纯 relayScore 排序（权重成了第一判据，见 `selectRelays`）。
    * 指定区域时该区域无可用节点仍回退到全局（并记日志），
    * 避免玩家因为某个区域没部署节点而完全无法联机。
+   *
+   * ⚠️ 这里**不缓存**任何"谁被选中"的状态：每次调用都重新采样 `utilization` 并重新排序，
+   * 所以"某台满了就换一台"是天然的浮动切换（下一张票据自动生效），不需要状态机。
    */
   scheduleRelays(zone: string, latencyHints: readonly RelayLatencyHint[] = [], max = 2): string[] {
     const all = this.nodes.listSchedulable();
@@ -1211,6 +1323,7 @@ export class RoomService {
      * 带宽利用率在这里采样一次，筛选与打分共用同一个值。
      * 两次调用会各读一次 EWMA —— 同一 tick 内结果相同，但写死"用的就是这一次采样"
      * 更不容易在以后加入 await 时出现"按 A 判定还有富余、按 B 打分"的错位。
+     * 档内决胜（键 ③）用的也是这**同一个**值，不另采一次。
      */
     const candidates: RelayCandidate[] = all.map((row) => ({ row, utilization: this.utilizationOf(row) }));
 
@@ -1222,8 +1335,10 @@ export class RoomService {
      * 为了缓解负载而制造一次全网瞬断是不划算的。房间是短命的（TTL + 空房回收），
      * 不再分配新房间就能让这台节点自然排空。
      *
-     * 但如果**所有**候选都吃紧，就不能空手而归：那样新房间会连中继都没有，
-     * 只剩主控兜底。这时退回全量候选并记一条日志（宁可挤一点，也别把房间挤没了）。
+     * 但如果**所有**候选都吃紧，就不能空手而归：那样新房间连一个中继都没有
+     * （本轮又取消了主控兜底，确实没有第二条路了）。这时退回全量候选并记一条日志
+     * （宁可挤一点，也别把房间挤没了）。注意这是**最后的手段**，不是"兜底节点"：
+     * 它决定的只是"这一轮从哪些候选里挑"，房间拿到的仍然是前两名。
      */
     const relaxed = candidates.filter((c) => !this.isBandwidthBusy(c.row));
     const pool = relaxed.length > 0 ? relaxed : candidates;

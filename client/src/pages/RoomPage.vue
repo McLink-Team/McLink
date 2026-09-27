@@ -755,7 +755,7 @@ async function doLeave(): Promise<void> {
               </div>
             </div>
 
-            <!-- 中继节点：平台下发的兜底入口。多个是刻意的冗余，不是"你连了两台服务器" -->
+            <!-- 中继节点：平台下发的入口（主 + 兜底两个不同子节点）。多个是刻意的冗余，不是"你连了两台服务器" -->
             <div v-if="relayPeers.length > 0" class="path-group">
               <div class="path-group-head">
                 <span class="path-group-title">中继节点</span>
