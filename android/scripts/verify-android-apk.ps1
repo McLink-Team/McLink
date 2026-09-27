@@ -8,6 +8,7 @@
 # 许可材料在不在包里，全都只有解包才能确认。构建成功 ≠ 包是对的。
 
 param(
+    [string]$ExpectedAbis = 'arm64-v8a',
     [string]$Apk = 'F:\mc\android\android\app\build\outputs\apk\debug\app-debug.apk',
     [string]$JniLibs = 'F:\mc\android\android\app\src\main\jniLibs'
 )
@@ -57,7 +58,12 @@ try {
             Check ("包含 " + $want) $true ($detail + "（jniLibs 源文件不在本机，跳过字节比对）")
         }
     }
-    $extra = $names | Where-Object { $_ -ne $want }
+    # 允许的条目 = 每个预期 ABI 下我们那一个 .so（模拟器包会同时带 arm64 与 x86_64）
+    $allowed = $ExpectedAbis.Split(",") | ForEach-Object { "lib/" + $_.Trim() + "/libeasytier_android_jni.so" }
+    $extra = $names | Where-Object { $_ -notin $allowed }
+    # 允许的条目 = 每个预期 ABI 下我们那一个 .so（模拟器包会同时带 arm64 与 x86_64）
+    $allowed = $ExpectedAbis.Split(",") | ForEach-Object { "lib/" + $_.Trim() + "/libeasytier_android_jni.so" }
+    $extra = $names | Where-Object { $_ -notin $allowed }
     Check '没有多余的 .so / 多余的 ABI' ($extra.Count -eq 0) $(if ($extra.Count -eq 0) { '只有 arm64-v8a 的 libeasytier_android_jni.so' } else { '多出: ' + ($extra -join ', ') })
 
     # ---------- 2. 许可材料 ----------

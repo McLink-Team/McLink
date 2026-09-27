@@ -99,3 +99,6 @@ app/src/main/assets/public
 app/src/main/assets/capacitor.config.json
 app/src/main/assets/capacitor.plugins.json
 app/src/main/res/xml/config.xml
+
+# 模拟器专用的 x86_64 原生库：由 android/native/build-jni.ps1 -Abi x86_64 生成（22MB，可重建），不入库
+app/src/main/jniLibs/x86_64/

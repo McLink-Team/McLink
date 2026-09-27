@@ -494,3 +494,23 @@ extern crate easytier_ffi;
   （而不是抛成 Java 异常让界面显示错误）。上游 Terracotta 在 Android 上特意改成 `panic = "unwind"` 就是为此。
   要改的话用 `CARGO_PROFILE_RELEASE_PANIC=unwind` 重编（约 20 分钟全量），本轮没做。
 - 真机测试清单见 `docs/android-vpn.md` §5.1。
+### 9.6 为模拟器编 x86_64（可选）
+
+PC 上的 Android 模拟器是 **x86_64**，而默认只入库 arm64-v8a —— 只带 arm64 的 APK 在模拟器上
+System.loadLibrary 会直接 UnsatisfiedLinkError（真机没有任何问题）。要在模拟器上测：
+
+```powershell
+# 1) 给仓库钉住的那条工具链装 target（注意 --toolchain：仓库有 rust-toolchain.toml，
+#    直接 ustup target add 会装到默认工具链上，结果就是 'can't find crate for std'）
+rustup target add x86_64-linux-android --toolchain 1.95-x86_64-pc-windows-gnu
+# 2) 编（首次为这个架构重编全部依赖，约 13 分钟；产物 ~22MB）
+#    BINDGEN_EXTRA_CLANG_ARGS 的路径同样必须用正斜杠，sysroot 指向 .../usr/include/x86_64-linux-android
+cargo ndk -t x86_64 build --release
+# 3) 产物放进 jniLibs/x86_64/（该目录**不入库**，见 android/android/.gitignore）
+# 4) 打双 ABI 的包（参数要加引号，否则 PowerShell 把逗号当数组分隔符）
+.\\gradlew.bat assembleDebug '-PmclinkAbis=arm64-v8a,x86_64'
+# 5) 验收要声明预期 ABI
+android/scripts/verify-android-apk.ps1 -ExpectedAbis 'arm64-v8a,x86_64'
+```
+
+**正式包仍然只带 arm64-v8a**（23MB vs 44MB）—— 模拟器包只用于自测。
