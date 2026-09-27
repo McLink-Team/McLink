@@ -547,8 +547,8 @@ interface MetaForUpdate {
    * 按平台分好的产物（主控 side buildClientDownloads）。
    *
    * 为什么更新检查要看它：`clientVersion` / `clientDownloadUrl` 是**桌面端**那条线
-   * （平台设置里的「客户端版本」，现在是 1.0.7）。安卓有自己的版本线（0.2.x），
-   * 拿桌面版本去比就会出现"手机上提示有新版本 1.0.7，点开给的是 Windows 安装包"。
+   * （平台设置里的「客户端版本」，现在是 1.0.8）。安卓有自己的版本线（1.0.x），
+   * 拿桌面版本去比就会出现"手机上提示有新版本 1.0.8，点开给的是 Windows 安装包"。
    */
   clientDownloads?: { android?: MetaArtifact | null } | null;
 }

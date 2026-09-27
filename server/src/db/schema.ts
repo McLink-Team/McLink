@@ -553,6 +553,35 @@ update settings
  where key = 'platform'
    and json_extract(value, '$.clientDownloadUrl') = '/downloads/McLink-Setup-1.0.6-x64.exe';
 `;
+/**
+ * V21：客户端版本 1.0.7 → 1.0.8。
+ *
+ * 1.0.8 改的是**中继调度**，不是界面：主控不再无条件当"兜底中继"，
+ * 每个房间下发 2 台**不同子节点**（主中继 + 兜底中继），节点列表里不再混进主控自己。
+ * 挑选顺序：硬过滤（在线/容量/白名单）→ 权重降序 → 客户端上报延迟升序
+ * （并列带 20ms 收到 5ms，档内先比**空余带宽** 1−利用率）→ 兜底再避开主中继那台。
+ *
+ * 为什么这条迁移值得写清楚：以前"区域没节点也能建房"靠的就是主控兜底，
+ * 而现在**一个可调度子节点都没有就明确 503**（文案：「当前没有可用的中继节点，暂时无法建房」）。
+ * 单机部署想让主控参与转发，得把主控注册成一台普通子节点（见 docs/deployment.md）。
+ * 配套的客户端改动：延迟探测改到初始化时一次性做完（建房时直接读缓存，不再等）。
+ *
+ * 这次同样没有**库结构**变化，迁移只负责"平台对外宣称的客户端版本与下载地址"；
+ * 纪律同前：只动"还停在上一版默认值"的部署，管理员手改过的一律不碰。
+ */
+const V21_CLIENT_1_0_8 = `
+update settings
+   set value = json_set(value, '$.clientVersion', '1.0.8'),
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ where key = 'platform'
+   and json_extract(value, '$.clientVersion') = '1.0.7';
+
+update settings
+   set value = json_set(value, '$.clientDownloadUrl', '/downloads/McLink-Setup-1.0.8-x64.exe'),
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ where key = 'platform'
+   and json_extract(value, '$.clientDownloadUrl') = '/downloads/McLink-Setup-1.0.7-x64.exe';
+`;
 export const MIGRATIONS: readonly string[] = [
   V1_INITIAL,
   V2_RELAY_ROOM_MAP,
@@ -574,6 +603,7 @@ export const MIGRATIONS: readonly string[] = [
   V18_CLIENT_1_0_5,
   V19_CLIENT_1_0_6,
   V20_CLIENT_1_0_7,
+  V21_CLIENT_1_0_8,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
