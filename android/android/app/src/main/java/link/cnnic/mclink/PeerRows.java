@@ -99,7 +99,9 @@ final class PeerRows {
     private static JSObject row(JSONObject route, JSONObject peer) {
         if (route == null || peer == null) return null;
         JSObject row = new JSObject();
-        row.put("ipv4", ipv4Of(route.optJSONObject("ipv4_addr")));
+        String ipv4 = ipv4Of(route.opt("ipv4_addr"));
+        if (ipv4.isEmpty()) reportUnparsedAddress(route);
+        row.put("ipv4", ipv4);
         row.put("hostname", route.optString("hostname", ""));
         int cost = route.optInt("cost", 0);
         row.put("cost", cost == 1 ? "p2p" : "relay(" + cost + ")");
@@ -117,17 +119,61 @@ final class PeerRows {
     }
 
     /**
-     * `common.Ipv4Inet` 在 JSON 里是个对象：`{address: <uint32>, network_length: <n>}`。
+     * `common.Ipv4Inet` 在 JSON 里的形状 —— **真机上见过的那一种**（APK 1.0.2 的教训）。
      *
-     * 注意 `address` 是**无符号 32 位**：用 `optInt` 会在 ≥ 2^31（即 128.0.0.0 以上）时变成负数，
-     * 所以必须 `optLong` 再自己按位取 —— 我们的房间网段（10.200.x.x）碰不到这个边界，
-     * 但换个人复用这段代码就会踩，所以这里写对。
+     * 我最初按 proto 推断成 `{address: <uint32>, network_length: <n>}`，结果真机上每个节点都显示
+     * `0.0.0.0`：`optLong("address")` 取到的是**对象**（里面还有一层 `addr`），于是退化成 0。
+     *
+     * 所以这里改成**宽容解析**：把见过的所有可能形状都试一遍 ——
+     *   · 字符串 `"10.200.0.2/24"` 或 `"10.200.0.2"`（上游对 Ipv4Inet 有自定义 serde 的可能）
+     *   · 对象里 `address` 是数字 / 字符串 / `{addr: N}`（proto 生成的嵌套结构）
+     *   · 对象里直接有 `addr`
+     * 全都认不出来时返回**空串**（界面显示「—」），**绝不返回 `0.0.0.0`** ——
+     * 一个看起来像地址的错值，比一个明确的"没有"更难查。
+     *
+     * 另外：第一次认不出来时会把原始 JSON 打到 logcat（只打一次），
+     * 这样万一还有第四种形状，`adb logcat -s McLinkPeerRows:W` 一条命令就能看到。
      */
-    private static String ipv4Of(JSONObject inet) {
-        if (inet == null) return "";
-        long address = inet.optLong("address", 0L) & 0xFFFFFFFFL;
+    private static String ipv4Of(Object raw) {
+        if (raw == null) return "";
+        if (raw instanceof String) return dotted((String) raw);
+        if (!(raw instanceof JSONObject)) return "";
+        JSONObject inet = (JSONObject) raw;
+
+        Object address = inet.opt("address");
+        String fromAddress = dottedFromValue(address);
+        if (!fromAddress.isEmpty()) return fromAddress;
+
+        return dottedFromValue(inet.opt("addr"));
+    }
+
+    /** 把"可能是数字 / 字符串 / `{addr: N}` 对象"的值转成点分十进制；认不出来返回空串。 */
+    private static String dottedFromValue(Object value) {
+        if (value instanceof Number) return dottedFromLong(((Number) value).longValue());
+        if (value instanceof String) return dotted((String) value);
+        if (value instanceof JSONObject) {
+            JSONObject nested = (JSONObject) value;
+            Object addr = nested.opt("addr");
+            if (addr instanceof Number) return dottedFromLong(((Number) addr).longValue());
+            if (addr instanceof String) return dotted((String) addr);
+        }
+        return "";
+    }
+
+    /** 数字形式的 IPv4（**无符号 32 位**：`optInt` 在 ≥ 2^31 时会变负数，所以用 long 再按位取）。 */
+    private static String dottedFromLong(long value) {
+        long address = value & 0xFFFFFFFFL;
         return ((address >> 24) & 0xFF) + "." + ((address >> 16) & 0xFF) + "." + ((address >> 8) & 0xFF) + "."
                 + (address & 0xFF);
+    }
+
+    /** 字符串形式：可能是 `"10.200.0.2/24"`，只取地址部分并做基本校验。 */
+    private static String dotted(String value) {
+        String text = value == null ? "" : value.trim();
+        int slash = text.indexOf('/');
+        if (slash >= 0) text = text.substring(0, slash).trim();
+        if (!text.matches("\\d{1,3}(\\.\\d{1,3}){3}")) return "";
+        return text;
     }
 
     /** 上游口径：优先"默认连接"，否则所有连接里最小的那个；都没有 → null。 */
@@ -202,5 +248,28 @@ final class PeerRows {
         if (stun == null) return "Unknown";
         int code = stun.optInt("udp_nat_type", 0);
         return code >= 0 && code < NAT_TYPES.length ? NAT_TYPES[code] : "Unknown";
+    }
+
+    /** 原始 route JSON 只打一次，避免每几秒刷一次日志。 */
+    private static final java.util.concurrent.atomic.AtomicBoolean REPORTED_SHAPE =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+
+    /**
+     * 地址解析不出来时，把**原始 JSON** 打出来（只打一次）。
+     *
+     * 为什么要留这个：这个字段的形状我是从 proto 推断的，第一版就推断错了（真机上全显示 0.0.0.0）。
+     * 宽容解析之后若还有第四种形状，这条日志就是唯一能一次定位的东西 ——
+     * 走 logcat 而不是界面日志，因为排查的人手里一定有 adb：
+     * `adb logcat -s McLinkPeerRows:W`
+     */
+    private static void reportUnparsedAddress(JSONObject route) {
+        if (!REPORTED_SHAPE.compareAndSet(false, true)) return;
+        String detail = "节点地址解析不出（节点列表里该节点会显示「—」）。原始 route JSON：" + route;
+        try {
+            android.util.Log.w("McLinkPeerRows", detail);
+        } catch (Throwable ignored) {
+            // 单元测试/无 Android 运行时下没有 Log：忽略即可，状态日志那条仍会写
+        }
+        MclinkVpnState.log(detail);
     }
 }
