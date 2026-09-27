@@ -58,6 +58,27 @@ export const confirmRequest = ref<ConfirmRequest | null>(null);
 let settle: ((ok: boolean) => void) | null = null;
 
 /**
+ * 当前有没有挂着 `ConfirmDialog`（由组件自己在挂载/卸载时置位）。
+ *
+ * ## 为什么需要这个标志 —— 这是一次真机事故换来的
+ *
+ * 安卓外壳一开始**没有挂** ConfirmDialog，而 `confirmInApp` 的 Promise 只有那个组件
+ * 会 resolve。于是玩家点「踢出成员」「退出房间」时：请求发了（其实没发）、
+ * 弹层没有、Promise 永远悬着 —— **按钮变成哑巴，且不报任何错**。
+ * 用户的原话是"点踢出没有反应"。
+ *
+ * 挂载状态是这里唯一能自查的事实，所以没弹层时**退回桥上的 confirm**
+ * （Electron 是主进程原生框，移动端是系统 confirm）：样式不统一，
+ * 但比一个点了没反应的按钮好得多。
+ */
+let dialogMounted = false;
+
+/** 由 ConfirmDialog 在 onMounted / onUnmounted 里调用 */
+export function setConfirmDialogMounted(value: boolean): void {
+  dialogMounted = value;
+}
+
+/**
  * 弹一个应用内确认框，返回用户的选择（确定 = true，取消 / Esc = false）。
  *
  * 同时只有一个弹层：万一在弹层还没答完时又来了一个（例如连点两次"踢出"），
@@ -65,8 +86,8 @@ let settle: ((ok: boolean) => void) | null = null;
  * 前一个 Promise 永远不会 settle。
  */
 export function confirmInApp(options: ConfirmOptions): Promise<boolean> {
-  settle?.(false);
-  confirmRequest.value = {
+  // 归一化只做一次：兜底路径与弹层路径用的是同一份值，不会出现两种措辞
+  const request: ConfirmRequest = {
     title: options.title,
     message: options.message,
     detail: options.detail ?? '',
@@ -75,9 +96,37 @@ export function confirmInApp(options: ConfirmOptions): Promise<boolean> {
     cancelText: options.cancelText || '取消',
     danger: Boolean(options.danger),
   };
+
+  if (!dialogMounted) return confirmViaBridge(request);
+
+  settle?.(false);
+  confirmRequest.value = request;
   return new Promise<boolean>((resolve) => {
     settle = resolve;
   });
+}
+
+/**
+ * 没有应用内弹层时的兜底：走 `window.mclink.confirm`（Electron 原生框 / 移动端系统 confirm），
+ * 连这个桥都没有（纯浏览器里跑）就退化成内置 `confirm`。
+ *
+ * **任何一种情况都必须 settle** —— 这个函数的失败模式不该是"永远不返回"。
+ */
+async function confirmViaBridge(request: ConfirmRequest): Promise<boolean> {
+  const text = [request.title, request.message, request.detail].filter(Boolean).join('\n\n');
+  const bridge = globalThis.window?.mclink?.confirm;
+  if (typeof bridge === 'function') {
+    try {
+      return Boolean(await bridge({ title: request.title, message: request.message, detail: request.detail }));
+    } catch {
+      return false;
+    }
+  }
+  try {
+    return globalThis.confirm ? globalThis.confirm(text) : false;
+  } catch {
+    return false;
+  }
 }
 
 /**

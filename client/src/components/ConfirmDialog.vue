@@ -22,11 +22,21 @@
  * 这里更实际的原因是双击 —— 玩家连点两下「退出房间」时，第二下会落在刚出现的遮罩上，
  * 弹层会瞬间自己关掉，看起来像按钮失灵。
  */
-import { nextTick, ref, watch } from 'vue';
-import { answerConfirm, confirmRequest } from '../lib/confirm.ts';
+import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
+import { answerConfirm, confirmRequest, setConfirmDialogMounted } from '../lib/confirm.ts';
 
 const card = ref<HTMLElement | null>(null);
 const confirmButton = ref<HTMLButtonElement | null>(null);
+
+/*
+ * 告诉 lib/confirm.ts "应用内弹层是活的"。
+ *
+ * 这个标志的存在是因为一次真机事故：安卓外壳漏挂了这个组件，于是 confirmInApp 的 Promise
+ * 永远不 settle —— 玩家点「踢出」什么都不发生，也不报错。挂了就有统一风格的弹层，
+ * 万一哪天又漏挂，confirm.ts 会退回桥上的 confirm，而不是让按钮变哑巴。
+ */
+onMounted(() => setConfirmDialogMounted(true));
+onUnmounted(() => setConfirmDialogMounted(false));
 
 /** 弹层出现就把焦点送到确定键上：Enter = 确定，Tab 从这里开始循环 */
 watch(confirmRequest, async (request) => {
