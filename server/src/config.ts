@@ -108,8 +108,13 @@ export interface EasytierConfig {
   /** 主控中继上是否创建 TUN 设备（服务端不需要） */
   relayNoTun: boolean;
   /**
-   * 主控中继对外的公网主机名/IP，客户端用它连接主控。
-   * 留空时依次回退到 MCLINK_PUBLIC_BASE_URL 的主机名、请求的 Host 头。
+   * 主控中继对外的公网主机名/IP。
+   *
+   * ⚠️ **本轮起它不再影响票据**：以前 `RoomService.masterRelayEndpoint()` 拿它
+   * （留空时依次回退到 `MCLINK_PUBLIC_BASE_URL` 的主机名、请求的 `Host` 头）拼出
+   * "主控中继"的下发地址，于是反代在国内之外的部署会把反代那台发给玩家。
+   * 现在票据里的中继**只**来自 `relay_nodes` 的调度结果，主控不参与。
+   * 配置项保留：单机部署自查、以及将来把主控注册成一台普通子节点时仍然用得上。
    */
   relayPublicHost: string;
   /**

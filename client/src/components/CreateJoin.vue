@@ -10,13 +10,26 @@
  * 动作胶囊被 Teleport 到外壳底部的 `#deck-actions`（右下角），
  * 于是"创建/加入"永远在同一个位置，跟参照稿一致。
  *
- * 表单（创建/加入）与逻辑与改造前完全一致，只是换到新的组件层里渲染。
+ * 表单（创建/加入）与逻辑与改造前一致，只有**中继节点与延迟**这一块换了数据来源：
+ * 拉节点列表 + tcping 已经挪到应用初始化（登录之后，见 store.ts 的 probeRelayNodes），
+ * 这里是纯读缓存的显示层，外加一颗手动「重新测速」。
  */
 import { computed, onMounted, ref } from 'vue';
-import { Routes, regionLabel, type RelayLatencyHint, type Room } from '@mclink/shared';
-import { api } from '../lib/api.ts';
-import { probeKey, type ProbeTarget } from '../lib/bridge.ts';
-import { clientState, createRoom, joinRoom, loadRooms, openUpdatePage, reenterRoom } from '../lib/store.ts';
+import { regionLabel, type Room } from '@mclink/shared';
+import {
+  clientState,
+  createRoom,
+  ensureRelayProbe,
+  joinRoom,
+  loadRooms,
+  openUpdatePage,
+  probeRelayNodes,
+  reenterRoom,
+  relayLatencyHints,
+  relayLatencyOf,
+  waitForRelayProbe,
+  type RelayNodeOption,
+} from '../lib/store.ts';
 import { friendlyError } from '../lib/api.ts';
 import RoomShortcuts from './RoomShortcuts.vue';
 
@@ -64,7 +77,8 @@ const relaySummary = computed(() => {
   const real = clientState.regions.filter((r) => r.id !== 'auto');
   const withNodes = real.filter((r) => r.onlineNodes > 0);
   const nodes = real.reduce((sum, r) => sum + r.onlineNodes, 0);
-  if (nodes === 0) return '暂无在线中继，主控自带中继兜底';
+  // 主控不再兜底之后，"一个在线节点都没有"就是**真的开不了房**，别再给玩家相反的暗示
+  if (nodes === 0) return '暂无在线中继：现在开不了房，请稍后再试或联系客服';
   return `${withNodes.length} 个区域 · ${nodes} 个中继节点在线`;
 });
 
@@ -74,59 +88,34 @@ const relaySummary = computed(() => {
  * 区域与节点是**两层**：区域是默认/筛选，节点才是真正的选择对象。
  * 「自动」= 平台按区域挑（现状不变）；「手动」= 玩家自己挑，最多 3 个，
  * 并且平台**始终再补一个兜底** —— 玩家选的节点掉线时房间不会断。
+ *
+ * 节点列表与延迟读的是**应用级缓存**（`clientState.relayNodes` / `relayLatency`）：
+ * 拉列表 + tcping 已经在初始化时（登录之后）跑过一遍，这里只负责显示、
+ * 以及在缓存为空时补一次（见 onMounted 的 ensureRelayProbe）。
+ * 这么放的原因见 store.ts 里 `probeRelayNodes` 的说明：只测一次、建房页与房间页共用，
+ * "打开建房页才测"会让手速快的玩家与拉列表失败的人拿到空提示。
  */
 const nodeMode = ref<'auto' | 'manual'>('auto');
 const manualNodes = ref<string[]>([]);
-interface NodeOption {
-  id: string;
-  name: string;
-  region: string;
-  host: string;
-  /** 链接端口：**客户端真正要连的端口**，由主控按票据同一套规则下发 */
-  port?: number;
-  peers: number;
-  capacity: number;
-}
-const nodeList = ref<NodeOption[]>([]);
-/** `host:port` → 最小时延（ms）；null 表示这次 TCP 握手没成功（只用于展示，不代表节点不可用） */
-const latency = ref<Record<string, number | null>>({});
-const probing = ref(false);
+const nodeList = computed<RelayNodeOption[]>(() => clientState.relayNodes);
+/** 探测进行中（**只用于文案**，绝不用来禁用建房；见 store.ts 的 relayProbe） */
+const probing = computed(() => clientState.relayProbe.probing);
+
+/** 延迟读数：没测到就是 null，界面显示「—」（**仍然可选**，一次握手超时可能只是抖动） */
+const latencyOf = (n: RelayNodeOption): number | null => relayLatencyOf(n);
 
 /**
- * 探测目标 = 节点的 `host:port`。
- *
- * 端口缺了就用 `/meta` 的平台端口兜底（只有没升级的老主控会缺这一项），
- * 还是拿不到就返回 null —— 与其猜一个端口连出个假数字，不如让界面显示「—」。
+ * 「重新测速」用的那行状态：探测中 → 说明还在测；测完 → 报最近一次成功探测的时间。
+ * 时间只显示到分钟，够玩家判断"这是刚才那次还是昨天下班前那次"。
  */
-function probeTargetOf(n: NodeOption): ProbeTarget | null {
-  const port = n.port && n.port > 0 ? n.port : clientState.platform.relayPort;
-  return port > 0 ? { host: n.host, port } : null;
-}
-
-const latencyOf = (n: NodeOption): number | null => {
-  const target = probeTargetOf(n);
-  return target === null ? null : (latency.value[probeKey(target)] ?? null);
-};
-
-/**
- * 把本机这次测到的延迟整理成建房请求的 `latencyHints`。
- *
- * 主控拿它**只在已经合格的候选之间排序**（自动模式选谁、手动模式先挑哪台当兜底）：
- * 它绝不放松任何硬条件（未接入/停用/权重 0/没余量/区域不符的节点，提示也拉不进来），
- * 也不影响手动勾选的优先级。测不到（null）的节点不报 —— "没测到"不是"延迟 0"。
- *
- * 过时这件事是明摆着的：值就是点「创建并连接」这一刻的握手延迟，之后网络会变。
- * 这里**不做**刷新/校验，主控也不判过期 —— 它只是个排序偏好，
- * 真失效的节点由主控的状态与容量兜住，用一组稍旧的相对大小排序仍然比纯按负载更贴近体感。
- */
-function latencyHints(): RelayLatencyHint[] {
-  const out: RelayLatencyHint[] = [];
-  for (const n of nodeList.value) {
-    const ms = latencyOf(n);
-    if (ms !== null && Number.isFinite(ms)) out.push({ nodeId: n.id, ms });
-  }
-  return out;
-}
+const probeHint = computed(() => {
+  if (probing.value) return '正在测速…（不影响建房：现在就能创建，平台会按负载先挑）';
+  const at = clientState.relayProbe.lastProbedAt;
+  if (!at) return '还没测到延迟：平台按权重与余量挑节点，不影响建房。';
+  const d = new Date(at);
+  const hhmm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return `本机测速完成于 ${hhmm}（只用于「先挑谁」，过时也不影响可用性）。`;
+});
 
 /** 按延迟排序；没测到的排在最后（但**仍然可选**） */
 const sortedNodes = computed(() =>
@@ -140,34 +129,20 @@ const sortedNodes = computed(() =>
   }),
 );
 
-async function probeNodes(): Promise<void> {
-  if (nodeList.value.length === 0) return;
-  probing.value = true;
-  try {
-    /**
-     * 测的是**中继链接端口的 TCP 握手**（tcping，不是 ICMP）：DNS + 路由 + 端口放行 + 握手
-     * 全算在内，与真正建房走的是同一条路径；每个节点连打 3 次取最快的一次，
-     * 免得偶发丢包让整行显示「—」（见 electron/tcping.cjs）。
-     */
-    const targets = nodeList.value.map(probeTargetOf).filter((t): t is ProbeTarget => t !== null);
-    latency.value = targets.length > 0 ? await window.mclink.tcping(targets) : {};
-  } catch {
-    /* 探测失败就整体留空，界面显示 — */
-  } finally {
-    probing.value = false;
-  }
-}
+/** 手动模式的下拉框要不要禁用：节点列表还没拿到（探测中或确实没有可用节点） */
+const noNodes = computed(() => nodeList.value.length === 0);
 
-async function loadNodes(): Promise<void> {
-  try {
-    const res = await api.get<{ nodes: NodeOption[] }>(Routes.clientNodes);
-    nodeList.value = Array.isArray(res.nodes) ? res.nodes : [];
-    await probeNodes();
-  } catch {
-    // 取不到节点列表时静默退化为自动选择 —— 不该因为列不出节点就挡住建房
-    nodeList.value = [];
-  }
-}
+/**
+ * 「创建并连接」那颗按钮的文案。
+ *
+ * 探测进行中时只**换个说法**（让玩家知道马上会用上刚测到的延迟），
+ * 绝不 `disabled` —— 见 doCreate 里有界等待的注释：弱网下禁用会让人永远建不了房。
+ */
+const createLabel = computed(() => {
+  if (busy.value) return '创建中…';
+  if (probing.value && relayLatencyHints().length === 0) return '测速中…仍可创建';
+  return '创建并连接';
+});
 
 const allRooms = computed<Room[]>(() => [...clientState.hosted, ...clientState.joined]);
 
@@ -177,7 +152,12 @@ const PANE_TITLE: Record<Exclude<Pane, 'menu'>, string> = {
 };
 
 onMounted(() => {
-  void loadNodes();
+  /**
+   * 缓存优先：初始化时（登录之后）已经探过一次，这里通常什么都不做。
+   * 只有在**缓存为空**时才补一次（初始化那次失败、或客户端启动时还没登录），
+   * 而且照旧后台跑、不阻塞这一屏 —— 建房按钮从头到尾都不看它（见 doCreate）。
+   */
+  ensureRelayProbe();
   void refreshRooms();
 });
 
@@ -206,6 +186,11 @@ async function doJoin(): Promise<void> {
   }
   busy.value = true;
   try {
+    /**
+     * 加入房间**不等测速**：它的请求里根本没有 `latencyHints`（路由/区域都由服务端按
+     * 房间已存的中继列表下发，见 server/src/api/rooms.ts 只有建房那条解析提示），
+     * 等一轮 tcping 只会白白拖慢进房。
+     */
     await joinRoom(value, joinPassword.value || undefined);
     code.value = '';
     joinPassword.value = '';
@@ -224,6 +209,17 @@ async function doCreate(): Promise<void> {
   }
   busy.value = true;
   try {
+    /**
+     * ⚠️ 「手速快过测速」的修法：建房按钮**不禁用**（弱网/节点全不可达时禁用会让人永远建不了房），
+     * 所以玩家完全可能在 tcping 还在跑的时候就点提交 —— 那一刻延迟提示是空数组，
+     * 主控那侧的延迟键失效，直接退化成"权重 × 余量"排序。
+     *
+     * 这里先**有界等待**那次探测（最多 `RELAY_PROBE_WAIT_MS`，见 store.ts 的 waitForRelayProbe）：
+     *   · 没有在跑的探测 / 已经有提示 → 立刻返回，不多花一毫秒；
+     *   · 超时或探测失败 → 照常发请求（空提示也能建房，只是主控按负载排）。
+     * 换句话说：探测**永远不会**挡住建房，但"探测还在跑就静默拿空提示发出去"不再是默认路径。
+     */
+    if (relayLatencyHints().length === 0) await waitForRelayProbe();
     await createRoom({
       name: form.value.name.trim(),
       zone: form.value.zone,
@@ -232,8 +228,9 @@ async function doCreate(): Promise<void> {
       /**
        * 延迟提示两种模式都带：自动模式下它决定"选谁"，
        * 手动模式下它只决定"平台补的那个兜底先落在哪台"（手选节点永远优先）。
+       * 值来自应用级缓存（见 store.ts 的 relayLatencyHints）。
        */
-      latencyHints: latencyHints(),
+      latencyHints: relayLatencyHints(),
       access: form.value.access,
       password: form.value.access === 'password' ? form.value.password : undefined,
       visibility: form.value.visibility,
@@ -372,7 +369,7 @@ async function resume(room: Room): Promise<void> {
               class="btn btn-sm"
               :class="nodeMode === 'manual' ? 'btn-primary' : 'btn-ghost'"
               type="button"
-              :disabled="nodeList.length === 0"
+              :disabled="noNodes"
               @click="nodeMode = 'manual'"
             >
               手动选择
@@ -382,14 +379,14 @@ async function resume(room: Room): Promise<void> {
               class="btn btn-sm btn-ghost"
               type="button"
               :disabled="probing"
-              @click="probeNodes()"
+              @click="probeRelayNodes()"
             >
               {{ probing ? '测速中…' : '重新测速' }}
             </button>
           </div>
 
           <template v-if="nodeMode === 'manual'">
-            <div v-if="nodeList.length === 0" class="hint">当前没有可用节点，只能用自动选择。</div>
+            <div v-if="noNodes" class="hint">当前没有可用节点，只能用自动选择。</div>
             <div v-else class="roster">
               <label v-for="n in sortedNodes" :key="n.id" class="roster-row node-pick">
                 <input
@@ -413,9 +410,11 @@ async function resume(room: Room): Promise<void> {
             </div>
           </template>
           <div v-else class="hint">
-            平台按你本机刚测到的延迟优先挑：延迟接近的才比负载与余量，没测到的节点排在最后，并自动留冗余。
+            平台按你本机刚测到的延迟优先挑：延迟相差 5ms 以内的算同一档，档内挑带宽最空的；没测到的节点排在最后。
             测速结果只用于「先挑谁」，过时了也不影响节点可用性。
           </div>
+          <!-- 探测状态（测速中 / 最近一次成功测速的时间）：只报事实，不做任何阻断 -->
+          <div class="hint faint">{{ probeHint }}</div>
         </div>
 
         <div class="pair">
@@ -519,7 +518,14 @@ async function resume(room: Room): Promise<void> {
       </template>
       <template v-else-if="pane === 'create'">
         <button class="btn btn-ghost" type="button" :disabled="busy" @click="open('menu')">取消</button>
-        <button class="btn btn-primary" type="button" :disabled="busy" @click="doCreate">创建并连接</button>
+        <!--
+          文案会说"测速中"，但**按钮始终可点**（只在请求飞行中才 disabled）：
+          弱网或节点全不可达时，探测可能一直失败 —— 禁用按钮等于让玩家永远建不了房。
+          点下去之后 doCreate 里有界等一小会儿再取延迟提示（见那里的注释）。
+        -->
+        <button class="btn btn-primary" type="button" :disabled="busy" @click="doCreate">
+          {{ createLabel }}
+        </button>
       </template>
       <template v-else>
         <button class="btn btn-ghost" type="button" :disabled="busy" @click="open('menu')">取消</button>
