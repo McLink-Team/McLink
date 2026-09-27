@@ -63,6 +63,43 @@ async function saveAutoElevate(): Promise<void> {
  * —— 这里必须调它，而不是直接调 window.mclink.setNotifyMessages。
  */
 const notifyMessages = ref(true);
+/** 「发一条测试通知」的结果：区分"策略跳过了"和"系统根本不弹" */
+const testNotifyResult = ref('');
+
+/**
+ * 手动弹一条测试通知。
+ *
+ * 为什么要这个按钮：判定链有 5 道（开关 / 在房间里 / 非系统消息 / 非自己发的 /
+ * 没正看着那个房间），任何一道都会让通知**安静地不出现** —— 而"安静"正是它该有的表现，
+ * 于是玩家没法区分"被策略跳过了"和"系统通知坏了"。
+ *
+ * 这个按钮**故意绕过整套判定**，直接走主进程那条投递路径（`window.mclink.notify.show`），
+ * 所以它能证明的只有一件事：**系统这一侧的投递通不通**。这也是最值得先排除的一环 ——
+ * 真机上"没弹"最常见的原因其实是系统通知权限/专注模式，它在两端（Win/Mac）表现一样，
+ * 与"是不是我正看着房间页"很像，没有这个按钮就只能靠猜。
+ */
+async function sendTestNotification(): Promise<void> {
+  testNotifyResult.value = '';
+  const bridge = window.mclink?.notify;
+  if (!bridge) {
+    testNotifyResult.value = '这个平台还没有接入系统通知。';
+    return;
+  }
+  try {
+    const res = await bridge.show({
+      title: 'McLink 测试通知',
+      body: '看到这条说明系统通知是通的 —— 真有人说话时也会这样弹。',
+      roomId: clientState.session?.room.id ?? '',
+    });
+    if (res && res.ok === false) {
+      testNotifyResult.value = '系统没有接受这条通知：' + (res.error ?? '未知原因');
+    } else {
+      testNotifyResult.value = '已发出。若通知区域没出现，请检查系统通知权限与「专注/勿扰」模式。';
+    }
+  } catch (err) {
+    testNotifyResult.value = '发送失败：' + (err instanceof Error ? err.message : String(err));
+  }
+}
 
 async function saveNotifyMessages(): Promise<void> {
   await applyMessagesEnabled(notifyMessages.value);
@@ -398,6 +435,14 @@ function openDataDir(): void {
             </span>
           </span>
         </label>
+        <!--
+          测试通知按钮：绕过上面那 5 道判定，只验证"系统这一侧通不通"。
+          真机/真机上"没弹"最常见的原因是系统权限或专注模式 —— 这一条能立刻排除它。
+        -->
+        <div class="row" style="gap: 10px; align-items: center; flex-wrap: wrap">
+          <button class="btn btn-sm" type="button" @click="sendTestNotification()">发一条测试通知</button>
+          <span v-if="testNotifyResult" class="hint">{{ testNotifyResult }}</span>
+        </div>
       </section>
 
       <section v-if="info" class="card stack">
