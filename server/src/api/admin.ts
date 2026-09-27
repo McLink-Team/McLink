@@ -294,11 +294,49 @@ export function registerAdminRoutes(router: Router, app: App): void {
     requireAdmin(ctx);
     const roomId = ctx.params.id ?? '';
     const row = app.roomService.getRow(roomId);
+    /**
+     * **正在承载这个房间**的节点（不是"调度到的那几台"）。
+     *
+     * 两者会不一样：房间是建房时锁定 `relayNodeIds` 的，而实际在转发的是此刻
+     * 心跳里报了这个网络名（`roomTraffic`）的节点 —— 换节点、某台掉了、手动
+     * 改过 endpoint，都会让两份名单产生差异。运营排障要看的显然是后者：
+     * "这个房间的流量到底走在哪台机器上、各占多少"。
+     *
+     * 口径与流量页的「外来网络 → 房间归因」完全一致（同一份 `relayingNetworks()` 聚合）。
+     */
+    const room = toRoom(row);
+    const scheduledIds = new Set(room.relayNodeIds);
+    /** 调度名单里的节点（建房时锁定）—— 解析成名字，界面上不该出现 n_xxxx 这种内部 ID */
+    const scheduledRelays = room.relayNodeIds.map((id) => {
+      const node = app.nodes.findById(id);
+      return {
+        id,
+        name: node?.name ?? null,
+        region: node?.region ?? null,
+        status: node?.status ?? null,
+        /** 节点记录已被删除时为 false */
+        exists: Boolean(node),
+      };
+    });
+    const relayNodes = mergeRelayedNetworks([], app.nodeService.relayingNetworks())
+      .filter((fn) => fn.networkName.trim() === row.network_name)
+      .flatMap((fn) => fn.sources)
+      .map((source) => ({
+        id: source.id,
+        name: source.name,
+        region: app.nodes.findById(source.id)?.region ?? null,
+        /** 是否也在房间的调度名单里（false = 正在顶班的节点，调度名单与实际不一致时值得注意） */
+        scheduled: scheduledIds.has(source.id),
+      }));
     return {
-      room: toRoom(row),
+      room,
       members: app.roomService.members(roomId),
       networkSecret: row.network_secret,
       usage: app.rooms.usage(roomId) ?? { rxBytes: 0, txBytes: 0, peers: 0 },
+      /** 建房时锁定的中继名单（带名字，供界面直接展示） */
+      scheduledRelays,
+      /** 此刻真正在替这个房间转发的节点（空数组 = 现在没有任何节点在带它） */
+      relayNodes,
       accessLog: app.rooms.recentAccess(roomId, 50),
       aclToml: app.roomService.aclToml(roomId),
     };
@@ -462,6 +500,8 @@ export function registerAdminRoutes(router: Router, app: App): void {
         txBps: fn.txBps,
         /** 有几个子节点在转发它（1 = 只有一台；≥2 = 多台区域节点同时在带） */
         relaySources: fn.relaySources,
+        /** **是哪几台节点**在转发它 —— 界面直接列节点名，而不是只给一个计数 */
+        nodes: fn.sources.map((s) => ({ id: s.id, name: s.name })),
       };
     });
 

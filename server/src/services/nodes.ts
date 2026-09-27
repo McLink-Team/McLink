@@ -73,6 +73,19 @@ export interface RelayedNetworkSample {
   txBps: number;
   rxBytes?: number;
   txBytes?: number;
+  /**
+   * 这条样本来自哪台节点。
+   *
+   * 心跳载荷本身不带来源（节点不需要自报家门），由 `relayingNetworks()` 在聚合时补上 ——
+   * 控制台的「外来网络 → 房间归因」要**直接显示是哪几台在转发**，
+   * 只给一个"2 个子节点"的计数等于让人去猜。
+   */
+  source?: RelayedNetworkSource;
+}
+
+export interface RelayedNetworkSource {
+  id: string;
+  name: string;
 }
 
 export interface MergedRelayedNetwork {
@@ -83,16 +96,19 @@ export interface MergedRelayedNetwork {
   rxBytes: number;
   txBytes: number;
   /**
-   * 有几个中继来源在转发它（各算 1 个）。
-   * 界面上用它区分"只有一台在带"和"多台区域节点都在带"。
+   * 有几个中继来源在转发它（各算 1 个，含已取消的主控那一份 —— 实践中 `master` 恒为空数组，
+   * 所以它等于 `sources.length`）。界面上用它区分"只有一台在带"和"多台区域节点都在带"。
    */
   relaySources: number;
+  /** 转发它的节点（按首次出现的顺序去重）—— 界面直接列这几台的名字 */
+  sources: RelayedNetworkSource[];
   /** 主控自带中继是否也在转发它 —— 那个实例已取消，所以实践中恒为 false */
   onMaster: boolean;
 }
 
 /**
- * 按网络名合并外来网络列表：同一个网络被多台中继转发时，peer 数与速率相加、来源计数 +1。
+ * 按网络名合并外来网络列表：同一个网络被多台中继转发时，peer 数与速率相加、来源计数 +1，
+ * 并记下**具体是哪几台节点**（界面上直接列节点名，而不是只给一个计数）。
  *
  * `master` 参数是主控自带中继那一份来源，**已取消**（2026-09-28），所有调用点都传 `[]`；
  * 签名保留是为了不动单测（`mergeRelayedNetworks` 本身是纯函数，多来源合并的语义仍然成立）。
@@ -101,6 +117,12 @@ export function mergeRelayedNetworks(
   master: ReadonlyArray<RelayedNetworkSample>,
   nodes: ReadonlyArray<RelayedNetworkSample>,
 ): MergedRelayedNetwork[] {
+  /** 来源去重：同一台节点上报同一个网络的多个实例时只算一条 */
+  function addSource(target: MergedRelayedNetwork, source?: RelayedNetworkSource): void {
+    if (!source?.id || target.sources.some((s) => s.id === source.id)) return;
+    target.sources.push({ id: source.id, name: source.name });
+  }
+
   const merged = new Map<string, MergedRelayedNetwork>();
   const add = (item: RelayedNetworkSample, onMaster: boolean): void => {
     const name = item.networkName?.trim();
@@ -113,10 +135,11 @@ export function mergeRelayedNetworks(
       current.rxBytes += Math.max(0, item.rxBytes ?? 0);
       current.txBytes += Math.max(0, item.txBytes ?? 0);
       current.relaySources += 1;
+      addSource(current, item.source);
       current.onMaster ||= onMaster;
       return;
     }
-    merged.set(name, {
+    const created: MergedRelayedNetwork = {
       networkName: name,
       peers: Math.max(0, item.peers),
       rxBps: Math.max(0, item.rxBps),
@@ -124,8 +147,11 @@ export function mergeRelayedNetworks(
       rxBytes: Math.max(0, item.rxBytes ?? 0),
       txBytes: Math.max(0, item.txBytes ?? 0),
       relaySources: 1,
+      sources: [],
       onMaster,
-    });
+    };
+    addSource(created, item.source);
+    merged.set(name, created);
   };
   for (const item of master) add(item, true);
   for (const item of nodes) add(item, false);
@@ -423,7 +449,9 @@ export class NodeService {
       const node = this.nodes.findById(nodeId);
       // 节点被删掉/被禁用后要立刻退出聚合，不能靠 90s 窗口过期
       if (!node || node.disabled === 1) continue;
-      out.push(...entry.networks);
+      // 补上来源：控制台要显示"是哪几台节点在转发这个网络"（见 RelayedNetworkSample.source）
+      const source = { id: node.id, name: node.name };
+      out.push(...entry.networks.map((n) => ({ ...n, source })));
     }
     return out;
   }

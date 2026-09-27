@@ -29,6 +29,8 @@ interface ForeignNetworkMapped extends ForeignNetworkInfo {
   roomCode: string | null;
   /** 有几个子节点在转发它（≥2 = 多台区域节点同时在带同一个网络） */
   relaySources: number;
+  /** 具体是哪几台节点在转发（服务端老版本可能没有这个字段） */
+  nodes?: Array<{ id: string; name: string }>;
 }
 
 interface RoomSeries {
@@ -358,7 +360,17 @@ const cards = computed(() => {
                   <Badge v-else tone="warn">未映射</Badge>
                 </td>
                 <td>
-                  <Badge tone="neutral">{{ f.relaySources }} 个子节点</Badge>
+                  <!--
+                    直接列**哪几台节点**在转发这个网络。
+                    以前这里是一个「N 个子节点」的计数，运营还得自己去比对节点列表才知道是谁
+                    —— 归因这张表的价值就在"这个房间的流量走在哪台机器上"。
+                    服务端老版本不给 `nodes` 时退回计数，避免空白。
+                  -->
+                  <div v-if="f.nodes && f.nodes.length > 0" class="node-tags">
+                    <Badge v-for="n in f.nodes" :key="n.id" tone="neutral">{{ n.name }}</Badge>
+                  </div>
+                  <Badge v-else-if="f.relaySources > 0" tone="neutral">{{ f.relaySources }} 个子节点</Badge>
+                  <span v-else class="faint">—</span>
                   <div v-if="f.relaySources > 1" class="cell-sub">多台同时在带这个网络</div>
                 </td>
                 <td class="table-num">{{ f.peerCount }}</td>
@@ -548,6 +560,12 @@ const cards = computed(() => {
   font-size: var(--fs-xs);
   color: var(--paper-dim);
   margin-bottom: var(--s-2);
+}
+/* 一格里可能有两三台节点名，允许换行、别把列撑开 */
+.node-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
 }
 .notice-body {
   flex: 1;

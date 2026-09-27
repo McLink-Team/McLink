@@ -868,6 +868,35 @@ describe('外来网络聚合 mergeRelayedNetworks', () => {
     assert.ok(first, '应当合并出一条网络');
     assert.deepEqual({ peers: first.peers, rxBps: first.rxBps, txBps: first.txBps }, { peers: 0, rxBps: 0, txBps: 50 });
   });
+
+  test('记下「是哪几台节点」在转发，并按 id 去重（同一台报两个实例只算一次）', () => {
+    const withSource = (name: string, id: string, nodeName: string, rxBps: number) => ({
+      ...node(name, 1, rxBps, 0),
+      source: { id, name: nodeName },
+    });
+    const merged = mergeRelayedNetworks(
+      [],
+      [
+        withSource('net-a', 'n_1', '华东-1', 100),
+        withSource('net-a', 'n_2', '华南-2', 200),
+        // 同一台节点的第二个实例：来源不重复计
+        withSource('net-a', 'n_1', '华东-1', 50),
+      ],
+    );
+    const [first] = merged;
+    assert.ok(first);
+    assert.deepEqual(first.sources, [
+      { id: 'n_1', name: '华东-1' },
+      { id: 'n_2', name: '华南-2' },
+    ]);
+    assert.equal(first.relaySources, 3, '计数仍是三条上报（界面上只在没有 nodes 时才用它兜底）');
+    assert.equal(first.rxBps, 350);
+
+    // 没带来源的样本（老节点/旧格式）不会往 sources 里塞空对象
+    const [plain] = mergeRelayedNetworks([], [node('net-b', 1, 10, 0)]);
+    assert.ok(plain);
+    assert.deepEqual(plain.sources, []);
+  });
 });
 
 /**
