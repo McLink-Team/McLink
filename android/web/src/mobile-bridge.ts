@@ -165,6 +165,21 @@ interface VpnEventLogPayload {
 }
 
 /**
+ * `applyAcl` 的返回：**平铺形状**（与 start/stop 一致，没有嵌套对象）。
+ *
+ * `mode` 只有两种可能：`'hot'` = 内核支持运行时热替换；`'restart'` = 走的是
+ * "写回配置 + 重启实例"的回退路径（房主会短暂断线约 2 秒）。
+ * EasyTier 2.6.4 属于后者 —— 桌面端 `client/electron/main.cjs:961` 的注释也写着
+ * "2.6.4 尚无此子命令"，所以两端的行为是一样的。
+ */
+interface VpnApplyAclResult {
+  ok: boolean;
+  mode?: string;
+  error?: string;
+  [key: string]: unknown;
+}
+
+/**
  * `@capacitor/core` 的 `registerPlugin` 在**没有原生实现**时给的是一个会抛异常的代理：
  * 调 `start()` 会抛 `CapacitorException: "MclinkVpn" plugin is not implemented on web`。
  * 所以每次调用前都要先问 `Capacitor.isPluginAvailable()` —— 见 `vpnPlugin()`。
@@ -176,6 +191,11 @@ interface MclinkVpnPlugin {
   /** `status()` 的原样返回（§3 定义的 VpnStatus）；`start`/`stop` 的返回见 pickVpnStatus */
   status(): Promise<VpnStatus>;
   logs(options: { limit?: number }): Promise<{ lines: string[] }>;
+  /**
+   * 把房主 ACL 施加到本机实例上（踢人、严格端口模式、包速率限制）。
+   * 成功了是 `{ok:true, mode:'restart'}`，失败是 `{ok:false, error}`。
+   */
+  applyAcl(payload: { aclToml: string }): Promise<VpnApplyAclResult>;
   addListener(eventName: 'statusChanged', handler: (status: VpnStatus) => void): Promise<{ remove: () => Promise<void> }>;
   addListener(eventName: 'log', handler: (payload: VpnEventLogPayload) => void): Promise<{ remove: () => Promise<void> }>;
 }
@@ -236,12 +256,32 @@ const CORE_UNAVAILABLE_MESSAGE =
   '本机网络内核尚未接入。房间与加入码已经可用，' +
   '但本机还没真正加入虚拟局域网 —— 换台已装客户端的电脑用同样的加入码就能联机。';
 
-/** 安卓端确实做不到、但**不是故障**的那几件事（§3 末尾 / §6） */
+/**
+ * 安卓端确实做不到、但**不是故障**的那两件事（§6）。
+ *
+ * ⚠️ `applyAcl` **不在这里**了：踢人现在是真实现（走 `MclinkVpn.applyAcl`）。
+ * 别再往这张表里加回房主规则相关的话术 —— "手机上不能踢人"这个说法已经不成立。
+ */
 const UNSUPPORTED = {
-  acl: '安卓端暂不支持在手机上应用房主规则（踢人 / 限速）；联机本身不受影响，这不是故障。',
   peers: '安卓端暂不支持读取节点列表（不是故障）—— 房间能正常联机，这只是桌面端诊断面板里的数据。',
   cli: '安卓端暂不支持命令行诊断（不是故障）—— 房间能正常联机，这是桌面客户端的排查入口。',
 } as const;
+
+/**
+ * 插件缺失时 `applyAcl` 的诚实失败。
+ *
+ * 这句**必须区别于"安卓不支持踢人"**：踢人是支持的，这里失败的唯一原因是
+ * **这台设备上没有原生插件**（在桌面浏览器里跑这份产物，或者插件没打进包）。
+ * 所以措辞指向"内核还没接入"，而不是"功能没有"。
+ *
+ * 它会被 `store.applyHostAclIfNeeded` 拼成「应用房间规则失败：<这句>」，所以要读得通顺，
+ * 且**不能命中 `DESKTOP_REWRITE_TRIGGER`**（那条路径虽然不过 describeCoreError，
+ * 但保持同一个口径，免得哪天调用点变了就出洋相）。
+ */
+const APPLY_ACL_NO_PLUGIN = '本机网络内核尚未接入，房间规则没能下发（房间本身不受影响）。';
+
+/** 插件回了 `{ok:false}` 却没说原因时的兜底 —— 不能让玩家只看到一句空的"失败" */
+const APPLY_ACL_UNKNOWN = '安卓端网络内核没能应用房间规则，也没有说明原因。请重试一次；如果一直这样，请反馈给我们。';
 
 /**
  * 插件调用本身抛异常时给玩家看的那句。
@@ -364,6 +404,38 @@ function asVpnErrorCode(value: unknown): VpnErrorCode | null {
     default:
       return null;
   }
+}
+
+/**
+ * 一次 **插件调用被 reject**（而不是返回 `{ok:false}`）能读出什么。
+ *
+ * ## 为什么必须区分"原生拒绝"和"桥坏了"
+ *
+ * Java 侧有两条失败通道，而且**两条都在用**：
+ *   1. `resolve({ok:false, code, message})` —— 异步跑完之后失败（`launch()` 里的等待线程）；
+ *   2. `call.reject(message, code)` —— **早退**：参数不全、认不出、还没联机、用户拒绝授权……
+ *
+ * 第 2 条会一路变成 JS 的 Promise 拒绝：原生桥把 `result.error` 的每个键拷到一个
+ * `Capacitor.Exception` 上（`@capacitor/android/.../native-bridge.js` 的 `returnResult`），
+ * 所以异常上带着 `message` 与 `code`。
+ *
+ * ⚠️ 最要命的那条正好走第 2 条：**玩家在系统对话框里点了"拒绝"** →
+ * `call.reject("没有授予 VPN 权限…", "vpn-denied")`。如果这里一律当成"桥断了"，
+ * 玩家拿到的会是"联机服务没有响应"，而不是 §3 表里那句"授权 VPN 是加入虚拟局域网的前提…"
+ * —— 于是他会去重装应用，而不是重新点一次授权。
+ *
+ * 判据用 `code` 而不是 `message`：**普通 JS 异常没有 `code`**（桥真的断了、代码自己抛的），
+ * 而 Capacitor 框架自己的错误码是 `UNIMPLEMENTED` / `UNAVAILABLE`（英文文案，不该给玩家看）。
+ * 两者都返回 `null`，调用方据此回落到"服务没有响应"。
+ */
+function readNativeRejection(err: unknown): { code: VpnErrorCode | null; message: string | null } | null {
+  if (err === null || typeof err !== 'object') return null;
+  const rawCode = (err as { code?: unknown }).code;
+  if (typeof rawCode !== 'string' || rawCode === '') return null;
+  if (rawCode === 'UNIMPLEMENTED' || rawCode === 'UNAVAILABLE') return null;
+  const rawMessage = (err as { message?: unknown }).message;
+  const message = typeof rawMessage === 'string' && rawMessage.trim() !== '' ? rawMessage.trim() : null;
+  return { code: asVpnErrorCode(rawCode), message };
 }
 
 /**
@@ -685,12 +757,16 @@ export function installMobileBridge(): void {
             mtu: planned.plan.mtu,
           });
         } catch (err) {
+          emitLog({ ts: new Date().toISOString(), stream: 'stderr', line: `调用原生插件失败（start）：${String(err)}` });
           /*
-           * 插件调用本身抛异常（桥断了、原生侧崩了）必须在这里兜住：
-           * 让它冒到 store.startNetwork 就是一个未捕获的 Promise 拒绝 ——
-           * 房间页会永远停在「正在建立连接…」，而手机上没有 devtools 可看。
+           * 早退式失败（`call.reject`）走这里 —— 玩家的"拒绝 VPN 授权"就是其中之一。
+           * 见 readNativeRejection()：它把 `code`/`message` 取出来，让 vpn-denied 这类
+           * 情况拿到 §3 表里那句可行动的文案，而不是一句笼统的"服务没有响应"。
            */
-          emitLog({ ts: new Date().toISOString(), stream: 'stderr', line: `调用原生插件失败：${String(err)}` });
+          const rejection = readNativeRejection(err);
+          if (rejection !== null) {
+            return emitStatus(errorStatus(playerMessage(rejection.code ?? 'internal', rejection.message)));
+          }
           return emitStatus(errorStatus(PLUGIN_UNREACHABLE_MESSAGE));
         }
 
@@ -723,7 +799,11 @@ export function installMobileBridge(): void {
           const result = await plugin.stop();
           return emitStatus(toCoreStatus(pickVpnStatus(result)));
         } catch (err) {
-          emitLog({ ts: new Date().toISOString(), stream: 'stderr', line: `调用原生插件失败：${String(err)}` });
+          emitLog({ ts: new Date().toISOString(), stream: 'stderr', line: `调用原生插件失败（stop）：${String(err)}` });
+          const rejection = readNativeRejection(err);
+          if (rejection !== null) {
+            return emitStatus(errorStatus(playerMessage(rejection.code ?? 'internal', rejection.message)));
+          }
           return emitStatus(errorStatus(PLUGIN_UNREACHABLE_MESSAGE));
         }
       },
@@ -769,12 +849,61 @@ export function installMobileBridge(): void {
       resourceUsage: async () => null,
 
       /**
-       * 下面三条是 §3 末尾的**诚实失败**，不是"还没接"：
-       * Android 侧的 JNI 路径里没有应用 ACL 的入口（§6），peer 列表要走 `callJsonRpc`（本轮不做）。
+       * `applyAcl`（踢人）的说明见上面那一段；下面两条是 §3 末尾的**诚实失败**：
+       * 安卓侧没有 peer 列表的 JNI 入口（要走 `callJsonRpc`，本轮不做）。
        * 措辞刻意写成「暂不支持…不是故障」—— 否则玩家会以为自己的网络坏了，
        * 而事实是房间能正常联机。
        */
-      applyAcl: async () => ({ ok: false, error: UNSUPPORTED.acl }),
+      /**
+       * 把房主 ACL 施加到本机实例上 —— **踢人就靠它**。
+       *
+       * 走的是与桌面端同一条路：EasyTier 2.6.4 没有 `acl set` 热更新
+       * （`client/electron/main.cjs:961`），所以实际发生的是
+       * "配置里换掉 `[acl.acl_v1]` 段 → 重启实例 → 把同一个 tun fd 交回去"，
+       * 返回 `{ok:true, mode:'restart'}`。**代价是房主的虚拟网络断约 2 秒**，
+       * 这一点两端一样，UI 上也要如实说（见 MobileApp / MobileSettingsPage 的边界说明）。
+       *
+       * 插件缺失（桌面浏览器）时保持诚实失败：不是"安卓不支持踢人"，而是这台设备上没有内核。
+       */
+      applyAcl: async (aclToml: string) => {
+        const plugin = vpnPlugin();
+        if (plugin === null) return { ok: false as const, error: APPLY_ACL_NO_PLUGIN };
+
+        let result: VpnApplyAclResult;
+        try {
+          result = await plugin.applyAcl({ aclToml });
+        } catch (err) {
+          /*
+           * 与 start/stop 同一个处理：插件抛异常不许冒给调用方（store 那次调用没有 try/catch）。
+           * 原生侧的 `call.reject("还没有联机，无法应用房间规则", "not-running")` 也走这里 ——
+           * 那句话比我们编的通用话术准确，要用它。
+           */
+          emitLog({ ts: new Date().toISOString(), stream: 'stderr', line: `调用原生插件失败（applyAcl）：${String(err)}` });
+          const rejection = readNativeRejection(err);
+          if (rejection !== null) {
+            return { ok: false as const, error: rejection.message ?? playerMessage(rejection.code ?? 'internal') };
+          }
+          return { ok: false as const, error: PLUGIN_UNREACHABLE_MESSAGE };
+        }
+
+        if (result?.ok !== true) {
+          /*
+           * 原生侧的 error 是**给玩家看的中文**（Java 侧自己写的），原样交给调用方 ——
+           * 它会经 `store.applyHostAclIfNeeded` 拼成「应用房间规则失败：<原文>」，
+           * 那条路径**不过 `describeCoreError`**，所以不会被改写成桌面建议。
+           */
+          const raw = typeof result?.error === 'string' ? result.error.trim() : '';
+          return { ok: false as const, error: raw !== '' ? raw : APPLY_ACL_UNKNOWN };
+        }
+
+        /*
+         * `mode` 只认契约里的两个取值。认不出来就**不带 mode 返回**：
+         * 调用方会当成"成功了但不知道是不是热更新"——那是真的，比编一个 `'hot'` 诚实。
+         */
+        return result.mode === 'hot' || result.mode === 'restart'
+          ? { ok: true as const, mode: result.mode }
+          : { ok: true as const };
+      },
       /** peers 为空 = 没有节点可显示，连接诊断面板据此显示"无数据"而不是假的节点列表 */
       peers: async (): Promise<CliResult> => ({ ok: false, error: UNSUPPORTED.peers }),
       cli: async (): Promise<CliResult> => ({ ok: false, error: UNSUPPORTED.cli }),

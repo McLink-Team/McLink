@@ -185,6 +185,15 @@ start(payload: {
 stop(): Promise<VpnStatus & { ok: boolean }>
 status(): Promise<VpnStatus>
 logs(options: { limit?: number }): Promise<{ lines: string[] }>
+
+/**
+ * 施加房主的房间规则（踢人/封禁）。**平铺形状**，与 start/stop 一致。
+ *
+ * `mode` 目前恒为 `'restart'`：v2.6.4 没有 ACL 热更新（`easytier-cli acl set` 在 2.6.4 里不存在，
+ * 桌面端 `main.cjs:961` 的注释就写着这件事），所以两端都是"把 ACL 合并进配置 → 重启内核实例"。
+ * 代价是**房主自己会短暂断线约 2 秒**；对方被踢是立刻生效的。
+ */
+applyAcl(payload: { aclToml: string }): Promise<{ ok: boolean; mode?: 'hot' | 'restart'; error?: string }>
 ```
 
 `logs()` 的 `limit` 目前**只在前端生效**：原生侧总是返回全部（最多 200 行环形缓冲），
@@ -299,7 +308,7 @@ logs(options: { limit?: number }): Promise<{ lines: string[] }>
 
 | 项 | 为什么 |
 | --- | --- |
-| 手机做房主时的 **ACL**（踢人、限速） | 需要在实例上应用 ACL，Android JNI 侧没有对应路径；房间能建、能联，但"踢人"不生效 |
+| ~~手机做房主时的 **ACL**（踢人）~~ **已实现**（见 §3 的 `applyAcl`） | 原判断"Android JNI 侧没有施加 ACL 的路径"**只对了一半**：JNI 里确实没有 ACL 方法，但桌面端在 2.6.4 上也没有热更新（`acl set` 子命令不存在），走的是"合并进配置 → 重启内核实例"这条回退路径 —— 而这条路径在 Android 上完全可以用 `stopAllInstances` + `runNetworkInstance` + 重新 `setTunFd` 复现。代价是**施加时房主自己断线约 2 秒**（两端一样） |
 | 连接诊断面板的节点列表 | 需要 `callJsonRpc` 拉 peer 列表，本轮不做（桌面端有，够排查） |
 | IPv6 | 票据里 `enable_ipv6 = false`，只加 v4 路由。**v6 流量不走隧道**（直连出去），这点要在 UI 上如实说明 |
 | 电池优化白名单引导 | 部分国产 ROM 会在息屏后冻结进程；本轮只在文档写，不做引导 UI |

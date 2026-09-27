@@ -58,6 +58,14 @@ public class MclinkVpnPlugin extends Plugin implements MclinkVpnState.Listener {
     /** 等服务回报结果的最长时间。建立隧道通常是 1–3 秒，25 秒是给"弱网 + 内核启动慢"留的余量。 */
     private static final int START_TIMEOUT_SECONDS = 25;
 
+    /**
+     * 等"房间规则已生效"的最长时间。
+     *
+     * 比 start 还长：施加 ACL 要先把内核实例停掉、再用新配置起一个（含隧道重新协商），
+     * 弱网下比首次连接更慢 —— 而超时表现是"房主以为没踢掉"，宁可多等几秒。
+     */
+    private static final int ACL_TIMEOUT_SECONDS = 35;
+
     private static final String EVENT_STATUS = "statusChanged";
     private static final String EVENT_LOG = "log";
 
@@ -168,6 +176,74 @@ public class MclinkVpnPlugin extends Plugin implements MclinkVpnState.Listener {
     @PluginMethod
     public void status(PluginCall call) {
         call.resolve(statusToJs(MclinkVpnState.get()));
+    }
+
+    /**
+     * 施加房主的房间规则（踢人/封禁）。
+     *
+     * 返回形状与 start/stop 一致：**平铺** `{ ok, mode?, error? }`（契约见 docs/android-vpn.md §3）。
+     *
+     * 为什么要等服务回报再 resolve：安卓这边是"重启内核实例"式施加（与桌面端 2.6.4 走的回退路径同一条，
+     * 因为 2.6.4 没有 `acl set` 热更新），要几秒钟才生效。先 resolve 一个 ok 再偷偷失败的话，
+     * 房主会以为人已经踢掉了 —— 而对方还在房间里玩。
+     */
+    @PluginMethod
+    public void applyAcl(PluginCall call) {
+        String aclToml = call.getString("aclToml");
+        if (aclToml == null || aclToml.trim().isEmpty()) {
+            call.reject("房间规则是空的", "internal");
+            return;
+        }
+        // 只做形状检查：真正的解析交给内核（parseConfig）—— 这里拦的是"明显不是 ACL 的东西"
+        if (!aclToml.contains("[acl.")) {
+            call.reject("房间规则格式不对（缺少 [acl.*] 段）", "internal");
+            return;
+        }
+        Context context = getContext();
+        if (context == null) {
+            call.reject("应用上下文不可用", "internal");
+            return;
+        }
+        if (!MclinkVpnState.get().running) {
+            call.reject("还没有联机，无法应用房间规则", "not-running");
+            return;
+        }
+
+        final long before = MclinkVpnState.aclOutcome().id;
+        MclinkVpnService.applyAcl(context, aclToml);
+
+        new Thread(
+                        () -> {
+                            MclinkVpnState.AclOutcome outcome = null;
+                            long deadline = System.currentTimeMillis() + ACL_TIMEOUT_SECONDS * 1000L;
+                            while (System.currentTimeMillis() < deadline) {
+                                MclinkVpnState.AclOutcome now = MclinkVpnState.aclOutcome();
+                                if (now.id != before) {
+                                    outcome = now;
+                                    break;
+                                }
+                                try {
+                                    Thread.sleep(80);
+                                } catch (InterruptedException e) {
+                                    Thread.currentThread().interrupt();
+                                    break;
+                                }
+                            }
+                            JSObject out = new JSObject();
+                            if (outcome == null) {
+                                out.put("ok", false);
+                                out.put("error", "应用房间规则超时：内核没有在 " + ACL_TIMEOUT_SECONDS + " 秒内回报结果");
+                            } else if (outcome.ok) {
+                                out.put("ok", true);
+                                out.put("mode", outcome.mode == null ? "restart" : outcome.mode);
+                            } else {
+                                out.put("ok", false);
+                                out.put("error", outcome.error == null ? "应用房间规则失败" : outcome.error);
+                            }
+                            resolve(call, out);
+                        },
+                        "mclink-vpn-acl-await")
+                .start();
     }
 
     @PluginMethod

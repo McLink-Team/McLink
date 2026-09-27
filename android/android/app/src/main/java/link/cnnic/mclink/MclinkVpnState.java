@@ -67,6 +67,28 @@ final class MclinkVpnState {
         void onLog(String line);
     }
 
+    /**
+     * 最近一次 `applyAcl` 的结果。
+     *
+     * 为什么要带一个自增 `id`：施加房间规则是**异步**的（要重启内核实例，几秒钟），
+     * 插件那边必须能等到"**我这一次**"的结果 —— 只读最后一个结果的话，
+     * 第二次踢人可能读到第一次留下的 ok，界面就会显示成功而规则其实没生效。
+     */
+    static final class AclOutcome {
+        final long id;
+        final boolean ok;
+        /** 当前实现只有 'restart'；'hot' 留给将来内核支持热更新时用 */
+        final String mode;
+        final String error;
+
+        AclOutcome(long id, boolean ok, String mode, String error) {
+            this.id = id;
+            this.ok = ok;
+            this.mode = mode;
+            this.error = error;
+        }
+    }
+
     /** 日志环形缓冲上限。手机上的日志面板只看最近这些，多了没用还占内存。 */
     private static final int MAX_LOGS = 200;
 
@@ -74,8 +96,21 @@ final class MclinkVpnState {
     private static final CopyOnWriteArrayList<Listener> LISTENERS = new CopyOnWriteArrayList<>();
     private static final LinkedList<String> LOGS = new LinkedList<>();
     private static Snapshot current = Snapshot.stopped();
+    private static AclOutcome aclOutcome = new AclOutcome(0L, false, null, null);
 
     private MclinkVpnState() {}
+
+    static AclOutcome aclOutcome() {
+        synchronized (LOCK) {
+            return aclOutcome;
+        }
+    }
+
+    static void setAclOutcome(boolean ok, String mode, String error) {
+        synchronized (LOCK) {
+            aclOutcome = new AclOutcome(aclOutcome.id + 1, ok, mode, error);
+        }
+    }
 
     static Snapshot get() {
         synchronized (LOCK) {
