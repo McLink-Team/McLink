@@ -6,8 +6,8 @@
  *
  * `verify-vpn-plan.mjs` 验"算得对不对"，`verify-vpn-bridge.mjs` 验"交给原生什么"，
  * 但这个功能的**交付物**最终是几句话：进房前要告诉玩家"授权 VPN 就进局域网了"，
- * 隧道起来后要告诉他"去 FCL 里添加服务器、地址填联机地址加端口"，以及
- * "手机做房主时踢人/限速不可用"这条边界。
+ * 隧道起来后要告诉他"去 FCL 里添加服务器、地址填联机地址加端口"，以及房主规则的边界
+ * ——**踢人可用，但每次施加规则房主会断约 2 秒；带宽限速不在 ACL 里，要重连房间才生效**。
  *
  * 这些话没有任何编译期保护：写错、写旧、留下一句"这台手机还不能联机"，
  * 类型检查全绿、布局检查全绿，只有玩家会撞上。所以这里在真浏览器里、走真实界面
@@ -62,12 +62,15 @@ const FAKE_NATIVE_BRIDGE = `
       { name: 'MclinkVpn', methods: [
         { name: 'start', rtype: 'promise' }, { name: 'stop', rtype: 'promise' },
         { name: 'status', rtype: 'promise' }, { name: 'logs', rtype: 'promise' },
+        { name: 'applyAcl', rtype: 'promise' },
         { name: 'addListener', rtype: 'callback' }, { name: 'removeListener', rtype: 'callback' }
       ] }
     ],
     nativePromise: function (plugin, method, options) {
       if (method === 'status') return Promise.resolve(snapshot());
       if (method === 'logs') return Promise.resolve({ lines: ['[info] 隧道已建立'] });
+      // 房主 ACL：真机上 EasyTier 2.6.4 没有热更新，走"重启实例"这条回退路径
+      if (method === 'applyAcl') return Promise.resolve({ ok: true, mode: 'restart' });
       if (method === 'stop') { state.running = false; state.startedAt = null; pushStatus(); return Promise.resolve(Object.assign(snapshot(), { ok: true })); }
       if (method === 'start') {
         state.running = true; state.instanceName = options.instanceName; state.tunFd = 42;
@@ -389,6 +392,46 @@ function assertMasterBlockGone(tag, settings) {
   );
 }
 
+/**
+ * 房主规则的边界说明 —— **按查证过的实现事实**逐条断言，而不是"意思大概对"。
+ *
+ * 依据（都不在客户端里，是主控与内核的事实）：
+ *   · `server/src/easytier/acl.ts:38-50`  踢人 = 每个被踢 IP 一条 Drop（priority 30000）
+ *   · `acl.ts:55-77` + `acl.ts:99`        严格端口模式：default_action 改 Drop，放行白名单与 ICMP
+ *   · `acl.ts:80-92`                      包速率限制 `rateLimitPps`（**单位是包/秒**）
+ *   · `packages/shared/src/types.ts:135-149`
+ *       `maxBandwidthKbps` / `perMemberKbps` 落到 `instance_recv_bps_limit` —— 那是**启动配置**，
+ *       不在 ACL 里，所以改完必须重新连接房间才生效。
+ *   · `server/src/services/rooms.ts:792`（kick）与 `:888`（updatePolicy）都 bump ACL revision，
+ *     房主端由 `client/src/lib/store.ts:1431-1437` 收到 `room.acl` → `applyHostAclIfNeeded()`。
+ *
+ * 所以这三句话必须同时出现：踢人**可用**、施加时房主**断约 2 秒**、**带宽限速要重连**。
+ * 少任何一句，玩家都会在"点了踢人没反应"或"改了限速没生效"上自己撞一次。
+ */
+function assertHostRulesCopy(tag, settingsText) {
+  const text = settingsText ?? '';
+  r.check(
+    `${tag}/设置页：写清了手机做房主时**踢人是生效的**（旧说法"踢人/限速不生效"已删）`,
+    /踢人/.test(text) && /照样生效/.test(text) && !/踢人与限速不生效/.test(text) && !/踢人.{0,6}不生效/.test(text),
+    text.slice(0, 260),
+  );
+  r.check(
+    `${tag}/设置页：写清了施加规则的代价 —— 房主虚拟网络重启、约 2 秒连不上`,
+    /重启/.test(text) && /2 秒/.test(text),
+    text.slice(0, 260),
+  );
+  r.check(`${tag}/设置页：写清了"房间不解散、不用重新加入"（否则玩家以为要重进）`, /不解散/.test(text) && /不用重新加入/.test(text));
+  r.check(
+    `${tag}/设置页：端口白名单与包速率限制也归入"生效"那一档（它们确实在 ACL 里）`,
+    /端口/.test(text) && /包速率/.test(text),
+  );
+  r.check(
+    `${tag}/设置页：写清了**带宽限速不在 ACL 里**、要重新连接房间才生效`,
+    /带宽限速/.test(text) && /重新连接房间/.test(text),
+  );
+  r.check(`${tag}/设置页：IPv4 那条边界仍在`, /IPv6/.test(text) && /只走 IPv4/.test(text));
+}
+
 /** 改昵称：可编辑 → 保留词本地拒绝且不发请求 → 服务端拒绝要显示原话 → 成功后界面立刻变 */
 function assertNicknameFlow(tag, nick, expectedNickname) {
   r.check(
@@ -494,6 +537,16 @@ try {
     !!notice && /虚拟局域网/.test(notice.text) && !/装了 Windows 客户端的朋友/.test(notice.text),
     notice ? notice.text : '',
   );
+  r.check(
+    'A：说明写了房主**也能踢人**，以及"每次改规则房主断线约 2 秒"这个代价',
+    !!notice && /做房主也能踢人/.test(notice.text) && /2 秒/.test(notice.text) && /重启/.test(notice.text),
+    notice ? notice.text : '',
+  );
+  r.check(
+    'A：说明里不再有"踢人与限速不生效"这种已经不成立的话',
+    !!notice && !/踢人与限速不生效/.test(notice.text) && !/踢人.{0,4}不生效/.test(notice.text),
+    notice ? notice.text : '',
+  );
   r.check('A：还没联机时不显示"下一步（启动器里添加服务器）"', !noPlugin.room.alerts.some((a) => a.cls.includes('alert-ok')));
   r.check('A：状态那一行是「联机失败」', noPlugin.room.status === '联机失败', `实际=${noPlugin.room.status}`);
   r.check('A：状态点是 danger（真实失败才亮红）', /led-danger/.test(noPlugin.room.ledClass), noPlugin.room.ledClass);
@@ -508,8 +561,12 @@ try {
     /虚拟局域网/.test(noPlugin.settings.text) && /(FCL|启动器)/.test(noPlugin.settings.text) && /添加服务器/.test(noPlugin.settings.text),
     noPlugin.settings.text.slice(0, 200),
   );
-  r.check('A/设置页：保留了"手机做房主时踢人 / 限速不可用"这条边界', /踢人/.test(noPlugin.settings.text) && /限速/.test(noPlugin.settings.text));
   r.check('A/设置页：可见文案里没有"里程碑"', noPlugin.settings.hasMilestone === false, noPlugin.settings.milestoneLines.join(' | '));
+
+  /* ------------------------------------------------ 房主规则的边界说明（A/B 都查） */
+
+  assertHostRulesCopy('A', noPlugin.settings.text);
+
   r.check(
     `A/设置页：版本号显示 v${EXPECTED_VERSION}（与 android/package.json 一致）`,
     noPlugin.settings.version === `v${EXPECTED_VERSION}`,
@@ -546,10 +603,26 @@ try {
   r.check('B：进房前那条说明退场（被下一步取代）', !connected.room.alerts.some((a) => /VPN 授权/.test(a.text)));
   r.check('B：状态那一行是「已联机 · <加入码>」', /^已联机 · [A-Z0-9]{4,}$/.test(connected.room.status), `实际=${connected.room.status}`);
   r.check('B：状态点是 ok（真在跑才亮绿）', /led-ok/.test(connected.room.ledClass), connected.room.ledClass);
+  /*
+   * 房主在手机上施加 ACL 的**整条链**：进房 → startNetwork 成功后 applyHostAclIfNeeded()
+   * → core.applyAcl(aclToml) → 插件回 mode:'restart' → store 把「房间规则已生效…」
+   * 写进 lastError（它复用 lastError 当提示通道）→ 这条 alert 出现在屏幕上。
+   *
+   * 这正是"手机上能踢人"在界面上的样子：**不再是**以前那句"安卓端暂不支持…不是故障"。
+   */
   r.check(
-    'B：房主在手机上应用 ACL 的诚实失败文案写明了"不是故障"',
-    connected.room.alerts.some((a) => /应用房间规则失败/.test(a.text) && /不是故障/.test(a.text)),
+    'B：房主施加规则的提示是"房间规则已生效"（重启式施加），不再是"暂不支持踢人"',
+    connected.room.alerts.some((a) => /应用房间规则失败/.test(a.text) === false && /房间规则已生效/.test(a.text)),
     JSON.stringify(connected.room.alerts.map((a) => a.text.slice(0, 80))),
+  );
+  r.check(
+    'B：界面上**没有**任何一条"应用房间规则失败"（插件在，踢人是能用的）',
+    !connected.room.alerts.some((a) => /应用房间规则失败/.test(a.text)),
+    JSON.stringify(connected.room.alerts.map((a) => a.text.slice(0, 80))),
+  );
+  r.check(
+    'B：也不再出现"暂不支持…踢人/限速"那句旧话术',
+    !connected.room.alerts.some((a) => /暂不支持/.test(a.text) && /踢人|限速/.test(a.text)),
   );
   r.check('B：可见文案里没有"里程碑"', connected.room.bodyHasMilestone === false, connected.room.milestoneLines.join(' | '));
   r.check('B/设置页：可见文案里没有"里程碑"', connected.settings.hasMilestone === false, connected.settings.milestoneLines.join(' | '));
@@ -560,6 +633,7 @@ try {
 
   /* ------------------------------------------------ 设置页：主控没了 + 改昵称（B） */
 
+  assertHostRulesCopy('B', connected.settings.text);
   assertMasterBlockGone('B', connected.settings);
   assertNicknameFlow('B', connected.nick, `手机昵称B${stamp.slice(-4)}`);
 

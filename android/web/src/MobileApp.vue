@@ -267,7 +267,7 @@ onUnmounted(() => {
             联机时手机会弹一次 VPN 授权 —— <strong>在系统对话框里点『确定』，这台手机就加入房间的虚拟局域网了</strong>：
             建房、拿加入码、进游戏都由这台手机完成，不需要另一台电脑代劳。
             只走 IPv4，IPv6 的服务器不在这个局域网里。
-            <strong>手机做房主时踢人与限速不生效</strong>（房间能建、能联，只是房主规则用不上）。
+            <strong>手机做房主也能踢人</strong>；代价是每次改房间规则，房主的虚拟网络会重启一次，约 2 秒内房间里连不上房主。
           </span>
           <button class="btn btn-sm btn-ghost" type="button" @click="dismissNotice()">知道了</button>
         </div>

@@ -56,6 +56,14 @@ if (!fs.existsSync(FIXTURE)) {
 }
 /** 真实票据（fixture 是主控真的下发过的那一份，见文件头说明） */
 const REAL_TOML = fs.readFileSync(FIXTURE, 'utf8');
+/**
+ * 一段**形状真实**的房主 ACL（`renderAcl()` 会产出的那种：`[acl.acl_v1]` +
+ * `[[acl.acl_v1.chains]]` + `[[acl.acl_v1.chains.rules]]`）。
+ * 断言用它证明"逐字传过去"，所以里面刻意留了换行与引号。
+ */
+const ACL_TOML =
+  '[acl.acl_v1]\n\n[[acl.acl_v1.chains]]\nname = "mclink_room_test"\nenabled = true\ndefault_action = 0\n\n' +
+  '[[acl.acl_v1.chains.rules]]\nname = "block_kicked_1"\npriority = 30000\nenabled = true\naction = 1\nsource_ips = ["10.200.0.4/32"]\n';
 /** 与 fixture 里的 instance_name 一致；下面还有一条"以 TOML 为准"的断言会故意传别的值 */
 const FIXTURE_INSTANCE = /^instance_name\s*=\s*"([^"]+)"/m.exec(REAL_TOML)?.[1] ?? '';
 /**
@@ -97,6 +105,24 @@ const FAKE_NATIVE_BRIDGE = `
    * 'nested' 只是"旧写法也别炸"的防御性回归。
    */
   let responseShape = 'flat';
+  /** applyAcl 的两个注入点：指定返回值 / 让桥直接抛异常 */
+  let aclOverride = null;
+  let aclThrow = false;
+  /*
+   * `call.reject(message, code)` 那条通道。
+   *
+   * 原生桥把 `result.error` 的键拷到一个 `Capacitor.Exception` 上，所以 JS 侧拿到的是
+   * 一个**带 `code` 的 Error** —— 这与"桥断了/代码自己抛的普通 Error"（没有 code）
+   * 是两件事，桥必须区别对待（见 mobile-bridge.ts 的 readNativeRejection）。
+   * 这里两个都造得出来：给了 code 就是原生拒绝，不给就是普通异常。
+   */
+  function rejection(spec) {
+    const err = new Error(spec.message);
+    if (spec.code) err.code = spec.code;
+    return Promise.reject(err);
+  }
+  let startReject = null;
+  let aclReject = null;
 
   function snapshot() { return Object.assign({}, state); }
   function pushStatus(patch) {
@@ -121,6 +147,8 @@ const FAKE_NATIVE_BRIDGE = `
     pushLog: pushLog,
     listenerCount: function (name) { return listeners[name].length; },
     failNextStart: function (result) { startOverride = result; },
+    failNextAcl: function (result) { aclOverride = result; },
+    throwNextAcl: function () { aclThrow = true; },
     clearCalls: function () { calls.length = 0; },
     setResponseShape: function (shape) { responseShape = shape; }
   };
@@ -130,6 +158,12 @@ const FAKE_NATIVE_BRIDGE = `
     if (pluginName !== 'MclinkVpn') return Promise.reject(new Error('未知插件 ' + pluginName));
     if (methodName === 'status') return Promise.resolve(snapshot());
     if (methodName === 'logs') return Promise.resolve({ lines: ['[info] 实例已启动', '[info] 隧道已建立'] });
+    if (methodName === 'applyAcl') {
+      if (aclThrow) { aclThrow = false; return Promise.reject(new Error('原生桥断了')); }
+      if (aclOverride) { const o = aclOverride; aclOverride = null; return Promise.resolve(o); }
+      // 真机上的默认结果：EasyTier 2.6.4 没有 acl set 热更新 → 重启式施加
+      return Promise.resolve({ ok: true, mode: 'restart' });
+    }
     if (methodName === 'stop') {
       /*
        * 清掉 lastError 是**必须的**，不是为了让测试好看：
@@ -182,6 +216,7 @@ const FAKE_NATIVE_BRIDGE = `
         { name: 'stop', rtype: 'promise' },
         { name: 'status', rtype: 'promise' },
         { name: 'logs', rtype: 'promise' },
+        { name: 'applyAcl', rtype: 'promise' },
         { name: 'addListener', rtype: 'callback' },
         { name: 'removeListener', rtype: 'callback' }
       ] }
@@ -613,20 +648,19 @@ if (!(await waitFor(withPlugin.evaluate, `window.mclink && window.mclink.core &&
   `);
   check('core.status() 反映插件当前状态（stopped）', statusRead.ok === true && statusRead.value.state === 'stopped', JSON.stringify(statusRead.value));
 
-  /* ------------------------------------------------ 诚实失败的三条 */
+  /* ------------------------------------------------ 诚实失败的两条 */
 
   const unsupported = await ask1(`${PAGE_HELPERS}
     window.__t.call('unsupported', async () => ({
-      acl: await window.mclink.core.applyAcl('[[acl]]'),
       peers: await window.mclink.core.peers(),
       cli: await window.mclink.core.cli(['--help']),
       resource: await window.mclink.core.resourceUsage(),
     }))
   `);
-  check('applyAcl / peers / cli / resourceUsage 不抛异常', unsupported.ok === true, unsupported.threw ?? '');
+  check('peers / cli / resourceUsage 不抛异常', unsupported.ok === true, unsupported.threw ?? '');
   if (unsupported.ok) {
     const u = unsupported.value;
-    for (const [key, method] of [['acl', 'applyAcl'], ['peers', 'peers'], ['cli', 'cli']]) {
+    for (const [key, method] of [['peers', 'peers'], ['cli', 'cli']]) {
       check(
         `core.${method}() 仍是诚实失败，且措辞写明"暂不支持…不是故障"`,
         u[key]?.ok === false && /暂不支持/.test(u[key]?.error ?? '') && /不是故障/.test(u[key]?.error ?? ''),
@@ -635,6 +669,77 @@ if (!(await waitFor(withPlugin.evaluate, `window.mclink && window.mclink.core &&
     }
     check('resourceUsage() 返回 null（没有子进程可测）', u.resource === null, JSON.stringify(u.resource));
   }
+
+  /* ------------------------------------------------ applyAcl（踢人） */
+
+  r.log('applyAcl —— 踢人靠它，走的是"重启式施加"这条回退路径');
+
+  // ① 真机上的默认结果：重启式施加
+  const aclOk = await ask1(`${PAGE_HELPERS}
+    window.__mclinkFake.clearCalls();
+    window.__t.call('applyAcl', async () => {
+      const res = await window.mclink.core.applyAcl(${JSON.stringify(ACL_TOML)});
+      const call = window.__mclinkFake.calls.find((c) => c.methodName === 'applyAcl');
+      const keys = res && typeof res === 'object' ? Object.keys(res).sort() : [];
+      return { res: res, call: call, keys: keys };
+    })
+  `);
+  check('core.applyAcl() 不抛异常', aclOk.ok === true, aclOk.threw ?? '');
+  if (aclOk.ok) {
+    check('插件收到了 applyAcl 调用', aclOk.value.call?.pluginName === 'MclinkVpn', JSON.stringify(aclOk.value.call));
+    check(
+      '**aclToml 是逐字传过去的**（少一个字符，房主实例上就是另一套规则）',
+      aclOk.value.call?.options?.aclToml === ACL_TOML,
+      JSON.stringify(aclOk.value.call?.options),
+    );
+    check(
+      "插件回 {ok:true,mode:'restart'} → 桥回 {ok:true,mode:'restart'}（踢人走的就是这条）",
+      isDeepStrictEqual(aclOk.value.res, { ok: true, mode: 'restart' }),
+      JSON.stringify(aclOk.value.res),
+    );
+    check('返回对象里只有 ok/mode 两个键，没有多余字段', isDeepStrictEqual(aclOk.value.keys, ['mode', 'ok']), JSON.stringify(aclOk.value.keys));
+  }
+
+  // ② 未来内核支持热替换时也要能透传
+  const aclHot = await ask1(`${PAGE_HELPERS}
+    window.__mclinkFake.failNextAcl({ ok: true, mode: 'hot' });
+    window.__t.call('applyAcl', async () => window.mclink.core.applyAcl(${JSON.stringify(ACL_TOML)}))
+  `);
+  check("插件回 mode:'hot' → 原样透传（内核支持热替换时不该被吞掉）", aclHot.ok === true && isDeepStrictEqual(aclHot.value, { ok: true, mode: 'hot' }), JSON.stringify(aclHot.value ?? aclHot.threw));
+
+  // ③ 失败：错误原文原样交给调用方（store 会拼成「应用房间规则失败：…」）
+  const aclFail = await ask1(`${PAGE_HELPERS}
+    window.__mclinkFake.failNextAcl({ ok: false, error: '重启实例失败：tun fd 已被回收' });
+    window.__t.call('applyAcl', async () => window.mclink.core.applyAcl(${JSON.stringify(ACL_TOML)}))
+  `);
+  check(
+    '插件回 {ok:false,error} → {ok:false,error} 原样（不吞、不自己编一句）',
+    aclFail.ok === true && isDeepStrictEqual(aclFail.value, { ok: false, error: '重启实例失败：tun fd 已被回收' }),
+    JSON.stringify(aclFail.value ?? aclFail.threw),
+  );
+
+  // ④ 失败但没说原因：给一句可读的兜底，而不是空的 error
+  const aclFailBare = await ask1(`${PAGE_HELPERS}
+    window.__mclinkFake.failNextAcl({ ok: false });
+    window.__t.call('applyAcl', async () => window.mclink.core.applyAcl(${JSON.stringify(ACL_TOML)}))
+  `);
+  check(
+    '插件只回 {ok:false} 时给一句可读的兜底（不是空字符串）',
+    aclFailBare.ok === true && aclFailBare.value?.ok === false && typeof aclFailBare.value.error === 'string' && aclFailBare.value.error.length > 10,
+    JSON.stringify(aclFailBare.value ?? aclFailBare.threw),
+  );
+
+  // ⑤ 插件抛异常：与 start 一样，不许冒给调用方
+  const aclThrow = await ask1(`${PAGE_HELPERS}
+    window.__mclinkFake.throwNextAcl();
+    window.__t.call('applyAcl', async () => window.mclink.core.applyAcl(${JSON.stringify(ACL_TOML)}))
+  `);
+  check('插件调用抛异常时 **不抛给调用方**（与 start 一致的处理）', aclThrow.ok === true, aclThrow.threw ?? '');
+  check(
+    '  · 而是回 {ok:false} + 一句"联机服务没有响应"',
+    aclThrow.ok === true && aclThrow.value?.ok === false && /联机服务没有响应/.test(aclThrow.value.error ?? ''),
+    JSON.stringify(aclThrow.value),
+  );
 
   /* ------------------------------------------------ 取消订阅真的生效 */
 
@@ -700,6 +805,25 @@ if (!(await waitFor(noPlugin.evaluate, `window.mclink && window.mclink.core && w
     window.__t.call('logs', async () => window.mclink.core.logs(50))
   `);
   check('插件缺失时 core.logs() 返回空数组而不是抛异常', lg.ok === true && Array.isArray(lg.value) && lg.value.length === 0, JSON.stringify(lg.value));
+
+  /*
+   * applyAcl 的降级路径（桌面浏览器 / 插件没打进包）。
+   *
+   * 这里要钉住的是一句**容易被写错的话**：插件缺失 ≠ 安卓不支持踢人。
+   * 所以断言两件事：不抛异常、且 error 指向"内核尚未接入"而**不是**"暂不支持踢人"。
+   */
+  const acl = await ask2(`${PAGE_HELPERS}
+    window.__t.call('applyAcl', async () => window.mclink.core.applyAcl(${JSON.stringify(ACL_TOML)}))
+  `);
+  check('插件缺失时 core.applyAcl() **不抛异常**', acl.ok === true, acl.threw ?? '');
+  if (acl.ok) {
+    check('  · 返回 {ok:false} + 可读的 error', acl.value?.ok === false && typeof acl.value.error === 'string' && acl.value.error.length > 5, JSON.stringify(acl.value));
+    check(
+      '  · 措辞指向"内核尚未接入"，而**不是**"安卓不支持踢人"（踢人是支持的）',
+      /内核尚未接入/.test(acl.value.error ?? '') && !/暂不支持/.test(acl.value.error ?? ''),
+      String(acl.value.error),
+    );
+  }
 }
 
 noPlugin.cdp.close();
