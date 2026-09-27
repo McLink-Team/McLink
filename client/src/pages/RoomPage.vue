@@ -817,7 +817,7 @@ async function doLeave(): Promise<void> {
                   <span
                     v-else
                     class="badge badge-neutral"
-                    title="兜底中继：主中继不可用时才接管；平时也会维持连接，所以也会有几 KB 保活流量"
+                    title="兜底中继：主中继不可用时才接管"
                   >
                     兜底
                   </span>
