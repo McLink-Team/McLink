@@ -10,25 +10,114 @@
  * 直接渲染它的后果不是"少几个功能"，而是满屏控件点了没反应 ——
  * 用户明确要求"不需要的入口直接不出现，而不是留个死按钮"。
  *
- * ## 手机真正需要的只有四件
+ * ## 手机真正需要的
  *
- *   1. 我是谁（账号、显示名）—— 确认没登错号；
- *   2. 本机名称 —— 房主靠它认出我，是这一页**唯一**会改到服务端的东西；
- *   3. 连的是哪台主控 —— 只读展示。手机上没有"自建主控"这回事（见 api.ts 的注释），
- *      但排查"连不上"时，玩家和客服都需要先确认这一行；
+ *   1. 我是谁（用户名、**可改的昵称**）—— 确认没登错号，顺手把昵称改掉；
+ *   2. 本机名称 —— 房主靠它认出我，注意它和昵称**不是一回事**（见下面两段的说明）；
+ *   3. 新消息提醒的开关；
  *   4. 退出登录 —— 换号时的唯一出路。
  *
- * 版本号放在最下面：和桌面外壳底部那行一样，是排查时才看的东西。
+ * 版本号与两条已知边界（踢人/限速、IPv6）放在最下面：和桌面外壳底部那行一样，
+ * 是排查与"先说清楚"时才看的东西。
+ *
+ * ## 这里**没有**主控地址
+ *
+ * 早先这一页有一块只读的「主控」分区（地址 + 是不是本机开发主控）。删掉的理由：
+ * 手机上没有"自建主控"这回事 —— 地址是编译期内置的，玩家既看不到也改不了，
+ * 展示它只会让人以为"可以换一台服务器"，而我们并不支持那么做
+ * （票据只能来自官方主控，见 client/src/lib/api.ts 的说明）。
+ * 排查"连不上"要看的是网络，不是这一行；**不要把它加回来**。
  */
 import { computed, ref } from 'vue';
-import { clientState, logout, setDevice } from '../../../client/src/lib/store.ts';
-import { getMasterUrl, USING_DEV_MASTER } from '../../../client/src/lib/api.ts';
+import { displayNameProblem } from '@mclink/shared';
+import { clientState, logout, setDevice, updateDisplayName } from '../../../client/src/lib/store.ts';
+import { friendlyError } from '../../../client/src/lib/api.ts';
 import { enableNotifications, notifyEnabled, setNotifyEnabled } from './message-notify.ts';
+
+const user = computed(() => clientState.user);
 
 const device = ref(clientState.deviceName);
 const busy = ref(false);
 const saved = ref(false);
 const error = ref('');
+
+/* ------------------------------------------------------------------ 昵称 */
+
+/**
+ * 昵称（显示名）——**这是唯一一处会改到账号本身的操作**。
+ *
+ * 规则、文案、交互全部照 `client/src/pages/SettingsPage.vue` 那一段来，
+ * 不另写一套：两端对"什么名字不能叫"的判断必须是同一个
+ * （`@mclink/shared` 的 `displayNameProblem`），否则玩家在手机上能改、
+ * 在电脑上被拒，或者反过来 —— 而这类不一致没人会想到去查。
+ */
+const nickname = ref(clientState.user?.displayName ?? '');
+const nickBusy = ref(false);
+const nickError = ref('');
+const nickSaved = ref(false);
+
+/**
+ * 本地先判一次，不用等服务端回 400。
+ *
+ * `selfDisplayName` 必须传自己**当前**的昵称：服务端有"改回自己原名放行"这条规则，
+ * 客户端不跟上的话，一个昵称里恰好含保留词的老用户连保存都点不下去。
+ * 服务端仍是强制点 —— 它还会拿库里所有显示名做重名比对，而客户端没有那份名单。
+ */
+const nicknameIssue = computed(() =>
+  nickname.value.trim().length > 0
+    ? displayNameProblem(nickname.value.trim(), { selfDisplayName: clientState.user?.displayName ?? null })
+    : null,
+);
+
+async function saveNickname(): Promise<void> {
+  const next = nickname.value.trim();
+  if (next.length === 0) {
+    nickError.value = '昵称不能为空。';
+    return;
+  }
+  // 按钮 disabled 时点不到，但回车/别处触发要兜底 —— 保证一定有可读的原因
+  if (nicknameIssue.value) {
+    nickError.value = nicknameIssue.value;
+    return;
+  }
+  nickBusy.value = true;
+  nickError.value = '';
+  nickSaved.value = false;
+  try {
+    await updateDisplayName(next);
+    // 服务端会 trim + 截到 32 字：以它回来的那一份为准，别让输入框停在一个没生效的值上
+    nickname.value = clientState.user?.displayName ?? next;
+    nickSaved.value = true;
+  } catch (err) {
+    /*
+     * 服务端可能因为保留词、重名、频率限制等拒绝 —— 它的 message 是**给玩家看的**，
+     * 原样显示（`friendlyError` 只把"网络不通"翻译成人话，其余一律透传），
+     * 不吞掉、也不自己编一句。（`updateDisplayName` 失败时不会动 `state.user`，
+     * 所以界面上的昵称保持旧值，不会出现"输入框变了但账号没变"。）
+     */
+    nickError.value = friendlyError(err);
+  } finally {
+    nickBusy.value = false;
+  }
+}
+
+/* ------------------------------------------------------------------ 本机名称 */
+
+async function saveDevice(): Promise<void> {
+  error.value = '';
+  saved.value = false;
+  busy.value = true;
+  try {
+    setDevice(device.value.trim());
+    saved.value = true;
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    busy.value = false;
+  }
+}
+
+/* ------------------------------------------------------------------ 提醒 */
 
 /** 开关状态。关闭是立即生效的；打开要先过系统权限，被拒就把它拨回关闭（不能让开关说谎） */
 const notify = ref(notifyEnabled());
@@ -45,22 +134,7 @@ async function toggleNotify(): Promise<void> {
   }
 }
 
-const masterUrl = getMasterUrl();
-const user = computed(() => clientState.user);
-
-async function saveDevice(): Promise<void> {
-  error.value = '';
-  saved.value = false;
-  busy.value = true;
-  try {
-    setDevice(device.value.trim());
-    saved.value = true;
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err);
-  } finally {
-    busy.value = false;
-  }
-}
+/* ------------------------------------------------------------------ 退出 */
 
 async function doLogout(): Promise<void> {
   busy.value = true;
@@ -74,7 +148,7 @@ async function doLogout(): Promise<void> {
 
 <template>
   <div class="stack">
-    <!-- 账号：确认自己没登错号 -->
+    <!-- 账号：确认自己没登错号，并改掉昵称 -->
     <section class="card stack">
       <h2 class="mobile-section-title">账号</h2>
       <div class="row-between">
@@ -83,12 +157,45 @@ async function doLogout(): Promise<void> {
       </div>
       <div class="row-between">
         <span class="faint">显示名</span>
-        <span>{{ user?.displayName ?? '—' }}</span>
+        <!-- .nick-current 是断言用的稳定钩子（保存后这里必须立刻变成新昵称），不加样式 -->
+        <span class="nick-current">{{ user?.displayName ?? '—' }}</span>
       </div>
+
+      <!--
+        改昵称。窄屏单列：一个输入框 + 一个按钮，不照搬桌面那套"标签在两列"的排法。
+        就地报错（.nick-bad）在输入框正下方 —— 每敲一个字都弹一次 alert 会盖住半屏。
+      -->
+      <div class="field">
+        <label class="label" for="nick-input">昵称</label>
+        <input
+          id="nick-input"
+          v-model="nickname"
+          class="input"
+          maxlength="32"
+          placeholder="会显示在房间成员列表与聊天里"
+          :disabled="nickBusy"
+        />
+        <div v-if="nickname.trim().length === 0" class="hint nick-bad">昵称不能为空。</div>
+        <!-- 与桌面、与服务端同一条规则（shared 的 displayNameProblem）：在输入时就报 -->
+        <div v-else-if="nicknameIssue" class="hint nick-bad">{{ nicknameIssue }}</div>
+        <div v-else class="hint">房间成员列表与聊天里显示的就是它；用户名不可修改。「本机名称」是另一回事（只备注这台设备）。</div>
+      </div>
+      <button
+        class="btn btn-primary"
+        type="button"
+        :disabled="nickBusy || nickname.trim().length === 0 || nicknameIssue !== null"
+        @click="saveNickname()"
+      >
+        保存昵称
+      </button>
+      <!-- 服务端拒绝时把它的原话显示出来 -->
+      <div v-if="nickError" class="alert alert-danger nick-error">{{ nickError }}</div>
+      <div v-else-if="nickSaved" class="alert alert-ok">昵称已保存。</div>
+
       <button class="btn btn-ghost" type="button" :disabled="busy" @click="doLogout">退出登录</button>
     </section>
 
-    <!-- 本机名称：这一页唯一会改到服务端的东西 -->
+    <!-- 本机名称：只影响房主看到的名字，不改账号 -->
     <section class="card stack">
       <h2 class="mobile-section-title">本机名称</h2>
       <div class="field">
@@ -123,20 +230,6 @@ async function doLogout(): Promise<void> {
       </p>
     </section>
 
-    <!-- 主控地址：只读。手机上没有自建主控这回事，但排查时必须能确认这一行 -->
-    <section class="card stack">
-      <h2 class="mobile-section-title">主控</h2>
-      <div class="field">
-        <label class="label">地址（编译期内置，不可修改）</label>
-        <!-- 用 .code 而不是 .input：它是只读事实，不该长得像一个可以填的框 -->
-        <div class="code truncate">{{ masterUrl }}</div>
-      </div>
-      <p v-if="USING_DEV_MASTER" class="hint">
-        这个包连的是本机开发主控（127.0.0.1）。正式包应当在构建时用 VITE_MCLINK_MASTER 指向官方主控。
-      </p>
-      <p v-else class="hint">平台不开放自建主控：客户端只能连官方主控，这是「票据只能来自官方主控」这条安全前提的一部分。</p>
-    </section>
-
     <!-- 版本与已知边界：能联机了，但"踢人/限速"与 IPv6 这两条要如实写出来，别让玩家自己撞上 -->
     <section class="card stack">
       <h2 class="mobile-section-title">关于</h2>
@@ -164,5 +257,16 @@ async function doLogout(): Promise<void> {
   color: var(--ink-2);
   font-size: var(--fs-sm);
   font-weight: 600;
+}
+
+/*
+ * 昵称的就地报错。
+ *
+ * 桌面的 `.acct-bad` 定义在 SettingsPage.vue 的 `<style scoped>` 里 —— scoped 会把它绑在
+ * 那个组件的 data-v 属性上，这边的元素匹配不到，所以只能自己写一条**同义**的规则：
+ * 字号沿用 .hint，只换颜色，颜色来自令牌（设计契约：本目录不出现任何颜色字面量）。
+ */
+.nick-bad {
+  color: var(--fault);
 }
 </style>
