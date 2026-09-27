@@ -248,9 +248,9 @@ export function deriveNetworkName(secret: string): string {
 * 房主票据里带 `acl`，成员票据不带（避免把房间策略泄露给成员）。
 * **票据里只有子节点中继**（2026-09-27 起）：`relays[]` 完全等于建房时写进 `room.relayNodeIds`
   的调度结果，自动模式下是 2 个不同节点（主中继 + 兜底中继）。主控自身中继**不再兜底** ——
-  2026-09-28 起连那个实例也不再启动，`masterRelayEndpoint()` / `masterRelayAvailable()` 只是
-  历史遗留的未调用代码；一个可调度子节点都没有时建房直接报 503
-  （规则与排序键见 §6）。
+  2026-09-28 起连"主控中继"这个实例本身都被移除（`masterRelayEndpoint()` /
+  `masterRelayAvailable()` 与按 `Host` 头推导地址的那条路径一起删掉了）；
+  一个可调度子节点都没有时建房直接报 503（规则与排序键见 §6）。
 
 ### 客户端侧的「回落中继」（P2P 质量差时绕开直连）
 

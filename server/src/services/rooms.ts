@@ -116,8 +116,6 @@ export interface CreateRoomInput {
    * 因此**老客户端（不发这个字段）的选择结果也变了** —— 详见 `selectRelays` 的注释。
    */
   latencyHints?: RelayLatencyHint[];
-  /** 请求的 Host 头，用于在未显式配置公网地址时推导主控中继地址 */
-  hostHint?: string | null;
 }
 
 export interface JoinResult {
@@ -599,8 +597,9 @@ export class RoomService {
      * 硬守卫：**一个可调度的子节点都没有，就不给建房**。
      *
      * 以前这里靠"主控自身中继还开着（`masterRelayAvailable`）"放行，于是单机部署时
-     * 票据里会出现主控地址（反代在国内之外时下发的是反代那台，正是本轮要根除的行为）。
-     * 本轮取消了主控兜底，就只剩"明确报错"这一条路：宁可不给建房，也不下发一个连不上的入口。
+     * 票据里会出现主控地址（反代在国内之外时下发的是反代那台）。主控兜底已取消、
+     * 那个「主控中继实例」本身也在 2026-09-28 一并移除，就只剩"明确报错"这一条路：
+     * 宁可不给建房，也不下发一个连不上的入口。
      * 文案要让玩家自己看得懂、也知道找谁 —— 客服照这句话就能判断是"平台没有在线子节点"。
      */
     if (relayNodeIds.length === 0) {
@@ -673,7 +672,6 @@ export class RoomService {
         row.id,
         input.userId,
         input.listenPort ?? this.settings.current.relayPort,
-        input.hostHint,
         input.rpcPort,
       ),
       pending: false,
@@ -697,7 +695,6 @@ export class RoomService {
     listenPort?: number;
     /** 见 CreateRoomInput.rpcPort */
     rpcPort?: number;
-    hostHint?: string | null;
   }): JoinResult {
     const row = this.rooms.findByCode(input.code.toUpperCase());
     if (!row) throw HttpError.notFound('加入码无效');
@@ -733,8 +730,7 @@ export class RoomService {
           row.id,
           input.userId,
           input.listenPort ?? this.settings.current.relayPort,
-          input.hostHint,
-          input.rpcPort,
+        input.rpcPort,
         ),
         pending: false,
       };
@@ -802,8 +798,7 @@ export class RoomService {
             row.id,
             input.userId,
             input.listenPort ?? this.settings.current.relayPort,
-            input.hostHint,
-            input.rpcPort,
+        input.rpcPort,
           ),
       pending,
     };
@@ -973,63 +968,16 @@ export class RoomService {
   /* ------------------------------------------------------------ 票据 */
 
   /**
-   * 主控自身中继端点。
-   *
-   * ⚠️ **它不再参与票据生成**（本轮改动）。以前 `ticket()` 会无条件把它追加成
-   * "兜底入口"，于是地址只能按 `relayPublicHost → publicBaseUrl → 请求 Host 头` 三级推导 ——
-   * 反代在国内之外的部署会把**反代那台**的地址下发给玩家（玩家当然连不上），
-   * 这正是本轮要根除的行为。现在每房的中继**全部**来自 `relay_nodes` 的调度结果
-   * （主 + 兜底两个不同子节点，见 `create()`）。
-   *
-   * 函数本身保留：将来把主控注册成一台普通子节点之后，它就和其他节点一样走正常调度，
-   * 那时这个地址推导（包括 Host 头这一级）仍然用得上。
-   */
-  masterRelayEndpoint(hostHint?: string | null): RelayEndpoint | null {
-    const et = this.config.easytier;
-    let host = et.relayPublicHost;
-    if (!host && this.config.publicBaseUrl) {
-      try {
-        host = new URL(this.config.publicBaseUrl).hostname;
-      } catch {
-        /* publicBaseUrl 配置不合法时忽略，继续回退 */
-      }
-    }
-    if (!host && hostHint) host = hostHint.split(':')[0] ?? '';
-    if (!host) return null;
-    return {
-      nodeId: 'master',
-      region: 'master',
-      label: '主控中继（兜底）',
-      url: `tcp://${host}:${et.relayPort}`,
-      udpUrl: `udp://${host}:${et.relayPort}`,
-      latencyMs: null,
-    };
-  }
-
-  /**
-   * 主控中继是否被配置为可用（`MCLINK_AUTOSTART_RELAY=true` 且端口 > 0）。
-   *
-   * ⚠️ 本轮起**没有任何调度路径读它**：主控不再作为票据兜底，建房守卫改成
-   * "一个可调度子节点都没有就明确报错"（见 `create()`）。保留它是给单机部署自查
-   * 与将来"主控注册成普通节点"用 —— **不要**再拿它当兜底依据。
-   */
-  masterRelayAvailable(): boolean {
-    return this.config.autoStartRelay && this.config.easytier.relayPort > 0;
-  }
-
-  /**
    * 生成客户端启动 EasyTier 所需的一切。
    *
-   * `hostHint` 本轮起**不再被使用**：它唯一的用途是推导主控自身中继的地址
-   * （请求的 Host 头是最后一级回退），而主控已经不参与票据了。
-   * 参数保留是为了不改动 API 层（`api/rooms.ts` 仍在传 `ctx.req.headers.host`）；
-   * 等主控注册成普通子节点时，它会重新在 `masterRelayEndpoint()` 里派上用场。
+   * 中继地址**只**来自房间调度结果（`room.relayNodeIds` → 子节点的链接端口），
+   * 主控自身不参与 —— 以前还有一条"主控兜底"，需要靠请求的 `Host` 头推导地址，
+   * 那条路径与推导一起删掉了（`masterRelayEndpoint()` 已移除）。
    */
   ticket(
     roomId: string,
     userId: string,
     listenPort: number,
-    hostHint?: string | null,
     /**
      * 客户端上报的 RPC 端口。校验放在 API 层（1024–65535），这里只做兜底：
      * 没给或明显不可用时按 listenPort 推算，保证老客户端与脚本调用照常工作。
@@ -1068,9 +1016,10 @@ export class RoomService {
     });
 
     /*
-     * 这里以前会无条件把 `masterRelayEndpoint(hostHint)` 追加进 relays（主控自身中继兜底）。
-     * 本轮取消：票据里的中继**只**来自房间调度结果（建房时写进 `room.relayNodeIds` 的那 1–2 个
-     * 子节点），不再有"主控那条"。理由见 `masterRelayEndpoint()` 的注释。
+     * 票据里的中继**只**来自房间调度结果（建房时写进 `room.relayNodeIds` 的那 1–2 个
+     * 子节点）。以前这里还会追加一条"主控自身中继"当兜底，那条路径连同它的地址推导
+     * （`masterRelayEndpoint()`，靠 `relayPublicHost → publicBaseUrl → Host 头` 猜地址）
+     * 已经全部删除 —— 主控不再参与转发，也就不需要猜自己的地址了。
      */
     if (relays.length === 0) {
       /*

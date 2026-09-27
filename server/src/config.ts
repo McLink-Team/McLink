@@ -68,7 +68,10 @@ export interface ServerConfig {
   /** 平台是否开放注册 */
   registrationOpen: boolean;
   logLevel: LogLevel;
-  /** 是否在启动时自动拉起主控中继实例 */
+  /**
+   * **已废弃**（2026-09-28 起主控不再运行自带中继，这个开关不再被任何代码读取）。
+   * 保留字段只是为了老配置文件不会因为多一个键而报错。
+   */
   autoStartRelay: boolean;
 }
 
@@ -93,39 +96,40 @@ export interface EasytierConfig {
   cliBin: string;
   /** 生成配置的存放目录 */
   configDir: string;
-  /** 主控中继监听的公共端口（TCP+UDP 同端口） */
+  /**
+   * **子节点**中继监听的默认端口（TCP+UDP 同端口）：注册节点时没显式给端口就用它。
+   * 控制台 `/meta` 的 `relayPort`、以及老客户端的探测端口兜底也读这个值。
+   */
   relayPort: number;
-  /** 中继实例的 RPC 端口，仅本机访问 */
+  /** **已废弃**：主控不再有自带中继，RPC portal 不再被使用 */
   relayRpcPortal: string;
-  /** 中继所在的管理网络名 */
+  /** 子节点所在的管理网络名（主控侧只用于生成节点配置） */
   relayNetworkName: string;
   relayNetworkSecret: string;
   /**
-   * 允许经由主控中继的外来网络，空格分隔的 wildmatch 模式。
-   * 默认 `mclink-room-*`：只为我们自己创建的房间中继，避免主控被当成免费公共中继。
+   * 允许经由**子节点中继**转发的网络名，空格分隔的 wildmatch 模式。
+   * 默认 `mclink-room-*`：只为我们自己创建的房间中继，避免节点被当成免费公共中继。
    */
   relayNetworkWhitelist: string;
-  /** 主控中继上是否创建 TUN 设备（服务端不需要） */
+  /** **已废弃**：主控不再有自带中继，TUN 开关不再被使用 */
   relayNoTun: boolean;
   /**
-   * 主控中继对外的公网主机名/IP。
+   * 主控对外的公网主机名/IP。
    *
-   * ⚠️ **本轮起它不再影响票据**：以前 `RoomService.masterRelayEndpoint()` 拿它
-   * （留空时依次回退到 `MCLINK_PUBLIC_BASE_URL` 的主机名、请求的 `Host` 头）拼出
-   * "主控中继"的下发地址，于是反代在国内之外的部署会把反代那台发给玩家。
-   * 现在票据里的中继**只**来自 `relay_nodes` 的调度结果，主控不参与。
-   * 配置项保留：单机部署自查、以及将来把主控注册成一台普通子节点时仍然用得上。
+   * ⚠️ **不影响票据**：票据里的中继只来自 `relay_nodes` 的调度结果（子节点注册时填的
+   * `endpoint`），主控不参与转发。它现在的用途是：`MCLINK_PUBLIC_BASE_URL` 为空时，
+   * 用它拼安装/更新指令里的主控地址（见 `api/admin.ts` 的 `publicHostOf()`）。
    */
   relayPublicHost: string;
   /**
-   * 主控中继的转发出口限速。
+   * 子节点中继的转发出口限速。
    * ⚠️ 单位是 EasyTier 原生的**字节/秒**（字段名叫 `_bps_` 但语义是字节），
    * 不是比特/秒。管理台的 `relayBandwidthKbps`（kbps）会经
    * `kbpsToBytesPerSecond()` 换算后再下发到子节点。
    * 0 = 不限。
    */
   relayForeignBpsLimit: number;
-  /** 中继实例是否启用多线程 */
+  /** **已废弃**：主控不再有自带中继，多线程开关不再被使用 */
   relayMultiThread: boolean;
   /** 运行子节点/房间实例时附加的公共参数 */
   extraFlags: string[];
