@@ -82,6 +82,13 @@ sudo bash deploy/install-server.sh --public-url https://cnnic.link \
   （`masterRelayEndpoint()`）不再被追加。所以「一台主控 + 没有子节点」时建房会直接报
   「当前没有可用的中继节点」——在管理台签发一个注册密钥、把主控这台机器也注册成普通子节点
   （`--endpoint <公网可达的 host:port>`，如 `cnnic.link:11010`）即可恢复单机可玩。
+  这一套有**一键脚本**（自动关掉主控自带中继、签发密钥、装节点、等到上线）：
+
+  ```bash
+  sudo node /opt/mclink/app/deploy/register-self-node.mjs --region oversea --disable-master-relay
+  ```
+
+  参数与手工等价的三步见 `docs/deployment.md` §2.3.1；加 `--dry-run` 只看计划不动系统。
 * 中继只监听一个端口，靠 `relay_network_whitelist = "mclink-room-*"` 为所有房间网络转发，
   新增/关闭房间**不需要重启中继**。
 * 若只想跑控制面、房间流量全走子节点：加 `--no-relay`（写入 `MCLINK_AUTOSTART_RELAY=false`）。

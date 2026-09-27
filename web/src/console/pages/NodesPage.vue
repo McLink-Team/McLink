@@ -364,6 +364,8 @@ async function removeNode(node: RelayNode): Promise<void> {
       </div>
       <div v-if="availability.length === 0" class="empty">
         还没有任何区域注册了节点；此时建房会直接失败（票据里的中继只会取自区域节点）。
+        单机部署可在服务器上执行 <code>sudo node deploy/register-self-node.mjs --region oversea --disable-master-relay</code>
+        把主控这台机器本身注册成节点（详见 docs/deployment.md §2.3.1）。
       </div>
       <div v-else class="tally">
         <div v-for="a in availability" :key="a.region" class="tally-item">

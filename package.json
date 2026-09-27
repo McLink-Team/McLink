@@ -18,6 +18,7 @@
     "build:client": "pnpm --filter @mclink/client build",
     "dist:client": "pnpm --filter @mclink/client dist",
     "start": "pnpm --filter @mclink/server start",
+    "register:self-node": "node deploy/register-self-node.mjs",
     "test": "pnpm --filter @mclink/server test",
     "typecheck": "pnpm -r typecheck",
     "verify:platform": "node client/scripts/verify-platform.mjs",
