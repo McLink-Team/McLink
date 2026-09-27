@@ -216,10 +216,11 @@ const memberRows = computed<MemberRow[]>(() =>
  * 清洗分三步：
  *   1. 剔除本机（注意本机 virtualIp 带 /24 掩码，peer list 里是裸地址，不剥掩码比不中）；
  *   2. 按虚拟地址归并同一节点的多条路径，优先保留 P2P、其次延迟更低的；
- *   3. **按「房间成员 / 中继节点」分组** —— 这是玩家最容易误解的地方：平台会下发多个中继
- *      （主控 + 各区域子节点），它们各占一行，看起来像"我同时连了两台服务器"。
- *      实际只有一个承载业务流量，其余是冗余与打洞协助。分组 + 「备用」标注把这个事实
- *      直接讲清楚，而不是让玩家自己猜。
+ *   3. **按「房间成员 / 中继节点」分组** —— 这是玩家最容易误解的地方：平台现在给每个房间
+ *      下发 **2 个不同的中继子节点**（主 + 兜底），它们各占一行，看起来像"我同时连了两台服务器"。
+ *      实际业务流量走主中继，兜底只在主中继不可用时接管；但 EasyTier 平时也会维持到兜底的
+ *      连接（保活 / 路由同步），所以两边都有几 KB 流量。分组 + 「主中继 / 兜底」标注
+ *      把这个事实直接讲清楚，而不是让玩家自己猜。
  */
 const visiblePeers = computed<PeerView[]>(() => {
   const selfIp = (session.value?.virtualIp ?? '').split('/')[0];
@@ -241,8 +242,46 @@ const memberIps = computed(
 const isMemberPeer = (p: PeerView): boolean => memberIps.value.has((p.ipv4 ?? '').split('/')[0]);
 const memberPeers = computed(() => visiblePeers.value.filter(isMemberPeer));
 const relayPeers = computed(() => visiblePeers.value.filter((p) => !isMemberPeer(p)));
-/** 走过流量的路径才算"在用"：只有字节数能说明哪条真的承载了业务流量 */
+/** 走过流量的路径才算"在用"：**只在名字对不上时**当保守回退用，不再是主判据（见下） */
 const carriesTraffic = (p: PeerView): boolean => p.rxBytes + p.txBytes > 0;
+
+/* ------------------------------------------------------------- 主中继判定 */
+
+/**
+ * 一行中继是不是**本房间的主中继**。
+ *
+ * 判据：**票据里的 `label` ↔ 内核 peer 行的 `hostname`**。平台按 `room.relayNodeIds`
+ * 的顺序下发中继（现在是 2 个不同子节点：主 + 兜底），票据 `relays` 与它同序，
+ * 所以 `relayNodeIds[0]`（也就是 `relays[0]`）那条就是主中继。
+ *
+ * 为什么不按 `relayPeers` 的数组下标判定：`relayPeers` 的顺序来自内核
+ * `easytier-cli peer list`（清洗后按 P2P 优先 / 延迟排序），跟平台下发顺序无关，
+ * 下标 0 不一定是主中继 —— 以顺序下断正是上一版的错误来源。
+ *
+ * 为什么不用"有没有字节数"判定：双中继模型下 EasyTier 会**同时**维持到两个中继的连接
+ * （保活 + 路由同步），两台都有几 KB 流量，旧判据会把兜底也标成"在用"，
+ * 结果每一行都是"承载流量"，玩家以为流量走了两条。
+ */
+const relayNameKey = (name: string): string => name.trim().toLowerCase();
+
+/** 票据里的中继名字：`primary` 是主中继（无票据时为 null），`all` 用于确认名字认不认得出来 */
+const relayNames = computed(() => {
+  const relays = session.value?.ticket?.relays ?? [];
+  const primaryId = session.value?.room?.relayNodeIds?.[0];
+  const byId = primaryId ? relays.find((r) => r.nodeId === primaryId) : undefined;
+  return { primary: byId?.label ?? relays[0]?.label ?? null, all: relays.map((r) => r.label) };
+});
+
+const isPrimaryRelay = (p: PeerView): boolean => {
+  const key = relayNameKey(p.hostname ?? '');
+  const { primary, all } = relayNames.value;
+  // 名字认得出来（内核给的 hostname 就是平台下发的 label）→ 按票据里的主中继判定
+  if (key && primary && all.some((label) => relayNameKey(label) === key)) {
+    return relayNameKey(primary) === key;
+  }
+  // 名字对不上时的保守回退：退回旧判据（只有走过字节数的那条当"在用"），不瞎标
+  return carriesTraffic(p);
+};
 
 /* ------------------------------------------------------- 丢包与回落中继 */
 
@@ -755,7 +794,7 @@ async function doLeave(): Promise<void> {
               </div>
             </div>
 
-            <!-- 中继节点：平台下发的入口（主 + 兜底两个不同子节点）。多个是刻意的冗余，不是"你连了两台服务器" -->
+            <!-- 中继节点：平台给每个房间下发 2 个不同子节点（主 + 兜底）。两个都会维持连接（保活），所以两边都有几 KB 流量，别按字节数判断谁在用 -->
             <div v-if="relayPeers.length > 0" class="path-group">
               <div class="path-group-head">
                 <span class="path-group-title">中继节点</span>
@@ -767,15 +806,21 @@ async function doLeave(): Promise<void> {
                     <span class="roster-name">{{ p.hostname || '未命名中继' }}</span>
                     <span class="roster-sub">{{ p.ipv4 || '平台下发的中继入口' }}</span>
                   </span>
-                  <!-- 只有走过字节数的那条才是在用的；其余显示"备用"，省得玩家以为流量走了两条 -->
+                  <!-- 只有一行是主中继（按 label↔hostname 匹配票据里的 relays[0]）；另一行是兜底 —— 它平时也连着，所以不能靠"有没有字节"来分 -->
                   <span
-                    v-if="carriesTraffic(p)"
+                    v-if="isPrimaryRelay(p)"
                     class="badge badge-ok"
-                    title="这条路径承载了业务流量"
+                    title="本房间的主中继：业务流量默认走这条"
                   >
-                    承载流量
+                    主中继
                   </span>
-                  <span v-else class="badge badge-neutral" title="冗余入口：只在主路径不可用时才转发">备用</span>
+                  <span
+                    v-else
+                    class="badge badge-neutral"
+                    title="兜底中继：主中继不可用时才接管；平时也会维持连接，所以也会有几 KB 保活流量"
+                  >
+                    兜底
+                  </span>
                   <span class="mono faint roster-sub roster-num">
                     {{ p.latencyMs === null ? '—' : `${p.latencyMs.toFixed(1)} ms` }}
                   </span>
