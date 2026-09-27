@@ -43,6 +43,16 @@ interface RoomDetail {
   usage: RoomUsage;
   accessLog: AccessLogEntry[];
   aclToml: string;
+  /** 建房时锁定的中继名单（带名字；服务端老版本可能没有这个字段） */
+  scheduledRelays?: Array<{ id: string; name: string | null; region: string | null; status: string | null; exists: boolean }>;
+  /** 此刻真正在承载这个房间的节点（带名字） */
+  relayNodes?: Array<{ id: string; name: string; region: string | null; scheduled: boolean }>;
+}
+
+/** 节点名兜底：服务端没解析出名字（节点记录已被删除）时退回 ID，并标明它已经没了 */
+function relayLabel(entry: { id: string; name: string | null; exists?: boolean }): string {
+  if (entry.name) return entry.name;
+  return `${entry.id}（节点记录已删除）`;
 }
 
 /**
@@ -50,10 +60,13 @@ interface RoomDetail {
  *
  * `p2p` 由服务端按 EasyTier 的 `cost` 判定（成员↔房主那一条）。以前服务端把「有延迟」当直连，
  * 于是走中继的成员也显示 P2P —— 玩家一眼就能看出是假的。现在只有真的直连才写 P2P。
- * 房主那一行没有「到房主」的链路，显示的是它看到的最快成员，因此单独标注。
+ *
+ * 房主那一行没有「到房主」的链路：服务端给的是**它看到的最快成员**那一条（见
+ * `resolveMemberLink` 的 role === 'host' 分支）。链路类型照样是"直连还是中继"，
+ * 只是对端是那个成员 —— 以前这里写「成员最快」，读的人根本不知道那是直连还是走中继，
+ * 现在统一成同一套措辞，表头里说明房主那一行的口径。
  */
 function linkNote(m: RoomMember): string {
-  if (m.role === 'host') return '成员最快';
   if (m.latencyMs === null) return '';
   return m.p2p ? 'P2P 直连' : '经中继';
 }
@@ -368,8 +381,38 @@ async function recomputeAcl(): Promise<void> {
             <span class="kv-k">EasyTier 网络</span>
             <span class="kv-v mono wrap-anywhere">{{ detail.room.networkName }}</span>
             <span class="kv-k">中继节点</span>
-            <span class="kv-v mono wrap-anywhere">
-              {{ asStringList(detail.room.relayNodeIds).length > 0 ? asStringList(detail.room.relayNodeIds).join(', ') : '无（建房时没有可用节点）' }}
+            <span class="kv-v wrap-anywhere">
+              <!--
+                显示**节点名**而不是 n_xxxx：调度名单里存的是内部 ID，
+                运营看房间详情时要知道的是"哪台机器"，不是一串 ID。
+              -->
+              <template v-if="detail.scheduledRelays && detail.scheduledRelays.length > 0">
+                <Badge v-for="r in detail.scheduledRelays" :key="r.id" :tone="r.exists ? 'neutral' : 'warn'">
+                  {{ relayLabel(r) }}
+                </Badge>
+                <span class="cell-sub">建房时调度（主中继 + 兜底中继）</span>
+              </template>
+              <template v-else-if="asStringList(detail.room.relayNodeIds).length > 0">
+                {{ asStringList(detail.room.relayNodeIds).join(', ') }}
+                <span class="cell-sub">旧主控没有节点名，只能显示 ID</span>
+              </template>
+              <span v-else class="faint">无（建房时没有可用节点）</span>
+            </span>
+            <span class="kv-k">正在承载</span>
+            <span class="kv-v wrap-anywhere">
+              <!--
+                「调度名单」与「实际在带」是两回事：某台掉了、换节点、手动改过 endpoint
+                都会让两份名单不一致。排障要看的是后者。
+              -->
+              <template v-if="(detail.relayNodes ?? []).length > 0">
+                <Badge v-for="n in detail.relayNodes" :key="n.id" :tone="n.scheduled ? 'ok' : 'warn'">
+                  {{ n.name }}
+                </Badge>
+                <span class="cell-sub">
+                  {{ (detail.relayNodes ?? []).every((n) => n.scheduled) ? '与调度名单一致' : '有节点不在调度名单里（正在顶班）' }}
+                </span>
+              </template>
+              <span v-else class="faint">此刻没有节点在转发这个房间（房间可能没人进来）</span>
             </span>
             <span class="kv-k">累计流量</span>
             <span class="kv-v">
@@ -418,6 +461,10 @@ async function recomputeAcl(): Promise<void> {
           <div class="sub-block">
             <div class="sub-head">
               <span class="console-sub-title">成员（{{ detail.members.length }}）</span>
+              <span class="cell-sub">
+                延迟一列的副标题写的是这条链路**是直连还是经中继**；房主那行没有"到房主"的链路，
+                服务端给的是它到**最快成员**那一条，所以措辞一样、含义是"房主 ↔ 那个最快成员"。
+              </span>
             </div>
             <div v-if="detail.members.length === 0" class="empty">暂无成员记录。</div>
             <div v-else class="table-wrap member-table">

@@ -715,6 +715,9 @@
   * `users[]: { id, username, displayName, todayRxBytes, todayTxBytes, usedBytes, quotaBytes }`
     —— 按用户的今日与终身用量（只列有用量的账号）；
   * `rooms[].today` / `nodes[].today` —— 各自今日的字节数。
+  `foreignNetworks[]`（正在被转发的房间网络）里，除了 `networkName` / 房间映射 / 速率与字节，
+  还有 **`nodes: [{ id, name }]`** —— 具体是**哪几台节点**在转发它，控制台的
+  「外来网络 → 房间归因」直接显示这几个节点名；`relaySources` 是同一件事的计数（老前端兼容用）。
   口径：`traffic_samples` 存的是**瞬时速率**（5 秒一条、留 72 小时），
   `traffic_ledger` 存的是**增量字节账本**（分钟桶、留 400 天）。
   「累计流量」「用户用量」一律以账本为准 —— 前者会被中继重启与多台节点同时转发搞坏
