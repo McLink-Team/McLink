@@ -194,6 +194,21 @@ logs(options: { limit?: number }): Promise<{ lines: string[] }>
  * 代价是**房主自己会短暂断线约 2 秒**；对方被踢是立刻生效的。
  */
 applyAcl(payload: { aclToml: string }): Promise<{ ok: boolean; mode?: 'hot' | 'restart'; error?: string }>
+
+/**
+ * 节点列表 —— 数据来自内核的 `collectNetworkInfos()`，由原生侧 `PeerRows` 映射成
+ * **桌面端 `easytier-cli peer list` 那套行形状**（`ipv4/hostname/cost/lat_ms/loss_rate/
+ * rx_bytes/tx_bytes/tunnel_proto/nat_type`），所以共用的 `parsePeers()` 与
+ * `relay-fallback.ts` 的"直连/中继"判断一行都不用改。
+ * 数值一律是**原生数字**（不是 CLI 那种 `"17.33 kB"`/`"5.3%"` 字符串）——
+ * 共用解析器本来就接受数字，少一次格式化再解析反而更准。
+ */
+peers(): Promise<{ ok: boolean; data?: unknown; error?: string }>
+
+/** TCP 探测：键是 `host:port`，`null` = 三次都没连上。与桌面端同口径（1200ms × 3 取最快、下限 1ms） */
+tcping(payload: { targets: Array<{ host: string; port: number }> }): Promise<{
+  results?: Record<string, number | null>;
+}>
 ```
 
 `logs()` 的 `limit` 目前**只在前端生效**：原生侧总是返回全部（最多 200 行环形缓冲），
@@ -333,7 +348,8 @@ applyAcl(payload: { aclToml: string }): Promise<{ ok: boolean; mode?: 'hot' | 'r
 | 项 | 为什么 |
 | --- | --- |
 | ~~手机做房主时的 **ACL**（踢人）~~ **已实现**（见 §3 的 `applyAcl`） | 原判断"Android JNI 侧没有施加 ACL 的路径"**只对了一半**：JNI 里确实没有 ACL 方法，但桌面端在 2.6.4 上也没有热更新（`acl set` 子命令不存在），走的是"合并进配置 → 重启内核实例"这条回退路径 —— 而这条路径在 Android 上完全可以用 `stopAllInstances` + `runNetworkInstance` + 重新 `setTunFd` 复现。代价是**施加时房主自己断线约 2 秒**（两端一样） |
-| 连接诊断面板的节点列表 | 需要 `callJsonRpc` 拉 peer 列表，本轮不做（桌面端有，够排查） |
+| ~~连接诊断面板的节点列表~~ **已实现**（`peers()`，见 §3） | 原判断"需要 `callJsonRpc` 拉 peer 列表、本轮不做"是**想窄了**：v2.6.4 的 JNI 虽然没有 `callJsonRpc`，但 `collectNetworkInfos()` 返回的 JSON 里就有 `peer_route_pairs`（桌面端 cli 也是从它拼表的）。映射成同一形状后，链路显示与诊断面板在安卓上也能用 |
+| ~~Android 的 `tcping` 恒为 null~~ **已实现** | 原生侧开一次 TCP 连接即可（1200ms × 3 取最快）。它同时补上了"建房时按延迟选节点"和**"隧道通不通"的可靠判据**（ICMP 在虚拟网络上不可信，见 §5） |
 | IPv6 | 票据里 `enable_ipv6 = false`，只加 v4 路由。**v6 流量不走隧道**（直连出去），这点要在 UI 上如实说明 |
 | 电池优化白名单引导 | 部分国产 ROM 会在息屏后冻结进程；本轮只在文档写，不做引导 UI |
 | 订阅制/Play 上架相关申报 | 我们走官网分发（`/downloads` 已支持 `.apk`），不涉及 |
