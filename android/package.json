@@ -1,6 +1,6 @@
 {
   "name": "@mclink/android",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "private": true,
   "type": "module",
   "description": "McLink Android 端：Capacitor 外壳 + 复用 client/src 的「暖纸台」渲染层",
