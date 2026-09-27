@@ -8,14 +8,13 @@
 
 | 症状 | 最可能原因 | 跳到 |
 | --- | --- | --- |
-| 主控日志 `未找到 easytier-core` | 二进制没下载/路径不对 | §1 |
-| 主控日志 `主控中继启动失败` / `进程退出，退出码 1` | 端口占用、配置非法、`bind_device`、权限 | §2、§10 |
-| 管理台「CLI 不可用」告警，流量一直是 0 | `easytier-cli` 缺失或 RPC portal 不通 | §3、§8 |
+| 主控启动日志里 `easytier-cli 探测失败` | 二进制没下载/路径不对 | §1 |
+| 管理台 `easytierVersion` 显示未知 | `easytier-cli` 缺失或不可执行 | §1、§3 |
 | 子节点一直 `pending` | agent 没起来 / 心跳失败 / 令牌无效 | §4 |
-| 建房报「当前没有可用的中继节点，请联系管理员」 | 用了 `--no-relay` 且没有在线子节点；或节点 `weight=0` | §5 |
+| 建房报「当前没有可用的中继节点，请联系管理员」 | 没有任何在线可调度的子节点（单机部署没注册本机节点）；或节点 `weight=0` | §5 |
 | 客户端能登录、能看到房间，但进不去 | `bind_device`、中继地址不可达、UDP 未放行 | §6、§7 |
 | 房主踢人后对方仍能连 | ACL 未应用 / 恶意客户端 / ACL 只在本实例生效 | §9 |
-| 流量统计恒为 0 | CLI 缺失、RPC 端口不符、P2P 直连绕过了中继 | §8 |
+| 流量统计恒为 0 | 子节点没上报、P2P 直连绕过了中继 | §8 |
 | 端口 11010 被占用 | 残留 easytier-core 进程 | §10 |
 | Windows 上 easytier-core panic：`SCM start an error` | 令牌受限 / 无法访问服务控制管理器 | §11 |
 | `acl set` 报「不支持的子命令」 | v2.6.4 的 CLI 没有该子命令 | §12 |
@@ -27,14 +26,12 @@
 
 ---
 
-## 1. 主控启动报「未找到 easytier-core」
+## 1. EasyTier 二进制缺失（`easytier-cli 探测失败`）
 
-**症状**（journald 或控制台）：
+**症状**（journald）：
 
 ```
-[error] 未找到 easytier-core（/opt/mclink/app/vendor/easytier/easytier-core）。
-请运行 `pnpm fetch:easytier` 下载，或用 MCLINK_ET_CORE 指定路径。
-主控仍在运行，但不会启动中继。
+[warn] easytier-cli 探测失败：版本信息不可用（/meta 的 easytierVersion 会是未知）
 ```
 
 **原因**（按概率排序）：
@@ -44,7 +41,7 @@
    GNU `tar` **不能解 zip**。2026-09 之前的脚本用 `tar -xf xxx.zip`，于是"下载 24 MB 成功、
    二进制却没落地"，日志里只有一句"压缩包解压失败"。现已改用 `unzip`（并写进依赖），
    缺失时依次退让到 `bsdtar` / `python3 -m zipfile`。
-3. `MCLINK_ET_CORE` 指向的路径写错，或与 `--dir` 不匹配。
+3. `MCLINK_ET_CORE` / `MCLINK_ET_CLI` 指向的路径写错，或与 `--dir` 不匹配。
 4. 二进制存在但没有可执行位。
 5. 架构不匹配（下成了 arm64 包）。
 
@@ -62,7 +59,7 @@ sudo bash deploy/install-server.sh --github-proxy https://ghproxy.net/
 # 3) 或手动放一份并校验
 sudo install -m 0755 easytier-core /opt/mclink/app/vendor/easytier/easytier-core
 sudo install -m 0755 easytier-cli  /opt/mclink/app/vendor/easytier/easytier-cli
-/opt/mclink/app/vendor/easytier/easytier-core --version
+/opt/mclink/app/vendor/easytier/easytier-cli --version
 sudo systemctl restart mclink-server
 
 # 4) 受限网络：设置代理后重试
@@ -80,53 +77,47 @@ command -v unzip || sudo apt-get install -y unzip
 unzip -l /tmp/et.zip | head    # 能列出内容就说明解压工具没问题
 ```
 
-注意：**只有中继缺失不影响控制面**。管理员仍可登录、建子节点；只是没有主控自带中继，
-房间必须依赖子节点（否则见 §5）。控制台「主控中继」页现在会直接告诉你是"没找到二进制"
-还是"没启用中继"（见 `diagnostics`），不用再去翻日志。
+注意：**主控已经不跑中继实例**，所以这两个二进制缺失对控制面本身没有影响 ——
+管理员仍可登录、建节点、建房。真正受影响的是两件事：
+
+* `GET /api/v1/meta` 的 `easytierVersion` 变成 `null`（版本探测用的就是 `easytier-cli`）；
+* 子节点无法从主控取到核心（`GET /agent/easytier-core`），装节点时会退回 GitHub 下载。
 
 ---
 
-## 2. 主控中继启动失败
+## 2. 「主控中继启动失败」——已取消
 
-**症状**：日志出现 `主控中继启动失败`，或 `GET /admin/overview` 的
-`relay.running = false`，`relay.lastError` 有内容。
-常见 `lastError`：
+**该概念已取消（2026-09-28）**：主控不再启动自带的中继实例，转发全部由子节点承担，
+所以日志里不会再出现 `主控中继启动失败`，`GET /admin/overview` 也不再返回 `relay` 字段。
 
-| `lastError` | 原因 | 处置 |
-| --- | --- | --- |
-| `easytier-core 不存在: <路径>` | 见 §1 | §1 |
-| `进程退出，退出码 1` | 配置非法/端口占用/无权限 | 看 `/opt/mclink/data/logs/relay.log` 尾部真实报错 |
-| `配置文件不存在: <路径>` | 数据目录不可写（权限/加固项） | `ls -ld /opt/mclink/data`；确认 `ReadWritePaths` 覆盖它 |
-| `启动失败: spawn ... EACCES` | 二进制没有执行权限 | `chmod 755` |
-
-**排查步骤**：
+如果历史上你见过这类报错（`进程退出，退出码 1`、`easytier-core 不存在`、
+`配置文件不存在: <路径>`、`启动失败: spawn ... EACCES`），那都是**主控自带中继**实例的问题，
+现在这些实例根本不存在了。中继侧的真实问题请按子节点排查：
 
 ```bash
-# 1) 先看生成出来的配置是否合理
-cat /opt/mclink/data/easytier/relay.toml
+# 子节点自己的日志（真正的报错在这里）
+journalctl -u mclink-node -f
+tail -n 80 /var/log/mclink/easytier-core.log
 
-# 2) 看中继进程自己的日志（真正的报错在这里）
-tail -n 80 /opt/mclink/data/logs/relay.log
+# 子节点上手工跑一次，把错误直接打出来
+sudo -u mclink /opt/mclink-node/app/vendor/easytier/easytier-core \
+  -c /etc/mclink/relay.toml \
+  -r 127.0.0.1:16010 --rpc-portal-whitelist 127.0.0.1/32
 
-# 3) 手工跑一次，把错误直接打出来
-sudo -u mclink /opt/mclink/app/vendor/easytier/easytier-core \
-  -c /opt/mclink/data/easytier/relay.toml \
-  -r 127.0.0.1:15888 --rpc-portal-whitelist 127.0.0.1/32
-
-# 4) 确认端口没被别的东西占着
-ss -lntup | grep -E '11010|15888'
+# 确认端口没被别的东西占着
+ss -lntup | grep -E '11010|16010'
 ```
 
 **典型配置错误**：把 `rpc_portal` 写进 TOML。它不是配置文件字段，会被**静默忽略**，
 导致实例退回默认 15888，多实例互相抢占（见 §8 与 `security.md` §4.3）。
-请只用命令行 `-r`。
+请只用命令行 `-r`（主控下发的 `launchArgs` 已经带上了）。
 
 ---
 
 ## 3. `easytier-cli` 不可用
 
-**症状**：启动日志里 `easytier-cli 探测失败，流量统计与 ACL 下发将不可用`；
-管理台「中继」页显示 `cliAvailable = false`；`GET /admin/overview` 里 `relay.cliVersion = null`。
+**症状**：启动日志里 `easytier-cli 探测失败：版本信息不可用`；
+`GET /admin/overview` 与 `GET /api/v1/meta` 的 `easytierVersion = null`。
 
 **原因**：`MCLINK_ET_CLI` 指向的文件不存在 / 不可执行 / 架构不对；或 CLI 与 core 版本差异过大。
 
@@ -137,8 +128,9 @@ grep MCLINK_ET_CLI /etc/mclink/mclink.env
 /opt/mclink/app/vendor/easytier/easytier-cli --version     # 期望输出 easytier-cli 2.6.4-...
 ```
 
-补齐后重启主控即可。**影响范围**：流量统计、ACL 下发、中继 peer 列表全部失效，
-但**房间联机本身不受影响**（票据是主控自己生成的，不依赖 CLI）。
+补齐后重启主控即可。**影响范围**：只有「版本显示」这一项 ——
+主控不再自带中继，所以它既不靠 CLI 采样，也不再拿 CLI 下发 ACL；
+**房间联机与流量统计都不受影响**（票据与逐房间用量都是主控自己算的，数据来自子节点心跳）。
 
 ---
 
@@ -214,14 +206,14 @@ if (relayNodeIds.length === 0) throw 503 当前没有可用的中继节点
 ```
 
 2026-09-27 起**主控不再兜底**：以前这里是 `&& !masterRelayAvailable()`，现在只要
-`relayNodeIds` 为空就报错（`masterRelayAvailable()` = `MCLINK_AUTOSTART_RELAY=true`
-**且** `MCLINK_RELAY_PORT > 0` 仍然保留，但只服务于单机自查与"把主控注册成普通子节点"，
-不再影响建房判定）。
+`relayNodeIds` 为空就报错。2026-09-28 起主控连自带的中继实例也不再启动
+（`MCLINK_AUTOSTART_RELAY` 随之废弃、不再写进 env），所以建房能否成功只看一件事：
+**有没有可调度的在线子节点**。单机部署就把主控这台机器注册成一台普通子节点
+（`deploy/register-self-node.mjs`，见 `deployment.md` §2.3.1）。
 
 **原因与处置**：
 
-1. 一个可调度的在线子节点都没有（`--no-relay` / `MCLINK_AUTOSTART_RELAY=false` 不再有影响：
-   主控自己不再兜底）→ 至少让一个子节点 `online`。
+1. 一个可调度的在线子节点都没有（单机部署没注册本机节点）→ 至少让一个子节点 `online`。
 2. 有子节点但都在 `pending` / `offline` → 见 §4。
 3. 子节点 `weight = 0`（管理员设过）→ 调度器**不会**选它
    （`listSchedulable()` 要求 `weight > 0`）。管理台把它改回 100。
@@ -249,9 +241,8 @@ EasyTier 的 `bind_device` 默认 `true`，会把隧道的出站套接字绑定�
 在受限容器、多网卡、Windows 沙箱等环境会直接报 `WSAEADDRNOTAVAIL (10049)`，
 现象就是**能登录主控、但永远进不了房间**。
 
-平台已经在三处统一设为 `false`：
+平台已经在两处统一设为 `false`：
 
-* 主控中继：`server/src/easytier/manager.ts` → `bindDevice: false`
 * 子节点：`server/src/services/nodes.ts` 的 `renderNodeConfig()` → `bindDevice: false`
 * 客户端：`server/src/services/rooms.ts` 的 `ticket()` → `bindDevice: false`
   （客户端 `client/electron/main.cjs` 只把票据里的 TOML 原样落盘）
@@ -259,8 +250,8 @@ EasyTier 的 `bind_device` 默认 `true`，会把隧道的出站套接字绑定�
 **验证**：
 
 ```bash
-# 主控/子节点生成的配置里应当有
-grep -n 'bind_device' /opt/mclink/data/easytier/relay.toml /etc/mclink/relay.toml
+# 子节点生成的配置里应当有
+grep -n 'bind_device' /etc/mclink/relay.toml
 # 期望： bind_device = false
 
 # 客户端配置（Windows）
@@ -329,33 +320,32 @@ sudo ufw status | grep 11010
 
 ## 8. 流量统计恒为 0
 
-**数据来源**：主控每 5 秒调一次 `easytier-cli -p <rpc> -o json peer list` 与 `peer list-foreign`，
-用相邻两次采样的差分算 bit/s。子节点则由 agent 每 20 秒上报 `roomTraffic`。
+**数据来源**：子节点的 agent 每 20 秒上报一次 `roomTraffic`（逐房间网络名 + 字节 + 速率），
+主控每 6 秒做一次平台维度的聚合与推送。主控自己**不再**调 `easytier-cli` 采样。
 
 **原因与处置**：
 
 | 原因 | 验证方式 | 处置 |
 | --- | --- | --- |
-| `easytier-cli` 不可用 | 见 §3 | 补齐 CLI |
-| RPC portal 不通 | `easytier-cli -p 127.0.0.1:15888 peer list` 手工执行 | 确认 `MCLINK_RELAY_RPC` 与实际一致；确认没有多实例抢占 15888 |
-| 中继没在跑 | `relay.running = false` | 见 §2 |
-| **房间全走 P2P 直连** | 房间内成员显示 `p2p = true` | 这是**正常**的：直连流量不经过中继，中继侧的字节数自然接近 0。想统计到流量就关掉房间策略的 `allowP2p` |
+| 没有任何子节点在线 | `GET /api/v1/stats` 的 `nodes.online` 为 0 | 见 §4、§5 |
 | 子节点没上报 | 子节点 `rooms` 字段一直是 0 | 子节点上 `easytier-cli` 缺失或 RPC 端口推导不一致（应为 `16000 + endpoint端口 % 1000`） |
-| 采样被限速/超时 | 日志 `采集主控中继状态失败` | 机器负载过高或 CLI 卡死；看日志里的具体报错 |
-| 只是还没等到第二轮采样 | — | 首轮采样只记录总量不算速率，等 5–10 秒 |
+| **房间全走 P2P 直连** | 房间内成员显示 `p2p = true` | 这是**正常**的：直连流量不经过中继，中继侧的字节数自然接近 0。想统计到流量就关掉房间策略的 `allowP2p` |
+| 只是还没等到第二轮心跳 | — | 子节点首次上报只记录总量不算速率，等 20–40 秒 |
+| 速率读数是 0 但累计在涨 | 流量页「今日/本月/累计」在涨 | 正常：账本记的是字节增量，瞬时速率靠相邻两次心跳差分 |
 
-**手工核对**：
+**手工核对**（在子节点机器上执行；RPC 端口 = `16000 + endpoint端口 % 1000`）：
 
 ```bash
-# 主控中继的 peer 与外来网络（JSON 里字段是 snake_case，数值是人类可读字符串如 "17.33 kB"）
-/opt/mclink/app/vendor/easytier/easytier-cli -p 127.0.0.1:15888 -o json peer list
-/opt/mclink/app/vendor/easytier/easytier-cli -p 127.0.0.1:15888 -o json peer list-foreign
+# 它的 peer 与外来网络（JSON 里字段是 snake_case，数值是人类可读字符串如 "17.33 kB"）
+/opt/mclink-node/app/vendor/easytier/easytier-cli -p 127.0.0.1:16010 -o json peer list
+/opt/mclink-node/app/vendor/easytier/easytier-cli -p 127.0.0.1:16010 -o json peer list-foreign
 
 # 全局计数器（traffic_bytes_forwarded 才是"转发出去"的字节）
-/opt/mclink/app/vendor/easytier/easytier-cli -p 127.0.0.1:15888 stats show
+/opt/mclink-node/app/vendor/easytier/easytier-cli -p 127.0.0.1:16010 stats show
 ```
 
-注意：**数据保留 72 小时**（`app.traffic.prune(72)`），所以「昨天的曲线」查不到是正常的。
+注意：**数据保留 72 小时**（`app.traffic.pruneBatch(72)`），所以「昨天的曲线」查不到是正常的；
+更早的字节量看账本（保留 400 天）。
 
 ---
 
@@ -397,14 +387,16 @@ POST /api/v1/rooms/:id/rotate-secret
 
 ## 10. 端口 11010 被占用
 
-**症状**：中继日志里 `bind: address already in use` / `进程退出，退出码 1`；
+**症状**：子节点日志里 `bind: address already in use` / `进程退出，退出码 1`；
 或启动后客户端全连不上（其实连到了别的进程）。
+（主控自身不监听 11010，所以这条只在**跑中继的机器**上出现 —— 包括单机部署里
+被注册成本机节点的那台。）
 
 **排查**：
 
 ```bash
 # Linux
-ss -lntup | grep -E ':11010|:15888'
+ss -lntup | grep -E ':11010|:16010'
 sudo lsof -iTCP:11010 -sTCP:LISTEN
 sudo lsof -iUDP:11010
 
@@ -413,19 +405,21 @@ Get-NetTCPConnection -LocalPort 11010 -ErrorAction SilentlyContinue
 Get-NetUDPEndpoint    -LocalPort 11010 -ErrorAction SilentlyContinue
 ```
 
-**原因**：上次没退干净的 easytier-core（`KillMode=mixed` 已尽量规避，但手工 `kill` 主控
-可能留下孤儿进程）；或与别的服务（另一个 VPN、别的 EasyTier 实例）冲突。
+**原因**：上次没退干净的 easytier-core（agent 自带退避重启、systemd 用 `KillMode=mixed`，
+但手工 `kill` 可能留下孤儿进程）；或与别的服务（另一个 VPN、别的 EasyTier 实例）冲突。
 
 **处置**：
 
 ```bash
 # 杀掉残留实例（先确认它就是 easytier-core）
 sudo pkill -f 'easytier-core.*relay.toml'
-sudo systemctl restart mclink-server
+sudo systemctl restart mclink-node
 ```
 
-或改端口：`--relay-port 11011`（同时放行新端口的 TCP+UDP），
+或换端口：子节点用 `--listen-port 11011` 重新注册（同时放行新端口的 TCP+UDP），
 **并让客户端重新取票据**（票据里的中继地址已变；老房间的票据需重新获取）。
+若想改的是**默认值**（影响之后所有新节点与建房默认端口），改主控的
+`install-server.sh --relay-port 11011`（`MCLINK_RELAY_PORT`）。
 
 ---
 
@@ -484,10 +478,8 @@ match windows_service::service_dispatcher::start(String::new(), ffi_service_main
 
 ## 12. `acl set` 不支持
 
-**症状**：
-
-* `POST /api/v1/admin/relay/acl` 的响应是 `{"mode":"restart"}` 而不是 `"hot"`；
-* 或客户端日志出现「当前 easytier-cli 不支持 acl set，改为重启实例」。
+**症状**：客户端日志出现「当前 easytier-cli 不支持 acl set，改为重启实例」，
+房间设置里点「立即重新应用规则」后房主会断线约 2 秒。
 
 **原因**：`acl set` 是 EasyTier **较新版本**才加入的子命令。v2.6.4 的命令树里只有 `acl stats`：
 
@@ -497,10 +489,9 @@ Commands:
   stats  Show ACL rule hit statistics
 ```
 
-平台因此做了**能力探测**而不是假定存在：
-
-* 服务端：`RelayManager.supportsAclSet()`（跑 `acl --help` 看有没有 `set`）；
-* 客户端：`client/electron/main.cjs` 的 `supportsAclSet()`。
+平台因此做了**能力探测**而不是假定存在：客户端 `client/electron/main.cjs` 的 `supportsAclSet()`。
+（服务端侧的 `RelayManager.supportsAclSet()` 随主控中继实例一起停用 —— 房间 ACL 现在只由
+房主客户端应用。）
 
 **处置**：
 
@@ -509,7 +500,6 @@ Commands:
 * 想热更新：升级 EasyTier 到带 `acl set` 的版本，然后
   `node scripts/fetch-easytier.mjs --version vX.Y.Z` 并替换 `vendor/easytier/` 下的二进制，
   重启服务。
-* 想确认当前能力：`easytier-cli acl --help`，或看管理台「中继」页的提示。
 
 ---
 

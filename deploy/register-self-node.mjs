@@ -4,36 +4,33 @@
  *
  * 为什么需要它：2026-09-27 起主控不再当中继兜底，票据里的中继**全部**来自 `relay_nodes`
  * 里可调度的子节点；一台都没有时建房直接 503「当前没有可用的中继节点」。
- * 单机（一台服务器）恢复可玩有两条路，本脚本走的是推荐的那条：
- *
- *   ① 关掉主控自带的中继实例，把主控这台机器按普通子节点注册到 11010（推荐，本脚本默认路径）；
- *   ② 保留主控中继，另开一个端口（如 11011）再跑一个节点实例（用 --listen-port 11011）。
+ * 单机（一台服务器）要恢复可玩，就把主控这台机器按普通子节点注册进来 ——
+ * 2026-09-28 起主控也不再自带中继实例，所以 11010 默认是空的，直接用它即可。
  *
  * 为什么不用「控制台签发密钥 + 粘贴命令」两条手工步骤：签发密钥是个纯 API 动作，
  * 脚本可以自己带上管理员密码完成，于是整件事收敛成一条命令。
  *
  * 用法（在主控机器上，root）：
  *
- *   sudo node /opt/mclink/app/deploy/register-self-node.mjs --region oversea --disable-master-relay
+ *   sudo node /opt/mclink/app/deploy/register-self-node.mjs --region oversea
  *
  *   # 先看看它会做什么（真登录、真签一把密钥，但不改配置、不装节点）：
  *   sudo node deploy/register-self-node.mjs --region oversea --dry-run
  *
- *   # 保留主控中继、换一个端口跑节点（防火墙上要放行这个端口）：
+ *   # 11010 已经被别的服务占了时，换一个端口跑节点（防火墙上要放行这个端口）：
  *   sudo node deploy/register-self-node.mjs --region oversea --listen-port 11011
  *
- * 它做的六件事：
+ * 它做的五件事：
  *   1. 读 `/etc/mclink/mclink.env`（端口、管理员密码、公网主机名、中继端口）；
  *   2. 校验：区域合法、endpoint 能推出来、要用的端口没被别的进程占、endpoint 没被已有节点占用；
  *   3. 用管理员密码登录主控（走 127.0.0.1，不依赖 nginx/HTTPS）；
  *   4. 签发一把**一次性**注册密钥；
- *   5. `--disable-master-relay` 时把 `MCLINK_AUTOSTART_RELAY=false` 写进 env 并重启 mclink-server
- *      （会先备份 env 文件），然后跑 `deploy/install-node.sh` 在本机装上节点（systemd 单元 `mclink-node`）；
- *   6. 轮询 `GET /admin/nodes` 直到这台节点变 `online`，打印结果与善后提示。
+ *   5. 跑 `deploy/install-node.sh` 在本机装上节点（systemd 单元 `mclink-node`），
+ *      轮询 `GET /admin/nodes` 直到这台节点变 `online`，打印结果与善后提示。
  *
  * ⚠️ 一定要知道的几点：
- *   · 第 5 步会**先关主控中继再装节点**，中间有几十秒"一个中继都没有"的窗口：此刻建房会 503。
- *     装失败时脚本会明确告诉你怎么回滚（把 `MCLINK_AUTOSTART_RELAY` 改回 true 再重启）。
+ *   · 这是**新增**一个中继入口，不是改造主控：装完之前一个可调度节点都没有时建房仍然 503，
+ *     装完之后这台机器就是一个正常参与调度的子节点。
  *   · `--endpoint` 必须是**外网可达**的 `host:port`（客户端的链接端口）。默认取
  *     `MCLINK_RELAY_PUBLIC_HOST`，为空时取 `MCLINK_PUBLIC_BASE_URL` 的主机名。
  *   · 安全组/防火墙要放行该端口（TCP **和** UDP，EasyTier 两者都用）。
@@ -106,8 +103,6 @@ function printUsage() {
                            （海外机器用 oversea，香港用 hk）
 
 常用：
-  --disable-master-relay   关掉主控自带的中继实例（改 env + 重启 mclink-server），
-                           然后本机节点接管原来的中继端口。单机部署推荐这样。
   --listen-port <端口>     本机 easytier-core 实际监听端口，默认取 MCLINK_RELAY_PORT（11010）
   --endpoint <host:port>   客户端连接本节点用的公网地址；默认 MCLINK_RELAY_PUBLIC_HOST(:中继端口)，
                            再退到 MCLINK_PUBLIC_BASE_URL 的主机名。NAT 后面要用这个显式指定。
@@ -137,7 +132,6 @@ function parseArgs(argv) {
     adminUser: 'admin',
     adminPassword: '',
     envFile: '/etc/mclink/mclink.env',
-    disableMasterRelay: false,
     dryRun: false,
     wait: 120,
   };
@@ -159,7 +153,6 @@ function parseArgs(argv) {
       case '--admin-password': out.adminPassword = need(); i += 1; break;
       case '--env-file': out.envFile = need(); i += 1; break;
       case '--wait': out.wait = Number(need()); i += 1; break;
-      case '--disable-master-relay': out.disableMasterRelay = true; break;
       case '--dry-run': out.dryRun = true; break;
       case '-h':
       case '--help': printUsage(); process.exit(0); break;
@@ -194,30 +187,6 @@ function readEnvFile(file) {
     map.set(key, value);
   }
   return map;
-}
-
-/** 原地改一个键（不存在就追加），改前备份。权限保持 600。 */
-function writeEnvValue(file, key, value) {
-  const original = fs.readFileSync(file, 'utf8');
-  const backup = `${file}.bak-${new Date().toISOString().replace(/[:.]/g, '-')}`;
-  fs.writeFileSync(backup, original, { mode: 0o600 });
-  const lines = original.split(/\r?\n/);
-  let replaced = false;
-  const next = lines.map((line) => {
-    if (new RegExp(`^\\s*(export\\s+)?${key}\\s*=`).test(line)) {
-      replaced = true;
-      return `${key}=${value}`;
-    }
-    return line;
-  });
-  if (!replaced) next.push(`${key}=${value}`);
-  fs.writeFileSync(file, next.join('\n'), { mode: 0o600 });
-  try {
-    fs.chmodSync(file, 0o600);
-  } catch {
-    /* 非 Linux 上忽略 */
-  }
-  return backup;
 }
 
 /* ------------------------------------------------------------ HTTP */
@@ -300,7 +269,6 @@ async function main() {
   const connectPort = args.connectPort ?? listenPort;
   const masterBase = (args.master || `http://127.0.0.1:${httpPort}`).replace(/\/+$/, '');
   const adminPassword = args.adminPassword || env.get('MCLINK_ADMIN_PASSWORD') || '';
-  const autoStartRelay = (env.get('MCLINK_AUTOSTART_RELAY') ?? 'true') !== 'false';
   const endpointHost =
     hostOf(args.endpoint) || env.get('MCLINK_RELAY_PUBLIC_HOST') || hostOf(env.get('MCLINK_PUBLIC_BASE_URL') || '');
   const endpoint = args.endpoint || (endpointHost ? `${endpointHost}:${connectPort}` : '');
@@ -308,7 +276,7 @@ async function main() {
 
   log(`主控 API：${masterBase}${args.dryRun ? color.dim('（--dry-run）') : ''}`);
   note(`配置文件：${args.envFile}${fs.existsSync(args.envFile) ? '' : '（不存在，参数只来自命令行）'}`);
-  note(`主控中继：${autoStartRelay ? `启用（端口 ${relayPort}）` : '已关闭（MCLINK_AUTOSTART_RELAY=false）'}`);
+  note(`本机中继端口：${relayPort}（MCLINK_RELAY_PORT）`);
 
   /* 2. 校验 */
   if (!REGION_IDS.includes(args.region)) {
@@ -327,18 +295,13 @@ async function main() {
   ok(`区域 ${args.region} / 名称 ${name} / 对外地址 ${endpoint}`);
   note(`本机监听端口 ${listenPort}（运行端口），客户端连 ${connectPort}（链接端口）`);
 
-  /* 端口冲突：主控自带中继正占着这个端口 */
-  if (autoStartRelay && listenPort === relayPort) {
-    if (!args.disableMasterRelay) {
-      die(
-        `端口 ${relayPort} 正被**主控自带的中继**占用，二选一：\n` +
-          `  · 推荐：加 --disable-master-relay（关掉主控中继，本机节点接管 ${relayPort}）\n` +
-          `  · 或者：加 --listen-port 11011（另开一个端口跑节点，记得放行它 + 用 --endpoint host:11011）`,
-      );
-    }
-    warn(`将关闭主控自带中继（${relayPort} 让给本机节点）—— 装的瞬间会有一小段没有中继的窗口`);
-  } else if (await isPortBusy(listenPort)) {
-    die(`端口 ${listenPort} 已被别的进程占用（不是主控中继）。换 --listen-port，或先腾出这个端口。`);
+  /* 端口冲突：主控不再自带中继，11010 默认是空的；占着它的只可能是别的进程 */
+  if (await isPortBusy(listenPort)) {
+    die(
+      `端口 ${listenPort} 已被占用。二选一：\n` +
+        `  · 加 --listen-port 11011（另开一个端口跑节点，记得放行它 + 用 --endpoint host:11011）\n` +
+        `  · 或者先腾出这个端口（ss -lntup | grep ${listenPort}）`,
+    );
   }
 
   /* 3. 登录（先登录再检查 endpoint 冲突，报错信息更准确） */
@@ -406,50 +369,19 @@ async function main() {
   if (args.dryRun) {
     console.log('');
     log('--dry-run：下面这些没有执行');
-    if (args.disableMasterRelay && autoStartRelay) {
-      note(`1) 把 MCLINK_AUTOSTART_RELAY=false 写进 ${args.envFile}（会先备份）并重启 mclink-server`);
-    }
-    note(`2) ${installCmd}`);
-    note('3) 轮询 /admin/nodes 等这台节点变 online');
+    note(`1) ${installCmd}`);
+    note('2) 轮询 /admin/nodes 等这台节点变 online');
     console.log(`\n去掉 --dry-run 再跑一次即可真正执行（上面那把密钥是一次性的，会随本次作废）。\n`);
     return;
   }
 
-  /* 5. 关主控中继（如需要）+ 装节点 */
-  let envBackup = '';
-  if (args.disableMasterRelay && autoStartRelay) {
-    envBackup = writeEnvValue(args.envFile, 'MCLINK_AUTOSTART_RELAY', 'false');
-    ok(`已写入 MCLINK_AUTOSTART_RELAY=false（备份：${envBackup}）`);
-    const restart = spawnSync('systemctl', ['restart', 'mclink-server'], { stdio: 'inherit' });
-    if (restart.status !== 0) {
-      die(
-        '重启 mclink-server 失败。手工处理：\n' +
-          `  sudo systemctl restart mclink-server\n` +
-          `  回滚：把 ${envBackup} 覆盖回 ${args.envFile} 再重启`,
-      );
-    }
-    let up = false;
-    for (let i = 0; i < 30 && !up; i += 1) {
-      await sleep(2000);
-      try {
-        await api(masterBase, '/meta');
-        up = true;
-      } catch {
-        /* 还在起 */
-      }
-    }
-    if (!up) die('主控重启后 60 秒内没起来，看 journalctl -u mclink-server -n 50');
-    ok('主控已重启（自带中继已关闭）');
-  }
-
+  /* 5. 装节点 */
   log(`安装节点：${installCmd}`);
   const install = spawnSync('bash', installArgs, { stdio: 'inherit' });
   if (install.status !== 0) {
     console.error('');
     console.error(color.err('✗ 节点安装失败（安装脚本已打印原因，常见的是 EasyTier 下载超时或端口未放行）'));
-    if (envBackup) {
-      console.error(`  回滚主控中继：sudo cp ${envBackup} ${args.envFile} && sudo systemctl restart mclink-server`);
-    }
+    console.error(`  排查与回滚：journalctl -u mclink-node -n 50；不要了就把本机节点关掉：systemctl disable --now mclink-node`);
     process.exitCode = install.status ?? 1;
     return;
   }
@@ -485,8 +417,7 @@ ${color.ok('完成。')}现在控制台「节点」里能看到这台节点，�
 后续：
   · 建房验证：控制台 →「节点」应显示 online；玩家建房后房间详情里能看到这台的节点 ID。
   · 安全组/防火墙：放行 ${listenPort} 的 TCP 与 UDP（EasyTier 两者都用）。
-  · 主控自带中继：${args.disableMasterRelay ? '已关闭（MCLINK_AUTOSTART_RELAY=false）' : '仍在运行（与节点是两个独立实例）'}。
-  · 回滚（把主控中继开回来）：${envBackup ? `sudo cp ${envBackup} ${args.envFile} && sudo systemctl restart mclink-server` : '把 MCLINK_AUTOSTART_RELAY 改回 true 后重启 mclink-server'}。
+  · 关掉本机节点：systemctl disable --now mclink-node（主控不受影响，转发会回到其它子节点上）。
   · 这台机器的节点令牌在 /etc/mclink/node-token.json —— 重装节点不会换身份，不用重新注册。
 `);
 }

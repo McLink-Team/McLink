@@ -109,214 +109,118 @@ async function main(): Promise<void> {
     log.warn('未找到前端构建产物，将显示兜底页面。请先执行 pnpm build:web', { root: app.web.root });
   }
 
-  /* ---------------------------------------------------- 主控中继 */
+  /* ------------------------------------------- 主控不再自带中继（已取消） */
 
+  /**
+   * 2026-09-28 起**主控不再运行自带的中继实例**：「主控中继」这个概念已经取消，
+   * 所有转发都由子节点承担（单机部署就把主控本身注册成一台普通子节点，
+   * 见 `deploy/register-self-node.mjs`）。
+   *
+   * 为什么删掉：那个实例当初的用途是"票据里那条兜底入口"的载体，而现在票据里的中继
+   * **只**来自 `relay_nodes` 的调度结果；它继续启动只会留下一个一直崩的控制台面板
+   * （本机节点占了 11010 时 easytier-core 直接退出码 1，面板永远显示"未运行 + 最近错误"）。
+   *
+   * 随之废弃的环境变量：`MCLINK_AUTOSTART_RELAY`、`MCLINK_RELAY_RPC`、
+   * `MCLINK_RELAY_NO_TUN`、`MCLINK_RELAY_MULTITHREAD`（`config.ts` 仍会读，但没有任何
+   * 代码路径会因为它们改变行为）。老部署里留着它们不会有副作用；
+   * `MCLINK_RELAY_PORT` 仍然有用 —— 它是**子节点中继端口**的默认值。
+   */
+  const cli = await app.relay.ensureCli();
+  if (!cli) log.warn('easytier-cli 不可用：/meta 的 easytierVersion 会显示未知');
   if (app.config.autoStartRelay) {
-    const coreExists = await fileExists(app.config.easytier.coreBin);
-    if (!coreExists) {
-      log.error(
-        `未找到 easytier-core（${app.config.easytier.coreBin}）。` +
-          '请运行 `pnpm fetch:easytier` 下载，或用 MCLINK_ET_CORE 指定路径。',
-      );
-    } else {
-      log.info('正在启动主控中继', {
-        port: app.config.easytier.relayPort,
-        whitelist: app.config.easytier.relayNetworkWhitelist,
-      });
-      const runtime = await app.relay.start();
-      if (runtime.running) {
-        log.info('主控中继已就绪', { listen: runtime.listen, network: runtime.networkName });
-      } else {
-        log.error('主控中继启动失败', { error: runtime.lastError });
-      }
-      const cli = await app.relay.ensureCli();
-      if (!cli) {
-        log.warn('easytier-cli 不可用：流量统计与 ACL 下发会被跳过');
-      }
-    }
-  } else {
-    log.warn('按配置跳过了主控中继的自动启动（MCLINK_AUTOSTART_RELAY=false）');
+    log.info('主控自带中继已取消：转发全部由子节点承担（MCLINK_AUTOSTART_RELAY 不再生效）');
   }
 
   /* ---------------------------------------------------- 后台任务 */
 
-  // 1) 中继采样：把状态写进流量账本，并通过 WebSocket 推送
-  app.relay.on('sample', (sample) => {
-    /**
-     * 主控自己转发的外来网络。
-     * `relay.update` 是「主控中继面板」的数据源，口径**保持只看主控** ——
-     * 把子节点带的网络混进去，那一页的读数就变成两码事了。
-     */
-    const masterForeign: ForeignNetworkInfo[] = sample.foreignNetworks.map((fn) => {
-      const room = app.rooms.findByNetworkName(fn.networkName);
-      return { ...fn, roomId: room?.id ?? null };
-    });
-
-    /**
-     * 全网外来网络：主控 + 所有在线子节点，按网络名去重、速率相加。
-     *
-     * 玩家是按区域就近接入的，房间流量大多走在子节点上；只看主控的话，
-     * 控制台的「外来网络」和流量页的按房间视图会长期是 0 或残缺（用户实测反馈）。
-     */
-    const foreignAll = mergeRelayedNetworks(
-      sample.foreignNetworks.map((fn) => ({
-        networkName: fn.networkName,
-        peers: fn.peerCount,
-        rxBps: fn.rxBps,
-        txBps: fn.txBps,
-        rxBytes: fn.rxBytes,
-        txBytes: fn.txBytes,
-      })),
-      app.nodeService.relayingNetworks(),
-    ).map((fn) => ({ ...fn, roomId: app.rooms.findByNetworkName(fn.networkName)?.id ?? null }));
-
-    /**
-     * 全网聚合：主控中继 + 所有在线子节点。
-     *
-     * 只统计主控那一台是错的 —— 玩家按区域就近接入，绝大多数流量其实走在子节点上，
-     * 于是"中继收发"长期显示 0（线上实测）。平台维度的读数与曲线都该用这个聚合值。
-     */
+  /**
+   * 流量聚合 + WebSocket 推送（每 6 秒一次）。
+   *
+   * 以前这件事挂在"主控中继采样事件"上；主控不再自带中继后改成**按子节点聚合**：
+   * 子节点心跳（`deploy/agent.mjs`）已经在上报逐房间的累计字节与速率，
+   * 逐房间的入账也在 `api/agent.ts` 里做完了，这里只负责平台读数、采样表与控制台推送。
+   */
+  const publishTraffic = (): void => {
+    /** 所有在线子节点的速率之和（离线节点表里还留着最后上报的数，不算） */
     const nodeBps = app.nodes.totalBps();
+    /** 全网外来网络：只有子节点这一种来源（按网络名去重、速率相加） */
+    const foreignAll = mergeRelayedNetworks([], app.nodeService.relayingNetworks()).map((fn) => ({
+      ...fn,
+      roomId: app.rooms.findByNetworkName(fn.networkName)?.id ?? null,
+    }));
+    const ts = new Date().toISOString();
 
-    app.traffic.record({
-      scope: 'relay',
-      scopeId: 'master',
-      rxBytes: sample.totalRxBytes,
-      txBytes: sample.totalTxBytes,
-      rxBps: sample.rxBps,
-      txBps: sample.txBps,
-      peers: sample.peerCount,
-    });
-
-    // 平台维度单独记一条，供流量页的「平台总收发趋势」使用（含子节点）
+    // 平台维度采样（字节账本由会计模块写，这里只管瞬时速率曲线）
     app.traffic.record({
       scope: 'platform',
       scopeId: 'all',
-      rxBytes: sample.totalRxBytes,
-      txBytes: sample.totalTxBytes,
-      rxBps: sample.rxBps + nodeBps.rxBps,
-      txBps: sample.txBps + nodeBps.txBps,
-      peers: sample.peerCount + nodeBps.peers,
+      rxBytes: 0,
+      txBytes: 0,
+      rxBps: nodeBps.rxBps,
+      txBps: nodeBps.txBps,
+      peers: nodeBps.peers,
     });
 
     /**
-     * 真实账本入账：把"从实例启动算起的累计值"变成增量，写进 room_usage / users.used_bytes /
-     * traffic_ledger（见 services/traffic-ledger.ts）。以前这里直接把累计值覆盖写进
-     * room_usage，于是中继一重启房间累计就归零 —— 控制台的「累计流量」因此长期不可信。
-     *
-     * 主控中继换了实例（重启）时先丢基线：新实例的计数器从 0 开始，
-     * 保留旧基线会让回退判定把"新实例的累计"当成增量重复入账。
+     * platform 话题是**匿名可读**的，因此这里只放聚合数字。
+     * 逐房间名称/带宽属于房间运营信息，只发到 traffic 话题（仅管理员），
+     * 否则话题鉴权就被载荷本身绕过了。
      */
-    const relayStartedAt = app.relay.status().startedAt;
-    if (relayStartedAt !== lastRelayStartedAt) {
-      lastRelayStartedAt = relayStartedAt;
-      app.accountant.forgetSource('master');
-    }
-    const accounted = app.accountant.account(
-      'master',
-      sample.foreignNetworks.map((fn) => ({
-        networkName: fn.networkName,
-        rxBytes: fn.rxBytes,
-        txBytes: fn.txBytes,
-        peerCount: fn.peerCount,
-      })),
-    );
-
-    /**
-     * 房间维度的**瞬时速率**曲线仍写 traffic_samples（流量页的近一小时曲线用它）；
-     * 字节账本在 accountant 里写（两者分工见 db/traffic.ts 的注释）。
-     */
-    for (const fn of masterForeign) {
-      app.traffic.record({
-        scope: 'room',
-        scopeId: fn.roomId ?? fn.networkName,
-        roomId: fn.roomId,
-        rxBytes: fn.rxBytes,
-        txBytes: fn.txBytes,
-        rxBps: fn.rxBps,
-        txBps: fn.txBps,
-        peers: fn.peerCount,
-      });
-    }
-    const attributed = accounted.rooms;
-
-    // 每 6 秒推一次，避免高频刷新压垮浏览器
-    const now = Date.now();
-    if (now - lastPlatformPush > 6000) {
-      lastPlatformPush = now;
-      /**
-       * platform 话题是**匿名可读**的，因此这里只放聚合数字。
-       * 逐房间名称/带宽属于房间运营信息，只发到 traffic 话题（仅管理员），
-       * 否则话题鉴权就被载荷本身绕过了。
-       */
-      hub.publish(Topics.platform, {
-        type: 'traffic.tick',
-        report: {
-          ts: sample.ts,
-          // 全网聚合（主控 + 在线子节点）：只报主控的话落地页那块读数会长期是 0
-          totalRxBps: sample.rxBps + nodeBps.rxBps,
-          totalTxBps: sample.txBps + nodeBps.txBps,
-          masterRxBps: sample.rxBps,
-          masterTxBps: sample.txBps,
-          nodesRxBps: nodeBps.rxBps,
-          nodesTxBps: nodeBps.txBps,
-          onlineRelayNodes: nodeBps.nodes,
-          totalRxBytes: sample.totalRxBytes,
-          totalTxBytes: sample.totalTxBytes,
-          relayPeers: sample.peerCount + nodeBps.peers,
-          roomCount: foreignAll.length,
-        },
-      });
-      hub.publish(Topics.traffic, {
-        type: 'traffic.tick',
-        report: {
-          ts: sample.ts,
-          totalRxBps: sample.rxBps + nodeBps.rxBps,
-          totalTxBps: sample.txBps + nodeBps.txBps,
-          masterRxBps: sample.rxBps,
-          masterTxBps: sample.txBps,
-          nodesRxBps: nodeBps.rxBps,
-          nodesTxBps: nodeBps.txBps,
-          onlineRelayNodes: nodeBps.nodes,
-          totalRxBytes: sample.totalRxBytes,
-          totalTxBytes: sample.totalTxBytes,
-          // 按房间归因也用全网口径：子节点带的房间同样要出现在这里
-          byRoom: foreignAll.map((f) => ({
-            roomId: f.roomId ?? f.networkName,
-            name: f.roomId ? (app.rooms.findById(f.roomId)?.name ?? f.networkName) : f.networkName,
-            rxBps: f.rxBps,
-            txBps: f.txBps,
-            peers: f.peers,
-          })),
-          byNode: app.nodes.list().map((n) => ({
-            nodeId: n.id,
-            name: n.name,
-            rxBps: n.rx_bps,
-            txBps: n.tx_bps,
-            peers: n.peers,
-          })),
-        },
-      });
-      hub.publish(Topics.traffic, {
-        type: 'relay.update',
-        // 只看主控：这一帧是给「主控中继面板」用的
-        relay: { ...app.relay.status(), foreignNetworks: masterForeign },
-      });
-    }
-    log.debug('中继采样', {
-      peers: sample.peerCount,
+    hub.publish(Topics.platform, {
+      type: 'traffic.tick',
+      report: {
+        ts,
+        totalRxBps: nodeBps.rxBps,
+        totalTxBps: nodeBps.txBps,
+        masterRxBps: 0,
+        masterTxBps: 0,
+        nodesRxBps: nodeBps.rxBps,
+        nodesTxBps: nodeBps.txBps,
+        onlineRelayNodes: nodeBps.nodes,
+        totalRxBytes: 0,
+        totalTxBytes: 0,
+        relayPeers: nodeBps.peers,
+        roomCount: foreignAll.length,
+      },
+    });
+    hub.publish(Topics.traffic, {
+      type: 'traffic.tick',
+      report: {
+        ts,
+        totalRxBps: nodeBps.rxBps,
+        totalTxBps: nodeBps.txBps,
+        masterRxBps: 0,
+        masterTxBps: 0,
+        nodesRxBps: nodeBps.rxBps,
+        nodesTxBps: nodeBps.txBps,
+        onlineRelayNodes: nodeBps.nodes,
+        totalRxBytes: 0,
+        totalTxBytes: 0,
+        byRoom: foreignAll.map((f) => ({
+          roomId: f.roomId ?? f.networkName,
+          name: f.roomId ? (app.rooms.findById(f.roomId)?.name ?? f.networkName) : f.networkName,
+          rxBps: f.rxBps,
+          txBps: f.txBps,
+          peers: f.peers,
+        })),
+        byNode: app.nodes.list().map((n) => ({
+          nodeId: n.id,
+          name: n.name,
+          rxBps: n.rx_bps,
+          txBps: n.tx_bps,
+          peers: n.peers,
+        })),
+      },
+    });
+    log.debug('流量聚合（子节点）', {
+      nodes: nodeBps.nodes,
+      peers: nodeBps.peers,
       rooms: foreignAll.length,
-      attributed,
-      rxDelta: accounted.rxBytes,
-      txDelta: accounted.txBytes,
-      userBytes: accounted.userBytes,
     });
-  });
+  };
 
-  let lastPlatformPush = 0;
-  /** 主控中继实例的启动时间：换了实例就要丢掉账本基线（见上面的 forgetSource） */
-  let lastRelayStartedAt: string | null = null;
-  app.relay.startPolling(5000);
+  publishTraffic();
+  timers.push(setInterval(publishTraffic, 6000));
 
   // 2) 节点健康检查 + 状态推送
   timers.push(

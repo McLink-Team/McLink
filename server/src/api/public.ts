@@ -41,29 +41,18 @@ export interface DownloadArtifact {
 
 export function registerPublicRoutes(router: Router, app: App): void {
   /**
-   * 全网外来网络数：主控自己 + 所有刚心跳过的子节点，按网络名去重。
+   * 全网外来网络数：所有刚心跳过的子节点上报的房间网络，按网络名去重。
    *
-   * 只算主控那一台是错的：玩家按区域就近接入，绝大多数房间走在子节点上，
-   * 落地页那格读数会长期是 0（用户实测反馈）。
+   * 这里以前还要并上主控自带中继的那一份；2026-09-28 起主控不再自带中继，
+   * 转发全在子节点上，所以只剩一个来源。
    */
   const foreignNetworkCount = (): number =>
-    mergeRelayedNetworks(
-      (app.relay.latest()?.foreignNetworks ?? []).map((fn) => ({
-        networkName: fn.networkName,
-        peers: fn.peerCount,
-        rxBps: fn.rxBps,
-        txBps: fn.txBps,
-        rxBytes: fn.rxBytes,
-        txBytes: fn.txBytes,
-      })),
-      app.nodeService.relayingNetworks(),
-    ).length;
+    mergeRelayedNetworks([], app.nodeService.relayingNetworks()).length;
 
   router.get(Routes.meta, () => {
     const s = app.settings.current;
     const nodeCounts = app.nodes.countByStatus();
     const online = (nodeCounts.online ?? 0) + (nodeCounts.degraded ?? 0);
-    const relaySample = app.relay.latest();
     const nodeBps = app.nodes.totalBps();
     return {
       siteName: s.siteName,
@@ -93,15 +82,15 @@ export function registerPublicRoutes(router: Router, app: App): void {
         onlinePlayers: app.rooms.onlinePlayers(),
         users: app.users.count(),
         /**
-         * 中继收发 = **主控中继 + 所有在线子节点**（全网聚合）。
-         * 只报主控那一台的话，玩家按区域接入时这个数字会长期是 0（线上实测）。
-         * master* 单独留着，方便前端在悬浮说明里拆开讲。
+         * 中继收发 = **所有在线子节点的聚合**（全网口径，只报主控那一台时这个数字
+         * 长期是 0，线上实测）。转发全部由子节点承担，所以 master* 恒为 0 ——
+         * 字段保留是为了老前端不白屏，语义没变。
          */
-        relayPeers: (relaySample?.peerCount ?? 0) + nodeBps.peers,
-        relayRxBps: (relaySample?.rxBps ?? 0) + nodeBps.rxBps,
-        relayTxBps: (relaySample?.txBps ?? 0) + nodeBps.txBps,
-        masterRxBps: relaySample?.rxBps ?? 0,
-        masterTxBps: relaySample?.txBps ?? 0,
+        relayPeers: nodeBps.peers,
+        relayRxBps: nodeBps.rxBps,
+        relayTxBps: nodeBps.txBps,
+        masterRxBps: 0,
+        masterTxBps: 0,
         nodesRxBps: nodeBps.rxBps,
         nodesTxBps: nodeBps.txBps,
         onlineRelayNodes: nodeBps.nodes,
@@ -228,17 +217,11 @@ export function registerPublicRoutes(router: Router, app: App): void {
     );
     ctx.send(result.status, result.html, 'text/html; charset=utf-8');
   });
-  /** 手动触发一次中继状态采样 */
-  router.post('/relay/refresh', async () => {
-    const sample = await app.relay.sample();
-    return { ok: Boolean(sample), peers: sample?.peerCount ?? 0 };
-  }, { auth: true });
 }
 
 export function buildOverview(app: App): PlatformOverview {
   const s = app.settings.current;
   const nodeCounts = app.nodes.countByStatus();
-  const sample = app.relay.latest();
   const nodeBps = app.nodes.totalBps();
   /**
    * 今日累计：读**账本**而不是采样表。
@@ -246,7 +229,6 @@ export function buildOverview(app: App): PlatformOverview {
    * 账本记的是逐分钟增量之和（见 db/schema.ts 的 V22 与 services/traffic-ledger.ts）。
    */
   const today = app.ledger.sum({ scope: 'platform', scopeId: 'all', sinceDay: localDay() });
-  const relay = app.relay.status();
   return {
     serverTime: new Date().toISOString(),
     version: APP_VERSION,
@@ -269,22 +251,17 @@ export function buildOverview(app: App): PlatformOverview {
       online: 0,
     },
     traffic: {
-      /** 全网聚合：主控中继 + 所有在线子节点 */
-      rxBps: (sample?.rxBps ?? 0) + nodeBps.rxBps,
-      txBps: (sample?.txBps ?? 0) + nodeBps.txBps,
+      /** 全网聚合：转发全在子节点上，所以它就是子节点之和 */
+      rxBps: nodeBps.rxBps,
+      txBps: nodeBps.txBps,
       rxBytesToday: today.rxBytes,
       txBytesToday: today.txBytes,
-      /** 拆开，界面上要能说清"这些量里主控多少、子节点多少" */
-      masterRxBps: sample?.rxBps ?? 0,
-      masterTxBps: sample?.txBps ?? 0,
+      /** 主控不再自带中继，这两项恒为 0（字段保留，老前端不白屏） */
+      masterRxBps: 0,
+      masterTxBps: 0,
       nodesRxBps: nodeBps.rxBps,
       nodesTxBps: nodeBps.txBps,
       onlineRelayNodes: nodeBps.nodes,
-    },
-    relay: {
-      ...relay,
-      // 把平台级限速也暴露出来，管理台要显示
-      listen: `${relay.listen}`,
     },
   };
 }

@@ -1,6 +1,5 @@
-/** 管理员接口：仪表盘、节点管理、房间管理、用户管理、流量、审计、中继控制 */
+/** 管理员接口：仪表盘、节点管理、房间管理、用户管理、流量、审计、平台设置 */
 import { Routes, DEFAULT_GITHUB_PROXY, emailProblem, parseUsernameList, regionLabel, type BroadcastAudience, type PlatformSettings, type SmtpEncryption } from '@mclink/shared';
-import fs from 'node:fs';
 import type { App } from '../app.ts';
 import type { Router } from '../http/kit.ts';
 import { optBool, optInt, optStr, paging, req, requireAdmin } from './helpers.ts';
@@ -54,14 +53,8 @@ function redactPatch(patch: Partial<PlatformSettings>): Record<string, unknown> 
 }
 
 /**
- * EasyTier 的网络白名单是「空格分隔的 wildmatch 模式串」。
- * 语义上是列表，但配置里存成字符串；这里统一切成数组给前端用。
+ * 账本用的分钟桶：`minutes` 分钟前的那个桶（本地时间，与 `traffic_ledger.bucket` 同口径）
  */
-function splitPatterns(value: string): string[] {
-  return value.split(/\s+/).filter((s) => s.length > 0);
-}
-
-/** 账本用的分钟桶：`minutes` 分钟前的那个桶（本地时间，与 `traffic_ledger.bucket` 同口径） */
 function bucketSince(minutes: number): string {
   return localBucket(new Date(Date.now() - Math.max(1, minutes) * 60_000));
 }
@@ -75,29 +68,10 @@ export function registerAdminRoutes(router: Router, app: App): void {
     const recentAudit = app.audit.recent(15);
     const nodes = app.nodeService.list();
     const rooms = app.rooms.listAll({ status: 'open', limit: 20 }).rows.map(toRoom);
-    const relay = app.relay.status();
-    const cliAvailable = app.relay.cliVersion !== null;
 
     return {
       ...overview,
       users: { ...overview.users, online: app.runtime.onlineUserCount?.() ?? 0 },
-      relay: {
-        ...relay,
-        version: app.relay.cliVersion,
-        cliAvailable,
-        /**
-         * whitelist 是 EasyTier 的「空格分隔的模式列表」，语义上是数组。
-         * 这里保留原始字符串（向后兼容）并额外给出已切分的数组，
-         * 避免前端对字符串调用 .join() 直接渲染期崩溃。
-         */
-        whitelist: app.config.easytier.relayNetworkWhitelist,
-        whitelistPatterns: splitPatterns(app.config.easytier.relayNetworkWhitelist),
-        port: app.config.easytier.relayPort,
-        rpcPortal: app.relay.rpcPortal,
-        binary: app.config.easytier.coreBin,
-        logFile: app.relay.logFilePath,
-        configFile: app.relay.configFilePath,
-      },
       system: {
         nodeVersion: process.version,
         platform: `${process.platform}/${process.arch}`,
@@ -416,8 +390,7 @@ export function registerAdminRoutes(router: Router, app: App): void {
     const scopeId = ctx.query.get('scopeId') ?? '';
 
     const platformPoints = app.traffic.platformSeries(since, 480);
-    const sample = app.relay.latest();
-    /** 全网聚合要用：所有在线子节点的速率之和（离线节点表里还留着最后上报的数，不算） */
+    /** 全网口径：所有在线子节点的速率之和（离线节点表里还留着最后上报的数，不算） */
     const nodeBps = app.nodes.totalBps();
 
     /**
@@ -471,21 +444,11 @@ export function registerAdminRoutes(router: Router, app: App): void {
      * 按房间归因：中继侧只看到网络名，这里补上房间 ID 与显示名，
      * 否则「每个房间用了多少流量」这个关键视图就没法呈现（之前只在 WS 推送里做了映射）。
      *
-     * **口径是全网**：主控自己转发的外来网络 + 所有刚心跳过的子节点上报的网络，
-     * 按网络名去重合并（同一个房间被两个区域的节点同时带着时会合并成一条，标注来源数）。
-     * 以前只看主控，于是"外来网络"长期是 0（用户实测反馈）。
+     * **口径是全网**：所有刚心跳过的子节点上报的网络，按网络名去重合并
+     * （同一个房间被两个区域的节点同时带着时会合并成一条，标注来源数）。
+     * 主控不再自带中继，所以这里没有"主控那一份"了。
      */
-    const foreignNetworks = mergeRelayedNetworks(
-      (sample?.foreignNetworks ?? []).map((fn) => ({
-        networkName: fn.networkName,
-        peers: fn.peerCount,
-        rxBps: fn.rxBps,
-        txBps: fn.txBps,
-        rxBytes: fn.rxBytes,
-        txBytes: fn.txBytes,
-      })),
-      app.nodeService.relayingNetworks(),
-    ).map((fn) => {
+    const foreignNetworks = mergeRelayedNetworks([], app.nodeService.relayingNetworks()).map((fn) => {
       const room = app.rooms.findByNetworkName(fn.networkName);
       return {
         networkName: fn.networkName,
@@ -497,11 +460,8 @@ export function registerAdminRoutes(router: Router, app: App): void {
         txBytes: fn.txBytes,
         rxBps: fn.rxBps,
         txBps: fn.txBps,
-        /** 有几个中继来源在转发它（1 = 只有主控；≥2 = 主控或节点中至少两个） */
+        /** 有几个子节点在转发它（1 = 只有一台；≥2 = 多台区域节点同时在带） */
         relaySources: fn.relaySources,
-        /** 主控中继是否也在转发它 */
-        onMaster: fn.onMaster,
-        lastSeenAt: sample?.ts ?? null,
       };
     });
 
@@ -509,13 +469,18 @@ export function registerAdminRoutes(router: Router, app: App): void {
       since,
       platform: {
         points: platformPoints,
-        /** 全网聚合：主控中继 + 所有在线子节点 */
-        rxBps: (sample?.rxBps ?? 0) + nodeBps.rxBps,
-        txBps: (sample?.txBps ?? 0) + nodeBps.txBps,
-        rxBytes: sample?.totalRxBytes ?? 0,
-        txBytes: sample?.totalTxBytes ?? 0,
-        masterRxBps: sample?.rxBps ?? 0,
-        masterTxBps: sample?.txBps ?? 0,
+        /** 全网聚合：转发全在子节点上，所以它就是子节点之和 */
+        rxBps: nodeBps.rxBps,
+        txBps: nodeBps.txBps,
+        /**
+         * 主控不再自带中继（2026-09-28 取消），累计字节没有单一来源可读，
+         * 一律回 0；「今日/本月/累计」以 `totalsRange` 的账本口径为准。
+         */
+        rxBytes: 0,
+        txBytes: 0,
+        /** 主控那一台已不存在，这两项恒为 0（字段保留，老前端不白屏） */
+        masterRxBps: 0,
+        masterTxBps: 0,
         nodesRxBps: nodeBps.rxBps,
         nodesTxBps: nodeBps.txBps,
         onlineRelayNodes: nodeBps.nodes,
@@ -748,94 +713,7 @@ export function registerAdminRoutes(router: Router, app: App): void {
     return attempt;
   }, { auth: true, admin: true });
 
-  /* ---------------------------------------------------------- 中继 */
-
-  router.get(Routes.adminRelay, (ctx) => {
-    requireAdmin(ctx);
-    const sample = app.relay.latest();
-    const et = app.config.easytier;
-    return {
-      runtime: app.relay.status(),
-      configToml: app.relay.renderConfig(),
-      configFile: app.relay.configFilePath,
-      logFile: app.relay.logFilePath,
-      cliVersion: app.relay.cliVersion,
-      coreBin: et.coreBin,
-      cliBin: et.cliBin,
-      /**
-       * 诊断信息：中继没在运行时，"为什么"必须能从界面上直接读出来。
-       * 之前只写了日志 —— 运维在控制台看到「未运行」却无从下手（实测踩过）。
-       */
-      diagnostics: {
-        autoStart: app.config.autoStartRelay,
-        coreExists: fs.existsSync(et.coreBin),
-        cliExists: fs.existsSync(et.cliBin),
-        relayPort: et.relayPort,
-        // 启动时的告警（例如"没有可用的 easytier-core"）挑与中继相关的带出来
-        warnings: app.warnings.filter((w) => /easytier|中继|relay|core|cli/i.test(w)),
-      },
-      peers: sample?.peers ?? [],
-      /**
-       * 中继流量：这里的 total 已经包含「替房间转发」的那部分（见 RelayManager.sample 的注释）。
-       * 拆开给前端是为了能回答"这些流量里有多少是转发别人的房间"。
-       */
-      traffic: {
-        rxBps: sample?.rxBps ?? 0,
-        txBps: sample?.txBps ?? 0,
-        totalRxBytes: sample?.totalRxBytes ?? 0,
-        totalTxBytes: sample?.totalTxBytes ?? 0,
-        ownRxBytes: sample?.ownRxBytes ?? 0,
-        ownTxBytes: sample?.ownTxBytes ?? 0,
-        forwardedRxBytes: sample?.forwardedRxBytes ?? 0,
-        forwardedTxBytes: sample?.forwardedTxBytes ?? 0,
-        sampledAt: sample?.ts ?? null,
-      },
-      logs: app.relay.recentLogs(150),
-      whitelist: et.relayNetworkWhitelist,
-      whitelistPatterns: splitPatterns(et.relayNetworkWhitelist),
-    };
-  }, { auth: true, admin: true });
-
-  router.post(Routes.adminRelayRestart, async (ctx) => {
-    const auth = requireAdmin(ctx);
-    const runtime = await app.relay.restart();
-    app.audit.write({
-      actorType: 'admin',
-      actorId: auth.userId,
-      actorName: auth.username,
-      action: 'relay.restart',
-      targetType: 'relay',
-      ip: ctx.ip,
-    });
-    log.warn('管理员重启了主控中继', { by: auth.username });
-    return runtime;
-  }, { auth: true, admin: true });
-
-  router.post(Routes.adminRelayAcl, async (ctx) => {
-    const auth = requireAdmin(ctx);
-    const body = await ctx.body();
-    const aclToml = optStr(body, 'aclToml', 20000);
-    if (!aclToml || !aclToml.includes('[acl.acl_v1]')) {
-      throw HttpError.badRequest('aclToml 必须包含 [acl.acl_v1] 段');
-    }
-    const result = await app.relay.applyAcl(aclToml);
-    app.audit.write({
-      actorType: 'admin',
-      actorId: auth.userId,
-      actorName: auth.username,
-      action: 'relay.acl_set',
-      targetType: 'relay',
-      detail: { bytes: aclToml.length, mode: result.mode },
-      ip: ctx.ip,
-    });
-    return { ok: true, mode: result.mode };
-  }, { auth: true, admin: true });
-
-  router.post('/admin/relay/refresh', async (ctx) => {
-    requireAdmin(ctx);
-    const sample = await app.relay.sample();
-    return { ok: Boolean(sample), peers: sample?.peerCount ?? 0, foreignNetworks: sample?.foreignNetworks.length ?? 0 };
-  }, { auth: true, admin: true });
+  /* ---------------------------------------------------------- 房间排障 */
 
   /** 强制按当前策略重算所有房间的 ACL（用于排障） */
   router.post('/admin/rooms/recompute-acl', (ctx) => {

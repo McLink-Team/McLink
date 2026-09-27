@@ -69,12 +69,6 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '流量监控' },
       },
       {
-        path: 'relay',
-        name: 'console-relay',
-        component: () => import('./console/pages/RelayPage.vue'),
-        meta: { title: '主控中继' },
-      },
-      {
         path: 'broadcast',
         name: 'console-broadcast',
         component: () => import('./console/pages/BroadcastPage.vue'),

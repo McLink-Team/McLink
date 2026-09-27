@@ -1,8 +1,8 @@
 /**
  * 子节点（agent）服务：注册、心跳、健康检查与调度数据维护。
  *
- * 子节点是一台部署在某区域的公共中继。它的角色跟主控中继完全一样
- * （单端口 + relay_network_whitelist 通配），区别只是归属与容量。
+ * 子节点就是部署在某区域的公共中继：单端口 + `relay_network_whitelist` 通配，
+ * 平台上所有转发都由它们承担（2026-09-28 起主控不再自带中继实例）。
  */
 import { isKnownRegion, isValidHostPort, kbpsToBytesPerSecond, type RelayNode } from '@mclink/shared';
 import {
@@ -83,20 +83,19 @@ export interface MergedRelayedNetwork {
   rxBytes: number;
   txBytes: number;
   /**
-   * 有几个中继来源在转发它（主控 + 各子节点，各算 1 个）。
-   * 界面上用它区分"只走主控"和"两个区域节点都在带"。
+   * 有几个中继来源在转发它（各算 1 个）。
+   * 界面上用它区分"只有一台在带"和"多台区域节点都在带"。
    */
   relaySources: number;
-  /** 主控中继是否也在转发它（false 表示只走子节点） */
+  /** 主控自带中继是否也在转发它 —— 那个实例已取消，所以实践中恒为 false */
   onMaster: boolean;
 }
 
 /**
- * 按网络名合并「主控 + 子节点」的外来网络列表。
+ * 按网络名合并外来网络列表：同一个网络被多台中继转发时，peer 数与速率相加、来源计数 +1。
  *
- * 为什么必须合并：玩家是按区域就近接入的，绝大多数房间流量走在子节点上，
- * 只看主控那一台的话，控制台的「外来网络」和流量页的按房间视图会长期是 0 或残缺。
- * 同一个网络被多个来源转发时，peer 数与速率相加、来源计数 +1。
+ * `master` 参数是主控自带中继那一份来源，**已取消**（2026-09-28），所有调用点都传 `[]`；
+ * 签名保留是为了不动单测（`mergeRelayedNetworks` 本身是纯函数，多来源合并的语义仍然成立）。
  */
 export function mergeRelayedNetworks(
   master: ReadonlyArray<RelayedNetworkSample>,

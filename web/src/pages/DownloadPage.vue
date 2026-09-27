@@ -466,7 +466,7 @@ const requirements: Array<{ label: string; value: string }> = [
             <p class="muted" style="font-size: var(--fs-sm)">
               McLink 的组网能力完全来自
               <a class="link" :href="EASYTier_REPO" target="_blank" rel="noreferrer noopener">EasyTier</a>
-              （LGPL-3.0）。主控中继、子节点与客户端实例都是独立运行的
+              （LGPL-3.0）。中继节点与客户端实例都是独立运行的
               <span class="mono">easytier-core</span> 进程，本平台未修改其源码，
               只通过 TOML 配置与命令行参数驱动它，因此你可以自行替换核心版本。
             </p>

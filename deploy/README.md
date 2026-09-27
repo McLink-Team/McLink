@@ -22,15 +22,14 @@
 | 端口 | 协议 | 用途 | 是否要对公网开放 |
 | --- | --- | --- | --- |
 | 8787（`--port`） | TCP | 主控 HTTP/WebSocket + 控制台 | **建议只给反代**，不要直接暴露 |
-| 11010（`--relay-port`） | TCP **和** UDP | 主控共享中继（单端口承载所有房间） | **必须开放 TCP+UDP** |
-| 15888 | TCP（仅本机） | 主控中继实例的 RPC portal | 不要开放 |
+| 11010（`--relay-port`） | TCP **和** UDP | 中继节点（子节点；单机部署时本机也被注册成节点） | **必须开放 TCP+UDP**；主控自身不监听它 |
 | `16000 + 端口 % 1000` | TCP（仅本机） | 子节点 / 客户端实例的 RPC portal | 不要开放 |
 
 前置：Debian 12 x86_64、root 权限、能访问 GitHub Releases（下载 EasyTier）与 deb.nodesource.com（装 Node）。
 
 ---
 
-## 1. 单机最小部署（主控自带中继，不需要子节点）
+## 1. 单机最小部署（主控 + 本机一个子节点）
 
 ```bash
 git clone <仓库地址> /opt/src/mclink && cd /opt/src/mclink
@@ -79,21 +78,20 @@ sudo bash deploy/install-server.sh --public-url https://cnnic.link \
   也可在 `/etc/mclink/mclink.env` 里看到 `MCLINK_ADMIN_PASSWORD`）。
 * **单机开房要先有一个可调度的子节点**（2026-09-27 起主控不再兜底）：票据里的中继只来自
   `relay_nodes` 的调度结果（每房 1 主 + 1 兜底、两个不同节点），主控自身中继
-  （`masterRelayEndpoint()`）不再被追加。所以「一台主控 + 没有子节点」时建房会直接报
-  「当前没有可用的中继节点」——在管理台签发一个注册密钥、把主控这台机器也注册成普通子节点
-  （`--endpoint <公网可达的 host:port>`，如 `cnnic.link:11010`）即可恢复单机可玩。
-  这一套有**一键脚本**（自动关掉主控自带中继、签发密钥、装节点、等到上线）：
+  （`masterRelayEndpoint()`）不再被追加 —— 而且 2026-09-28 起那个实例本身也不再启动。
+  所以「一台主控 + 没有子节点」时建房会直接报「当前没有可用的中继节点」；单机部署的解法是
+  把主控这台机器也注册成普通子节点（`--endpoint <公网可达的 host:port>`，如 `cnnic.link:11010`）。
+  这一套有**一键脚本**（签发密钥、装节点、等到上线，11010 默认是空的所以直接可用）：
 
   ```bash
-  sudo node /opt/mclink/app/deploy/register-self-node.mjs --region oversea --disable-master-relay
+  sudo node /opt/mclink/app/deploy/register-self-node.mjs --region oversea
   ```
 
   参数与手工等价的三步见 `docs/deployment.md` §2.3.1；加 `--dry-run` 只看计划不动系统。
 * 中继只监听一个端口，靠 `relay_network_whitelist = "mclink-room-*"` 为所有房间网络转发，
   新增/关闭房间**不需要重启中继**。
-* 若只想跑控制面、房间流量全走子节点：加 `--no-relay`（写入 `MCLINK_AUTOSTART_RELAY=false`）。
-  它**只**决定主控要不要自带中继实例，不影响建房判定 —— 一个可调度子节点都没有就会建房失败并
-  提示「当前没有可用的中继节点」。
+* 主控不再运行自带中继实例，所以**没有**「只跑控制面」这一说 —— 它本来就不转发。
+  `install-server.sh --no-relay` 保留只为兼容老命令，已废弃、不产生任何效果。
 
 ## 2. 主控 + 多区域子节点
 
@@ -158,6 +156,7 @@ sudo nginx -t && sudo systemctl reload nginx
   `proxy_read_timeout 3600s`，否则实时状态不刷新（原因见示例文件顶部注释）。
 * 只走反代时不要对公网放行 8787；**中继端口 11010 仍要开放 TCP+UDP**（它不是 HTTP，无法走 http 反代），
   或者用 `nginx.conf.example` 末尾的 `stream {}` 示例代理 TCP 与 UDP。
+  注意：主控自身不再监听 11010，要开放它的是**跑中继的机器**（各子节点；单机部署就是主控这台机器）。
 * 记得给系统环境变量补上对外地址，否则下载链接与客户端中继地址会推导错：
   `MCLINK_PUBLIC_BASE_URL=https://cnnic.link`（`install-server.sh --public-url` 会自动写入）。
 
@@ -182,13 +181,13 @@ sudo bash deploy/install-server.sh        # 不带参数即沿用上次的默认
 
 | 症状 | 最可能原因 | 处置 |
 | --- | --- | --- |
-| 主控日志 `未找到 easytier-core` | 下载失败或路径不对 | 检查 `/opt/mclink/app/vendor/easytier/`；重跑 `install-server.sh`（不加 `--skip-easytier`），或设置 `MCLINK_ET_CORE` |
-| 房间创建报「当前没有可用的中继节点」 | 用了 `--no-relay` 且没有在线子节点 | 让至少一个子节点 `online`，或去掉 `--no-relay` 重启主控 |
+| 主控日志 `easytier-cli 探测失败` | 下载失败或路径不对 | 检查 `/opt/mclink/app/vendor/easytier/`；重跑 `install-server.sh`（不加 `--skip-easytier`），或设置 `MCLINK_ET_CORE` |
+| 房间创建报「当前没有可用的中继节点」 | 没有任何在线可调度的子节点 | 让至少一个子节点 `online`；单机部署跑 `deploy/register-self-node.mjs` 把本机注册成节点 |
 | 子节点一直 `pending` | agent 起不来 / 心跳失败 / 令牌无效 | `journalctl -u mclink-node -f`；确认 `--master` 可达、`--endpoint` 格式正确 |
 | 子节点 `offline` | 90 秒内没收到心跳 | 看 agent 日志里的心跳报错（网络/DNS/防火墙） |
 | 客户端能登录但进不了房间 | `bind_device`、中继端口未放行 UDP、票据过期 | 见下一节与 `../docs/troubleshooting.md` |
-| 端口 11010 被占用 | 与其它服务或历史 easytier-core 冲突 | `ss -lntup \| grep 11010`；换 `--relay-port` 或杀掉旧进程 |
-| 流量统计为 0 | `easytier-cli` 不存在或 RPC portal 不通 | 确认 `vendor/easytier/easytier-cli` 存在且 `MCLINK_RELAY_RPC=127.0.0.1:15888` |
+| 端口 11010 被占用 | 与其它服务或历史 easytier-core 冲突 | `ss -lntup \| grep 11010`；子节点换 `--listen-port`，或杀掉旧进程 |
+| 流量统计为 0 | 子节点的 `easytier-cli` 不存在或 RPC portal 不通 | 在子节点上确认 `vendor/easytier/easytier-cli` 存在，RPC 端口 = `16000 + 监听端口 % 1000` |
 | 启用了严格端口模式后 MC 连不上 | 端口白名单没包含 25565 | 房间设置里把 `allowedPorts` 填成 `25565`（或先关闭严格模式） |
 | 改了 `MCLINK_ADMIN_PASSWORD` 但登录不了 | 该变量只在首次建号时生效 | 用原密码登录后在「账号设置」改密，或查 `../docs/troubleshooting.md` |
 
@@ -198,16 +197,14 @@ EasyTier 默认 `bind_device = true`，会把隧道的出站套接字绑到指�
 多网卡、Windows 沙箱等环境会直接报 `WSAEADDRNOTAVAIL / 10049`，表现为**能登录主控、
 但永远进不了房间**（客户端 easytier-core 起来后连不上中继）。
 
-平台已经在中继实例、子节点实例、以及下发给客户端的票据 TOML 里统一设置
-`bind_device = false`：
+平台已经在子节点实例、以及下发给客户端的票据 TOML 里统一设置 `bind_device = false`：
 
-* 中继：`server/src/easytier/manager.ts` 的 `bindDevice: false`
 * 子节点：`server/src/services/nodes.ts` 的 `renderNodeConfig()` → `bindDevice: false`
 * 客户端：`server/src/services/rooms.ts` 的 `ticket()` → `bindDevice: false`
   （客户端 `client/electron/main.cjs` 只把票据里的 TOML 原样落盘，不自行改配置）
 
-**因此不要手工去改生成的配置文件**（`/opt/mclink/data/easytier/relay.toml`、
-`/etc/mclink/relay.toml`、客户端的 `%APPDATA%/<应用>/easytier/relay.toml`）：
+**因此不要手工去改生成的配置文件**（`/etc/mclink/relay.toml`、
+客户端的 `%APPDATA%/<应用>/easytier/relay.toml`）：
 改了会在下次同步时被覆盖；若确有需要，请改源码或提 issue 说明环境。
 
 ## 6. 运维命令速查
@@ -217,11 +214,9 @@ systemctl status  mclink-server        # 主控状态
 journalctl -u mclink-server -f         # 主控日志
 journalctl -u mclink-server --since "10 min ago"
 
-systemctl status  mclink-node          # 子节点状态
+systemctl status  mclink-node          # 子节点状态（跑中继的就是它）
 journalctl -u mclink-node -f           # agent 日志
-
-# 主控中继自身的日志（easytier-core 的 stdout/stderr）
-tail -f /opt/mclink/data/logs/relay.log
+tail -f /var/log/mclink/easytier-core.log   # 子节点中继自身的日志
 
 # 数据库备份（WAL 模式，务必用 .backup 或先 checkpoint）
 sqlite3 /opt/mclink/data/mclink.sqlite ".backup '/root/mclink-$(date +%F).sqlite'"

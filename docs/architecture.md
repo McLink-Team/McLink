@@ -27,18 +27,12 @@ mclink 是一个基于 [EasyTier](https://github.com/EasyTier/EasyTier) 的局�
                       │  │ auth/rooms/nodes/     │◄─┤ data/        │  │
                       │  │ settings              │  │ mclink.sqlite│  │
                       │  └────┬──────────────────┘  └──────────────┘  │
-                      │       │ spawn / easytier-cli (RPC 127.0.0.1:15888)
-                      │  ┌────▼──────────────────────────────┐        │
-                      │  │ RelayManager easytier/manager.ts  │        │
-                      │  └────┬──────────────────────────────┘        │
+                      │       │ 只探测 easytier-cli 版本（不跑中继实例）
                       └───────┼───────────────────────────────────────┘
-                              │ 一个 easytier-core 实例
-                              │ 监听 0.0.0.0:11010 (TCP+UDP)
-                              │ network_name = mclink-master
-                              │ relay_network_whitelist = "mclink-room-*"
+                              │ 控制面：注册 / 心跳 / 下发票据
                               │
         ┌─────────────────────┴──────────────────────┐
-        │           共享中继（单端口承载多房间）        │
+        │      区域中继（子节点，单端口承载多房间）      │
         └───┬──────────────┬──────────────┬──────────┘
             │              │              │
    ┌────────▼───────┐ ┌────▼───────────┐  │   ┌──────────────────────────┐
@@ -60,7 +54,9 @@ mclink 是一个基于 [EasyTier](https://github.com/EasyTier/EasyTier) 的局�
 ```
 
 关键点：**房间不是服务端的一种「连接」，而是 EasyTier 的一个独立网络**。主控从不加入房间网络，
-它只做三件事：下发票据、维护成员/策略、通过 CLI 采样中继流量。
+它只做三件事：下发票据、维护成员/策略、汇总子节点心跳上报的流量。**主控也不再自带中继实例**
+（2026-09-28 取消）：`RelayManager` 只剩「探测 `easytier-cli` 版本」这一件职责，
+所有转发都在子节点上；单机部署就把主控这台机器注册成一台普通子节点。
 
 ---
 
@@ -68,12 +64,13 @@ mclink 是一个基于 [EasyTier](https://github.com/EasyTier/EasyTier) 的局�
 
 ### 2.1 为什么一个端口能承载所有房间
 
-主控只跑**一个** `easytier-core` 实例（`server/src/easytier/manager.ts`），配置里：
+中继（子节点，`services/nodes.ts` 的 `renderNodeConfig()` 生成配置）只跑**一个**
+`easytier-core` 实例，配置里：
 
 ```toml
-instance_name = "mclink-relay"
+instance_name = "mclink-node-<节点 id>"
 listeners     = ["tcp://0.0.0.0:11010", "udp://0.0.0.0:11010"]
-network_name  = "mclink-master"
+network_name  = "mclink-master-node"
 
 [flags]
 no_tun = true
@@ -97,7 +94,7 @@ pub(crate) fn check_network_in_relay_whitelist(relay_network_whitelist: &str, ne
 于是：
 
 * **通配一次，永久生效**：`mclink-room-*` 覆盖所有房间，新建/关闭房间都不用碰中继进程，
-  也不用改配置或重启（`manager.ts` 顶部注释即为此设计）。
+  也不用改配置或重启（`services/nodes.ts` 顶部的子节点说明即为此设计）。
 * **每个房间 = 一个独立 EasyTier 网络**：网络名与密钥都由主控在创建房间时随机生成
   （`services/rooms.ts` 的 `create()`），因此房间之间既互相发现不了、也无法互访。
 * **虚拟地址天然不冲突**：每个房间独占 `10.200.<slot>.0/24`（见第 5 节）。
@@ -246,13 +243,13 @@ export function deriveNetworkName(secret: string): string {
   （见 `troubleshooting.md` §16）。EasyTier 官方默认同样是关的。
 * `disable_p2p = !room.policy.allowP2p`：关闭 P2P 后所有流量走中继（可控但更耗带宽）。
 * `perMemberKbps > 0` 时写入 `instance_recv_bps_limit`（客户端自制限速）。
-* **`bind_device = false`**：三处（主控中继、子节点、票据 TOML）统一关闭。这是踩坑结论——
+* **`bind_device = false`**：两处（子节点、票据 TOML）统一关闭。这是踩坑结论——
   默认 `true` 时部分环境会报 `WSAEADDRNOTAVAIL(10049)`，表现为「能登录但进不了房间」。
 * 房主票据里带 `acl`，成员票据不带（避免把房间策略泄露给成员）。
 * **票据里只有子节点中继**（2026-09-27 起）：`relays[]` 完全等于建房时写进 `room.relayNodeIds`
   的调度结果，自动模式下是 2 个不同节点（主中继 + 兜底中继）。主控自身中继**不再兜底** ——
-  `masterRelayEndpoint()` / `masterRelayAvailable()` 仍然保留，但只服务于单机自查与
-  「将来把主控注册成一台普通子节点」，不再被追加进票据；一个可调度子节点都没有时建房直接报 503
+  2026-09-28 起连那个实例也不再启动，`masterRelayEndpoint()` / `masterRelayAvailable()` 只是
+  历史遗留的未调用代码；一个可调度子节点都没有时建房直接报 503
   （规则与排序键见 §6）。
 
 ### 客户端侧的「回落中继」（P2P 质量差时绕开直连）
@@ -292,8 +289,8 @@ export function rpcPortalForListenPort(listenPort: number): number {
 }
 ```
 
-* 主控中继自己用固定值 `MCLINK_RELAY_RPC`（默认 `127.0.0.1:15888`）。
 * 子节点/客户端用 `16000 + (监听端口 % 1000)`：监听 11010 → `16010`。
+  主控不再自带中继实例，所以它这一侧没有固定的 `MCLINK_RELAY_RPC`（该变量已废弃）。
 * `deploy/agent.mjs` 实现同一规则（`rpcPortalForListenPort()`），并优先采用
   `launchArgs` 里的 `-r` 值以保证与服务端一致。
 * **注意**：该规则是「端口对 1000 取模」，所以 `11010` 与 `12010` 会撞同一个 RPC 端口。
@@ -316,8 +313,11 @@ export function rpcPortalForListenPort(listenPort: number): number {
   房间关闭后 slot 可再次使用（`rooms.usedSlots()`）。
 * `allocateSeat()`：跳过 0（房主），取最小可用成员座位；同一用户重复加入复用原 seat。
 * slot 耗尽时创建房间返回 `503 service_unavailable`「虚拟网段已耗尽，请联系管理员扩容」。
-* 主控中继自身的 ACL 守卫规则明确禁止 `10.200.0.0/16 → 10.126.0.0/16` 的流量
-  （`manager.ts` 的 `#buildRelayAcl()`），即房间网段不得访问主控管理网。
+* 房间网段不得访问主控管理网：这条守卫原本写在中继实例自己的 ACL 里
+  （`manager.ts` 的 `#buildRelayAcl()`：`10.200.0.0/16 → 10.126.0.0/16` Drop），
+  随主控中继一起停用。现在中继都在子节点上，而子节点配置里 `no_tun = true`
+  （实例不建 TUN、不接入宿主机网络栈），房间成员之间只有 EasyTier 隧道内的虚拟地址可达。
+  想恢复这条守卫，把它加到 `services/nodes.ts` 的 `renderNodeConfig()` 即可。
 
 **为什么按 slot 分 /24 而不是按房间随机分配**：所有房间共用同一个中继端口，
 如果 IP 平面重叠，中继侧的连接跟踪与 ACL 就会互相干扰；固定 `10.200.<slot>.0/24`
@@ -525,10 +525,10 @@ instance_recv_bps_limit = "125000"   # ❌ easytier-core 直接 panic：
    写进配置文件会被**静默忽略**，导致所有实例抢默认的 `15888`。
    必须用命令行 `-r` / `--rpc-portal-whitelist`。
 6. **`bind_device` 默认 `true`**（`config/toml.rs`），在受限容器/多网卡/Windows 沙箱下会报
-   `WSAEADDRNOTAVAIL(10049)`。平台在中继、子节点、客户端票据三处统一设为 `false`。
+   `WSAEADDRNOTAVAIL(10049)`。平台在子节点、客户端票据两处统一设为 `false`。
 7. **EasyTier v2.6.4 的 CLI 没有 `acl set`**：`easytier-cli acl --help` 只列出 `stats`。
-   因此运行时热替换 ACL 是更新版本的特性。平台做了能力探测
-   （`manager.ts` 的 `supportsAclSet()` / 客户端 `main.cjs` 的 `supportsAclSet()`），
+   因此运行时热替换 ACL 是更新版本的特性。平台在客户端做了能力探测
+   （`client/electron/main.cjs` 的 `supportsAclSet()`，服务端侧同名方法随主控中继一起停用），
    不支持时通过「重载配置 / 重启实例」生效。
 8. **`instance_recv_bps_limit` 是客户端自制裁剪**：恶意客户端可以绕过；
    服务端侧唯一硬限制是中继的 `foreign_relay_bps_limit`。
@@ -544,7 +544,8 @@ instance_recv_bps_limit = "125000"   # ❌ easytier-core 直接 panic：
     `peer list-foreign` 返回 `{ "<网络名>": { peers: [ { peer_id, conns: [ { stats: {...} } ] } ] } }`，
     字段为 snake_case，且可能是空对象 `{}`。
 12. **`easytier-cli stats prometheus` 存在**（用于对接 Prometheus），
-    而 `stats show` 是通用计数器；主控的 `RelayManager.fetchGlobalStats()` 用的是后者。
+    而 `stats show` 是通用计数器；这些命令现在要在**跑中继的子节点**上执行
+    （主控不再自带中继，`RelayManager.fetchGlobalStats()` 已无调用方）。
 13. **`--secure-mode` / `--credential` 是更强的成员认证手段**（credential 对等体可被
     `is_existing_credential_pubkey_trusted` 信任），当前平台未使用，是后续可选加固方向。
 14. **`easytier-cli port-forward add <tcp|udp> <bind> <dst>` 可用**：转发在 EasyTier
@@ -563,8 +564,7 @@ instance_recv_bps_limit = "125000"   # ❌ easytier-core 直接 panic：
 | `MCLINK_DATA_DIR`（默认 `server/data`，生产 `/opt/mclink/data`） | 全部运行时数据 |
 | `<data>/mclink.sqlite`（+ `-wal` / `-shm`） | SQLite，WAL 模式（用户、房间、成员、节点、会话、流量、审计、设置） |
 | `<data>/secrets.json` | 自动生成的 JWT / 中继密钥 / 初始管理员密码兜底（权限 600） |
-| `<data>/easytier/relay.toml` | 主控中继实例的生成配置（每次启动/变更重写） |
-| `<data>/logs/relay.log` | 主控中继（easytier-core）的 stdout/stderr |
+| `<data>/easytier/` | 中继配置目录（主控不再自带中继实例，这里通常是空的） |
 | `<data>/downloads/` | 客户端安装包（`/downloads/<文件名>`，支持 Range 断点续传） |
 | `server/public/` | 前端构建产物，由主控进程一并静态托管（`MCLINK_WEB_ROOT` 可覆盖） |
 | `/etc/mclink/mclink.env` | 主控环境变量（权限 600） |

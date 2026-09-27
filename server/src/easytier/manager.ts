@@ -1,8 +1,12 @@
 /**
- * 主控中继管理器。
+ * 中继管理器（主控自带中继实例的封装）。
  *
- * 设计要点（对应「单端口多用户隔离」这条需求）：
- *  主控只跑 **一个** easytier-core 实例，监听一个 TCP+UDP 端口（默认 11010）。
+ * ⚠️ 2026-09-28 起主控**不再启动这个实例**（「主控中继」概念已取消，转发全部由子节点承担），
+ * 所以本类现在只剩 `ensureCli()` 有调用方 —— 它探测 `easytier-cli` 版本，供 `/meta`
+ * 的 `easytierVersion` 使用。其余方法（start/sample/renderConfig/applyAcl…）暂时保留但无调用方。
+ *
+ * 设计要点（历史，描述的是那个实例）：
+ *  只跑 **一个** easytier-core 实例，监听一个 TCP+UDP 端口（默认 11010）。
  *  它属于 `mclink-master` 网络，但对 `relay_network_whitelist` 中匹配的外来网络
  *  （默认 `mclink-room-*`）提供中继与 rendezvous 服务。
  *  每个房间是独立的 network_name + 随机 secret，因此：
@@ -294,7 +298,7 @@ export class RelayManager extends EventEmitter<RelayEvents> {
     return this.start();
   }
 
-  /** 校验 CLI 可用性；返回 false 时管理台会给出明确告警 */
+  /** 校验 CLI 可用性：主控只拿它探测核心版本（转发与采样都在子节点上） */
   async ensureCli(): Promise<boolean> {
     if (this.#cliOk !== null) return this.#cliOk;
     const probe = await probeCli(this.#config.easytier.cliBin);
@@ -302,7 +306,7 @@ export class RelayManager extends EventEmitter<RelayEvents> {
     this.#cliVersion = probe.version;
     if (!probe.ok) {
       this.#lastError = `easytier-cli 不可用: ${probe.error}`;
-      log.warn('easytier-cli 探测失败，流量统计与 ACL 下发将不可用', { error: probe.error });
+      log.warn('easytier-cli 探测失败：版本信息不可用（/meta 的 easytierVersion 会是未知）', { error: probe.error });
     } else {
       log.info('easytier-cli 就绪', { version: probe.version });
     }

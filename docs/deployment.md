@@ -16,11 +16,12 @@
 | 中等（~300 房间，~2000 人） | 4 核 / 4 GB / 80 GB SSD | 2 核 / 2 GB / 40 GB |
 | 大（千房级） | 8 核 / 8 GB，SQLite 换独立盘 | 4 核 / 4 GB，多台横向铺开 |
 
-主控本身很轻（Node + SQLite + 每个开放房间一次 `easytier-cli` 采样），开销主要在：
+主控本身很轻（Node + SQLite，只跑控制面、不做任何转发），开销主要在：
 
-* **中继转发**：CPU 与带宽都吃在中继上。主控中继与子节点中继是同一种进程，转发是单线程
-  拷贝 + 加解密，`multi_thread = true` 已开启。
-* **SQLite 写入**：每 5 秒一次流量采样 × (1 平台 + N 房间 + M 节点)，WAL 模式下压力很小。
+* **中继转发**：CPU 与带宽都吃在中继上。**转发全在子节点上**（2026-09-28 起主控不再运行
+  自带中继实例），子节点之间是同一种进程，转发是单线程拷贝 + 加解密，`multi_thread = true` 已开启。
+  所以这些开销要按**每台子节点**估，主控只承担控制面。
+* **SQLite 写入**：每 6 秒一次平台采样，房间/节点维度由子节点心跳（20 秒）带上来，WAL 模式下压力很小。
 
 ### 1.2 带宽估算（关键）
 
@@ -43,8 +44,7 @@
 | 端口 | 协议 | 归属 | 是否公网 |
 | --- | --- | --- | --- |
 | 8787（`MCLINK_PORT`） | TCP | 主控 HTTP/WS | 建议只对反代开放 |
-| 11010（`MCLINK_RELAY_PORT`） | TCP + UDP | 主控共享中继 | **必须公网**（除非用 `--no-relay`） |
-| 15888（`MCLINK_RELAY_RPC`） | TCP | 主控中继 RPC | 仅 127.0.0.1 |
+| 11010（`MCLINK_RELAY_PORT`） | TCP + UDP | 中继节点（子节点，含单机部署时注册成节点的本机） | **必须公网**；主控自身不再监听它 |
 | `16000 + 端口 % 1000` | TCP | 子节点/客户端实例的 RPC | 仅 127.0.0.1 |
 
 ---
@@ -86,8 +86,8 @@ sudo bash deploy/install-server.sh \
 /opt/mclink/data/          数据（mclink 所有，权限 750）
   ├─ mclink.sqlite         数据库（WAL）
   ├─ secrets.json          自动生成的密钥兜底（600）
-  ├─ easytier/relay.toml   主控中继的生成配置
-  ├─ logs/relay.log        中继进程日志
+  ├─ easytier/             中继配置目录（主控不再自带中继，这里通常是空的）
+  ├─ logs/                 中继进程日志（只有本机也跑中继实例时才有内容）
   └─ downloads/            客户端安装包
 /etc/mclink/mclink.env     环境变量（600，owner mclink）
 /etc/systemd/system/mclink-server.service
@@ -191,38 +191,35 @@ sudo bash deploy/install-node.sh \
 #### 2.3.1 把主控自己注册成子节点（单机部署必做）
 
 2026-09-27 起主控**不再当中继兜底**：票据里的中继全部来自 `relay_nodes` 里可调度的子节点，
-一台都没有时建房直接 503「当前没有可用的中继节点」。只有一台服务器时，
-就在那台机器上再跑一个节点实例（`install-server.sh` 装的主控与 `install-node.sh` 装的节点是
-两套互不干扰的目录与 systemd 单元）：
+一台都没有时建房直接 503「当前没有可用的中继节点」；2026-09-28 起主控也不再运行自带的中继
+实例，11010 因此默认是空的。只有一台服务器时，就在那台机器上再跑一个节点实例
+（`install-server.sh` 装的主控与 `install-node.sh` 装的节点是两套互不干扰的目录与 systemd 单元）：
 
 ```bash
-# 在主控机器上（root）。默认路径：关掉主控自带中继，本机节点接管 11010
-sudo node /opt/mclink/app/deploy/register-self-node.mjs --region oversea --disable-master-relay
+# 在主控机器上（root）。把本机注册成普通子节点，占用默认的 11010
+sudo node /opt/mclink/app/deploy/register-self-node.mjs --region oversea
 
 # 先看它要做什么（会真登录、真签一把一次性密钥，但不改配置、不装节点）
 sudo node /opt/mclink/app/deploy/register-self-node.mjs --region oversea --dry-run
 
-# 想保留主控自带中继、用一个新端口跑节点（记得放行该端口 TCP+UDP）
+# 11010 已经被别的服务占了时，换一个端口跑节点（记得放行该端口 TCP+UDP）
 sudo node /opt/mclink/app/deploy/register-self-node.mjs --region oversea --listen-port 11011
 ```
 
 脚本依次做：读 `/etc/mclink/mclink.env` → 校验区域/端口/endpoint 冲突 →
 用管理员密码登录主控（走 `127.0.0.1`，不依赖 nginx）→ 签发一次性注册密钥 →
-（`--disable-master-relay` 时）把 `MCLINK_AUTOSTART_RELAY=false` 写进 env 并重启 `mclink-server` →
 执行 `deploy/install-node.sh` → 轮询到该节点 `online` 并打印善后提示。
 
 手工等价的三步（脚本不好用时照这个来）：
 
 ```bash
-# ① 关掉主控自带中继（它和本机节点会抢同一个 11010）
-sudo sed -i 's/^MCLINK_AUTOSTART_RELAY=.*/MCLINK_AUTOSTART_RELAY=false/' /etc/mclink/mclink.env
-sudo systemctl restart mclink-server
-# ② 管理台「节点」→ 签发注册密钥（区域选 oversea，endpoint 填这台机器的公网地址:11010）
-# ③ 在主控这台机器上粘贴管理台给出的那条命令即可（与区域服务器完全一样）
+# ① 管理台「节点」→ 签发注册密钥（区域选 oversea，endpoint 填这台机器的公网地址:11010）
+# ② 在主控这台机器上粘贴管理台给出的那条命令即可（与区域服务器完全一样）
+# ③ 控制台「节点」里等它变成 online
 ```
 
 ⚠️ 停机窗口：①→③ 之间没有任何可调度节点，此时建房会 503（已有房间不受影响）。
-脚本失败时会打印回滚命令（把 `MCLINK_AUTOSTART_RELAY` 改回 `true` 再重启）。
+不要了就把本机节点关掉：`sudo systemctl disable --now mclink-node`（主控不受影响）。
 
 ### 2.4 浏览器访问
 
@@ -251,15 +248,16 @@ sudo systemctl restart mclink-server
 
 单元文件的关键设计（见 `../deploy/mclink-server.service` 注释）：
 
-* `KillMode=mixed` + `TimeoutStopSec=20`：SIGTERM 交给主进程，由它优雅关闭自己拉起的
-  easytier-core；超时后才对整组 SIGKILL，避免留下孤儿进程。
+* `KillMode=mixed` + `TimeoutStopSec=20`：SIGTERM 交给主进程，由它自己收尾；
+  超时后才对整组 SIGKILL，避免留下孤立的子进程。
 * `ProtectSystem=full` + `ReadWritePaths=/opt/mclink/data`：**不是** `ProtectSystem=strict`，
   因为主控要 spawn 子进程并写数据目录。加固项按「最小必要」给。
 * `LimitNOFILE=65535`：每个房间对等体都会占用 fd。
 * 不加 `MemoryDenyWriteExecute=yes`：V8 的 JIT 需要可写可执行内存。
-* 默认 `MCLINK_RELAY_NO_TUN=true`，中继不建 TUN 设备，因此不需要任何 capability。
-  若你把它改成 `false`（需要 TUN），必须去掉 `NoNewPrivileges=yes` 并加
-  `AmbientCapabilities=CAP_NET_ADMIN`。
+* 主控不建 TUN（转发全在子节点上），因此 `NoNewPrivileges=yes` 可以保持不动。
+  需要 TUN 的是子节点，那由 `deploy/mclink-node.service` 决定：若把节点侧的
+  `MCLINK_RELAY_NO_TUN` 改成 `false`，要改的是**那个**单元（去掉 `NoNewPrivileges=yes`、
+  加 `AmbientCapabilities=CAP_NET_ADMIN`），主控侧不用动。
 
 ---
 
@@ -320,15 +318,15 @@ sudo bash deploy/install-server.sh        # 同参数，密钥自动保留
 | 日志 | 位置 | 查看方式 |
 | --- | --- | --- |
 | 主控进程（含启动过程、房间/节点事件、请求日志） | journald | `journalctl -u mclink-server -f` |
-| 主控中继 easytier-core 的 stdout/stderr | `/opt/mclink/data/logs/relay.log` | `tail -f` |
-| 主控最近 150 行中继日志（内存环形缓冲） | 管理台「中继」页 / `GET /admin/relay` | — |
 | 子节点 agent | journald + `/var/log/mclink/agent.log` | `journalctl -u mclink-node -f` |
 | 子节点 easytier-core | `/var/log/mclink/easytier-core.log` | `tail -f` |
 | 前后端请求日志 | journald（慢请求 ≥1.5s 或状态码 ≥400 会 warn） | `journalctl -u mclink-server \| grep 慢请求` |
 
+> 主控不再自带中继实例，所以没有「主控中继日志」这一项了：**转发相关的日志都在子节点上**。
+
 日志级别：`MCLINK_LOG_LEVEL=debug|info|warn|error`（生产建议 `info`）。
-`MCLINK_LOG_LEVEL` 影响主控自身日志；中继进程的 `console_log_level` 在 `info` 级别下会被压到 `warn`
-（`manager.ts` 的 `renderConfig()`），避免刷屏。
+`MCLINK_LOG_LEVEL` 影响主控自身日志；子节点中继进程的 `console_log_level` 在 `info` 级别下会被压到 `warn`
+（`services/nodes.ts` 的 `renderNodeConfig()`），避免刷屏。
 
 ---
 
@@ -347,21 +345,23 @@ curl -s http://127.0.0.1:8787/api/v1/meta
 # 管理台（需要管理员令牌）
 curl -s -H "Authorization: Bearer <token>" http://127.0.0.1:8787/api/v1/admin/overview
 curl -s -H "Authorization: Bearer <token>" http://127.0.0.1:8787/api/v1/admin/traffic?minutes=60
-curl -s -H "Authorization: Bearer <token>" http://127.0.0.1:8787/api/v1/admin/relay
+curl -s -H "Authorization: Bearer <token>" http://127.0.0.1:8787/api/v1/admin/nodes
 ```
 
 **没有 `/metrics` 端点**：mclink 不提供 Prometheus 格式的 HTTP 接口。
-Prometheus 指标请到 EasyTier 层取（这正是 EasyTier 自带的能力）：
+Prometheus 指标请到 EasyTier 层取（这正是 EasyTier 自带的能力）—— 主控不再自带中继，
+所以这些命令要在**跑着中继的子节点**上执行：
 
 ```bash
-# 主控中继的 Prometheus 文本（RPC 只监听 127.0.0.1，需在服务器上执行）
-/opt/mclink/app/vendor/easytier/easytier-cli -p 127.0.0.1:15888 stats prometheus
+# 子节点的 Prometheus 文本（RPC 只监听 127.0.0.1，需在该机器上执行）
+# 端口按 16000 + 端口%1000 推导；endpoint 端口 11010 → 16010
+/opt/mclink-node/app/vendor/easytier/easytier-cli -p 127.0.0.1:16010 stats prometheus
 
 # 通用计数器（含 traffic_bytes_forwarded，即中继真正转发的字节数）
-/opt/mclink/app/vendor/easytier/easytier-cli -p 127.0.0.1:15888 stats show
+/opt/mclink-node/app/vendor/easytier/easytier-cli -p 127.0.0.1:16010 stats show
 
-# 子节点（端口按 16000 + 端口%1000 推导；endpoint 端口 11010 → 16010）
-/opt/mclink-node/app/vendor/easytier/easytier-cli -p 127.0.0.1:16010 stats prometheus
+# 它此刻在替哪些房间网络转发
+/opt/mclink-node/app/vendor/easytier/easytier-cli -p 127.0.0.1:16010 -o json peer list-foreign
 ```
 
 想接 Prometheus，用 `node_exporter` 的 `textfile` collector，配一个 systemd timer 定时把上面
@@ -372,9 +372,9 @@ Prometheus 指标请到 EasyTier 层取（这正是 EasyTier 自带的能力）�
 | 指标 | 来源 | 阈值建议 |
 | --- | --- | --- |
 | 主控进程存活 | `systemctl is-active mclink-server` | 非 active 即告警 |
-| 主控中继是否 running | `GET /admin/overview` 的 `relay.running` | false 告警 |
-| `easytier-cli` 可用性 | `GET /admin/overview` 的 `relay.cliAvailable` | false 告警（流量统计会失效） |
-| 在线节点数 | `GET /api/v1/stats` 的 `nodes.online` | 低于预期区域数告警 |
+| 子节点进程存活 | `systemctl is-active mclink-node`（每台子节点） | 非 active 即告警 |
+| `easytier-cli` 可用性 | `GET /api/v1/meta` 的 `easytierVersion` | 为 null 告警（子节点取不到核心、版本探测失效） |
+| 在线节点数 | `GET /api/v1/stats` 的 `nodes.online` | 低于预期区域数告警（为 0 时建房会 503） |
 | `nodes.offline` | 同上 | > 0 告警 |
 | 中继出口带宽 | `traffic.rxBps/txBps` 或 `foreign_relay_bps_limit` 对比 | 接近限速值告警 |
 | 磁盘 | 数据目录所在分区 | > 80% 告警（SQLite + 下载目录） |
@@ -383,7 +383,7 @@ Prometheus 指标请到 EasyTier 层取（这正是 EasyTier 自带的能力）�
 ### 6.3 排障用的自查命令
 
 ```bash
-ss -lntup | grep -E '8787|11010|15888'         # 端口占用
+ss -lntup | grep -E '8787|11010'                # 端口占用（11010 只在跑中继的机器上有）
 curl -s http://127.0.0.1:8787/api/v1/meta      # API 是否活着
 curl -s http://127.0.0.1:8787/api/v1/regions   # 各区域中继可用性
 ```
@@ -418,8 +418,8 @@ curl -s http://127.0.0.1:8787/api/v1/regions   # 各区域中继可用性
 
 可行的两种做法：
 
-1. **「一主控 + 多子节点」**（推荐）：主控只承担控制面，把中继全部下沉到子节点
-   （主控加 `--no-relay`）。这样主控负载很小，可以长期单实例。
+1. **「一主控 + 多子节点」**（推荐）：主控只承担控制面，中继全部在子节点上。
+   这样主控负载很小，可以长期单实例。
 2. **多主控 + 外部共享存储**（需要改代码）：把 SQLite 换成 PostgreSQL/MySQL 并抽象仓储层，
    同时把会话/限流改为外置存储。当前代码没有为这条路径预留抽象。
 
@@ -458,16 +458,12 @@ curl -s http://127.0.0.1:8787/api/v1/regions   # 各区域中继可用性
 | `MCLINK_ET_CORE` | 自动探测 | `easytier-core` 路径 |
 | `MCLINK_ET_CLI` | 自动探测 | `easytier-cli` 路径 |
 | `MCLINK_ET_CONFIG_DIR` | `<data>/easytier` | 生成配置目录 |
-| `MCLINK_RELAY_PORT` | `11010` | 中继公共端口（TCP+UDP） |
-| `MCLINK_RELAY_RPC` | `127.0.0.1:15888` | 中继 RPC portal（仅本机） |
-| `MCLINK_RELAY_NETWORK` | `mclink-master` | 中继自身网络名（子节点用 `<该值>-node`） |
-| `MCLINK_RELAY_SECRET` | 自动生成并落盘 | 中继自身网络密钥 |
-| `MCLINK_RELAY_WHITELIST` | `mclink-room-*` | 允许中继的外来网络 wildmatch 白名单 |
-| `MCLINK_RELAY_NO_TUN` | `true` | 中继是否创建 TUN |
+| `MCLINK_RELAY_PORT` | `11010` | 中继端口（TCP+UDP）：子节点注册/建房不指定端口时的**默认值**；主控自身不监听它 |
+| `MCLINK_RELAY_NETWORK` | `mclink-master` | 中继网络名（子节点用 `<该值>-node`） |
+| `MCLINK_RELAY_SECRET` | 自动生成并落盘 | 中继网络密钥（主控下发节点配置时用它，请勿泄露） |
+| `MCLINK_RELAY_WHITELIST` | `mclink-room-*` | 允许中继的外来网络 wildmatch 白名单（写入子节点配置） |
 | `MCLINK_RELAY_PUBLIC_HOST` | 空 | 主控对外主机名：`PUBLIC_BASE_URL` 为空时用它拼安装/更新指令。**不影响票据**（票据地址只取子节点注册的 `--endpoint`） |
 | `MCLINK_RELAY_BPS_LIMIT` | `0` | 中继出口限速（bit/s，0 = 不限） |
-| `MCLINK_RELAY_MULTITHREAD` | `true` | 中继多线程 |
-| `MCLINK_AUTOSTART_RELAY` | `true` | 是否随主控启动中继（`--no-relay` 会写 false） |
 | `MCLINK_NODE_OFFLINE_TIMEOUT` | `90` | 子节点心跳超时判定离线（秒，最小 15） |
 | `MCLINK_NODE_HEARTBEAT_INTERVAL` | `20` | 期望的心跳间隔（秒，最小 5） |
 | `MCLINK_ROOM_IDLE_TIMEOUT` | `600` | 空房回收时间（秒，最小 60） |
@@ -554,10 +550,10 @@ curl -fsSL https://cnnic.link/agent/install.sh | sudo bash -s -- \
 
 > EasyTier 官方只发 **zip**，而 Debian 的 GNU `tar` **解不了 zip**。脚本现在会安装 `unzip`
 > 并用它解包，缺失时依次退让到 `bsdtar` / `python3 -m zipfile`。（2026-09 之前的版本用的是
-> `tar -xf xxx.zip`，表现为"下载成功、二进制没落地"，进而"主控中继未运行"。）
+> `tar -xf xxx.zip`，表现为"下载成功、二进制没落地"，进而"中继起不来、节点也拿不到核心"。）
 
-主控**自己**装的时候（`install-server.sh`）同样支持 `--github-proxy`，因为主控的中继也依赖这两个二进制——
-直连 GitHub 超时的典型后果就是控制台里「主控中继 = 未运行」。
+主控**自己**装的时候（`install-server.sh`）同样支持 `--github-proxy`，因为主控要把这两个二进制
+分发给子节点 —— 直连 GitHub 超时的典型后果是所有节点都取不到核心。
 
 管理台「签发注册密钥」里的**「国内节点」**勾选框做的就是第 3 步：勾上就把
 `--github-proxy` 加进那条命令（默认 `https://ghproxy.net/`，可自定义）。
@@ -581,9 +577,9 @@ pnpm pack:server                      # 生成的包会带上 deploy/vendor/linu
 
 - [ ] `systemctl is-active mclink-server` → active
 - [ ] `journalctl -u mclink-server` 中没有 `未找到 easytier-core`
-- [ ] `GET /api/v1/meta` 的 `easytierVersion` 非 `null`（说明 `easytier-cli` 可用，流量统计正常）
-- [ ] `GET /api/v1/stats` 的 `nodes.online` 符合预期
-- [ ] 已从公网验证：`8787` 未被直接暴露（或已加反代），`11010` TCP+UDP 可达
+- [ ] `GET /api/v1/meta` 的 `easytierVersion` 非 `null`（说明 `easytier-cli` 可用）
+- [ ] `GET /api/v1/stats` 的 `nodes.online` 符合预期（**至少 1 台**，否则建房会 503）
+- [ ] 已从公网验证：`8787` 未被直接暴露（或已加反代），各中继节点机器的 `11010` TCP+UDP 可达
 - [ ] 管理员已改掉初始密码
 - [ ] `/etc/mclink/mclink.env` 与 `/opt/mclink/data/secrets.json` 权限正确、已纳入备份
 - [ ] 数据库备份定时任务已生效（并**实际做过一次恢复演练**）

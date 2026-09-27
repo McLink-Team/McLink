@@ -30,7 +30,6 @@ const navItems: NavItem[] = [
   { to: '/console/rooms', label: '房间管理', icon: 'M4 20V9.5L12 4l8 5.5V20M9.5 20v-6h5v6' },
   { to: '/console/users', label: '用户管理', icon: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-8 8a8 8 0 0 1 16 0' },
   { to: '/console/traffic', label: '流量监控', icon: 'M4 19V5m0 14h16M8 19v-6m4 6V9m4 10v-4' },
-  { to: '/console/relay', label: '主控中继', icon: 'M12 3v4m0 10v4M3 12h4m10 0h4M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z' },
   // 群发是动作不是配置：单独一页，否则会被埋在「平台设置」里找不到（实测踩过）
   { to: '/console/broadcast', label: '邮件公告', icon: 'M3 6h18v12H3zM3 7l9 6 9-6' },
   { to: '/console/audit', label: '审计日志', icon: 'M6 3h9l4 4v14H6zM15 3v4h4M9.5 12h6M9.5 16h6' },

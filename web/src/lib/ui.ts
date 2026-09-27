@@ -91,19 +91,6 @@ export function asPatternList(value: unknown): string[] {
   return [];
 }
 
-/**
- * 中继网络白名单：优先用新版的 `whitelistPatterns: string[]`，
- * 否则回退到可能是空格分隔字符串的 `whitelist`。两版主控都要能跑。
- */
-export function relayWhitelist(
-  source: { whitelist?: unknown; whitelistPatterns?: unknown } | null | undefined,
-): string[] {
-  if (!source) return [];
-  const patterns = asPatternList(source.whitelistPatterns);
-  if (patterns.length > 0) return patterns;
-  return asPatternList(source.whitelist);
-}
-
 /** 复用 base.css 的 `.kv` 布局时用：把值安全地转成可渲染文本 */
 export function asText(value: unknown, fallback = '—'): string {
   if (typeof value === 'string') return value.length > 0 ? value : fallback;

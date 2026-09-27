@@ -11,7 +11,10 @@
 # 用法：
 #   sudo bash deploy/install-server.sh --port 8787 --relay-port 11010
 #   sudo bash deploy/install-server.sh --admin-password '请替换成强密码'
-#   sudo bash deploy/install-server.sh --no-relay          # 只跑控制面，房间中继全部交给子节点
+#
+# 注意：2026-09-28 起主控**不再运行自带的中继实例**，房间转发全部由子节点承担；
+# 单机（一台服务器）部署请装好主控后执行 deploy/register-self-node.mjs，
+# 把主控这台机器注册成一台普通子节点。
 #
 # 升级：在源码目录里 git pull 后重新执行同一条命令即可。升级不会重置 JWT / 中继密钥。
 #
@@ -32,7 +35,6 @@ INSTALL_DIR="/opt/mclink"
 HTTP_PORT="8787"
 RELAY_PORT="11010"
 ADMIN_PASSWORD=""
-ENABLE_RELAY="true"
 PUBLIC_BASE_URL=""
 RELAY_PUBLIC_HOST=""
 GITHUB_PROXY="${MCLINK_GITHUB_PROXY:-}"
@@ -76,15 +78,14 @@ mclink 主控一键安装 / 升级脚本（Debian 12 x86_64）
   --dir <路径>               安装目录，默认 /opt/mclink
                              代码放 <dir>/app，数据放 <dir>/data
   --port <端口>              主控 HTTP 端口，默认 8787
-  --relay-port <端口>        主控中继的公共端口（TCP+UDP 同一端口），默认 11010
+  --relay-port <端口>        子节点中继的默认端口（TCP+UDP 同一端口），默认 11010
   --admin-password <密码>    初始管理员密码；不传则随机生成并只打印一次
   --public-url <URL>         对外访问地址，例如 https://cnnic.link
-  --relay-public-host <主机> 客户端连接中继用的公网主机名/IP，**只写主机名**（不带 http:// 与端口，
+  --relay-public-host <主机> 拼子节点安装/更新指令用的公网主机名/IP，**只写主机名**（不带 http:// 与端口，
                              端口由 --relay-port 决定）；不传就不写这个变量
   --github-proxy <前缀>      GitHub 加速前缀（国内机器下载 EasyTier 用），
                             例如 https://ghproxy.net/；留空则直连 GitHub
-  --no-relay                 不启动主控自带中继（MCLINK_AUTOSTART_RELAY=false），
-                             必须已部署子节点，否则无法创建房间
+  --no-relay                 【已废弃】主控不再运行自带中继，本参数只做兼容：接受但不产生任何效果
 
 邮件（SMTP）选项：
   --smtp-host <主机>         SMTP 服务器地址，例如 smtp.exmail.qq.com
@@ -114,7 +115,7 @@ mclink 主控一键安装 / 升级脚本（Debian 12 x86_64）
   * 升级时不会重置 MCLINK_JWT_SECRET / MCLINK_RELAY_SECRET；
     只有显式传 --admin-password 才会覆盖 env 里的初始管理员密码
     （该密码仅在首次建号时生效，改它不会修改已存在账号的密码）。
-  * 若只用反向代理对外，请不要对公网放行 8787，只放行中继端口。
+  * 若只用反向代理对外，请不要对公网放行 8787（中继端口只在跑子节点的机器上需要放行）。
 EOF
 }
 
@@ -128,7 +129,9 @@ while [[ $# -gt 0 ]]; do
     --public-url)         [[ $# -ge 2 ]] || die "--public-url 缺少参数"; PUBLIC_BASE_URL="$2"; shift 2 ;;
     --relay-public-host)  [[ $# -ge 2 ]] || die "--relay-public-host 缺少参数"; RELAY_PUBLIC_HOST="$2"; shift 2 ;;
     --github-proxy)       [[ $# -ge 2 ]] || die "--github-proxy 缺少参数"; GITHUB_PROXY="$2"; shift 2 ;;
-    --no-relay)           ENABLE_RELAY="false"; shift ;;
+    --no-relay)           # 已废弃：保留只为让老命令不报错，不再写任何环境变量
+                          warn "已废弃：主控不再运行自带中继（本参数不产生任何效果）"
+                          shift ;;
     --smtp-host)          [[ $# -ge 2 ]] || die "--smtp-host 缺少参数"; SMTP_HOST="$2"; shift 2 ;;
     --smtp-port)          [[ $# -ge 2 ]] || die "--smtp-port 缺少参数"; SMTP_PORT="$2"; shift 2 ;;
     --smtp-secure)        [[ $# -ge 2 ]] || die "--smtp-secure 缺少参数"; SMTP_SECURE="$2"; shift 2 ;;
@@ -213,7 +216,7 @@ install_base_packages() {
   apt-get update -qq || die "apt-get update 失败：请检查网络与 /etc/apt/sources.list"
   # unzip：EasyTier 官方只发 zip，而 Debian 的 GNU tar **解不了 zip**。
   # 以前这里漏了它、又用 `tar -xf` 解，于是"下载成功但二进制没落地"，
-  # 症状是主控中继起不来（控制台显示「未运行 / 未探测到 easytier-cli」）。
+  # 症状是 easytier 核心与 CLI 都不在（子节点取不到核心、/meta 探测不到 easytier-cli）。
   apt_install ca-certificates curl openssl tar unzip coreutils || die "基础依赖安装失败"
 }
 
@@ -465,7 +468,7 @@ install_easytier() {
   if [[ ! -f "${et_dir}/easytier-core" || ! -f "${et_dir}/easytier-cli" ]]; then
     local url tmp
     url="https://github.com/EasyTier/EasyTier/releases/download/${ET_VERSION}/easytier-linux-x86_64-${ET_VERSION}.zip"
-    # 国内机器直连 GitHub 常常超时（后果是"主控中继起不来"），所以支持加速前缀
+    # 国内机器直连 GitHub 常常超时（后果是"核心与 CLI 都没装上"），所以支持加速前缀
     if [[ -n "$GITHUB_PROXY" ]]; then
       url="${GITHUB_PROXY}${url}"
       log "使用 GitHub 加速前缀：${GITHUB_PROXY}"
@@ -500,10 +503,10 @@ install_easytier() {
     if [[ -f "${et_dir}/easytier-cli" ]]; then
       ok "EasyTier CLI 已就绪：${et_dir}/easytier-cli"
     else
-      warn "缺少 easytier-cli：流量统计与 ACL 下发将不可用（房间仍可联机）"
+      warn "缺少 easytier-cli：/meta 的 easytierVersion 会显示未知（转发由子节点承担，房间仍可联机）"
     fi
   else
-    warn "未能安装 easytier-core。主控可以启动，但不会拉起中继；房间将依赖子节点。"
+    warn "未能安装 easytier-core。主控可以启动（它不再自带中继），但子节点也无法从主控取到核心。"
     warn "可稍后手动执行：sudo bash ${APP_DIR}/deploy/install-server.sh --skip-install --skip-web"
     warn "或用 MCLINK_ET_CORE 指定已有的二进制路径。"
   fi
@@ -601,18 +604,12 @@ write_env_file() {
     # 兼容模式 —— 那种模式下内网客户端也能伪造 X-Forwarded-For 冒充别人。
     echo "MCLINK_TRUSTED_PROXIES=127.0.0.1/8,::1/128"
     echo ""
-    echo "# ---- 主控中继（单端口承载多房间）----"
+    echo "# ---- 中继（单端口承载多房间）----"
+    echo "# 主控不再运行自带中继：这里的端口/白名单/网络名是**子节点与票据**的默认值与共享密钥。"
     echo "MCLINK_RELAY_PORT=${RELAY_PORT}"
-    echo "MCLINK_RELAY_RPC=127.0.0.1:15888"
     echo "MCLINK_RELAY_WHITELIST=mclink-room-*"
     echo "MCLINK_RELAY_NETWORK=mclink-master"
-    echo "MCLINK_RELAY_NO_TUN=true"
     [[ -n "$RELAY_PUBLIC_HOST" ]] && echo "MCLINK_RELAY_PUBLIC_HOST=${RELAY_PUBLIC_HOST}"
-    if [[ "$ENABLE_RELAY" == "true" ]]; then
-      echo "MCLINK_AUTOSTART_RELAY=true"
-    else
-      echo "MCLINK_AUTOSTART_RELAY=false"
-    fi
     echo ""
     echo "# ---- EasyTier 二进制 ----"
     echo "MCLINK_ET_CORE=${APP_DIR}/vendor/easytier/easytier-core"
@@ -768,6 +765,9 @@ EOF
                          --master ${base_url} --key <注册密钥> --region cn-east \\
                          --name relay-sh --endpoint relay-sh.cnnic.link:${RELAY_PORT} \\
                          --listen-port ${RELAY_PORT}
+                     ⚠ 主控不再自带中继：一台可调度的子节点都没有时建房会直接失败。
+                       单机（只有这一台服务器）请执行 deploy/register-self-node.mjs
+                       把主控这台机器注册成一台普通子节点。
   5) 反向代理/证书 : 参考 ${APP_DIR}/deploy/nginx.conf.example（WS 必须单独配置）
   6) 是否放行 ${HTTP_PORT}: 若已用 HTTPS 反代，不要对公网放行 ${HTTP_PORT}
 $(if [[ "${final_verify_email:-true}" == "true" && -z "$final_smtp_host" ]]; then

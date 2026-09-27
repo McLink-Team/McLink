@@ -1,12 +1,10 @@
 <script setup lang="ts">
 /**
- * 仪表盘：平台概览 + 中继运行状态 + 节点/房间速览 + 审计时间线。
+ * 仪表盘：平台概览 + 节点/房间速览 + 审计时间线。
  *
  * 数据只来自 `/admin/overview`：
  *   - `nodes` / `rooms` 是**计数对象**（状态分布、开放房间数、在线玩家数）；
  *   - `recentNodes` / `recentRooms` 是「前 12」列表，用于两张速览表格。
- * 白名单在旧版主控里是空格分隔字符串（新版额外给 `whitelistPatterns`），
- * 渲染前必须归一化，否则 `.join()` 会直接让整页白屏。
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { RouterLink } from 'vue-router';
@@ -14,13 +12,11 @@ import {
   Routes,
   Topics,
   formatBitrate,
-  formatBytes,
   formatDuration,
   formatRelativeTime,
   regionLabel,
   type AuditEntry,
   type RelayNode,
-  type RelayRuntime,
   type Room,
   type ServerEvent,
 } from '@mclink/shared';
@@ -32,25 +28,11 @@ import {
   formatDateTime,
   nodeLabel,
   nodeTone,
-  relayWhitelist,
   roomLabel,
   roomTone,
 } from '../../lib/ui.ts';
 import StatCard from '../../components/StatCard.vue';
 import Badge from '../../components/Badge.vue';
-
-interface AdminRelayRuntime extends RelayRuntime {
-  version: string | null;
-  cliAvailable: boolean;
-  /** 旧版主控给的是空格分隔字符串；新版额外给 whitelistPatterns */
-  whitelist: string | string[];
-  whitelistPatterns?: string | string[];
-  port: number;
-  rpcPortal: string;
-  binary: string;
-  logFile: string;
-  configFile: string;
-}
 
 interface NodeCounts {
   total: number;
@@ -74,7 +56,7 @@ interface AdminOverview {
   nodes: NodeCounts;
   rooms: RoomCounts;
   users: { total: number; online: number };
-  /** rxBps/txBps 是全网聚合（主控 + 在线子节点），其余是拆分明细 */
+  /** rxBps/txBps 是全网聚合；转发全在子节点上，master* 恒为 0（字段仍在，老前端不白屏） */
   traffic: {
     rxBps: number;
     txBps: number;
@@ -86,7 +68,6 @@ interface AdminOverview {
     nodesTxBps: number;
     onlineRelayNodes: number;
   };
-  relay: AdminRelayRuntime | null;
   system: {
     nodeVersion: string;
     platform: string;
@@ -148,10 +129,6 @@ onUnmounted(() => {
 
 /* --------------------------------------------------------------- 派生 */
 
-const relay = computed(() => overview.value?.relay ?? null);
-/** 白名单在旧版主控是空格分隔字符串，这里必须归一化后再渲染 */
-const whitelistPatterns = computed(() => relayWhitelist(relay.value));
-
 /* 字段缺失时的兜底值：宁可显示 0 也不要让渲染中断 */
 const EMPTY_NODE_COUNTS: NodeCounts = { total: 0, online: 0, degraded: 0, offline: 0, pending: 0 };
 const EMPTY_ROOM_COUNTS: RoomCounts = { open: 0, total: 0, onlinePlayers: 0 };
@@ -178,16 +155,16 @@ const cards = computed(() => {
       accent: 'accent' as const,
     },
     {
-      // 全网口径：主控中继 + 所有在线子节点（玩家按区域接入，大头在子节点上）
+      // 全网口径：所有在线子节点之和（转发全部由子节点承担，主控不再自带中继）
       label: '全网接收',
       value: formatBitrate(traffic.rxBps),
-      hint: `主控 ${formatBitrate(traffic.masterRxBps)} + ${traffic.onlineRelayNodes} 节点 ${formatBitrate(traffic.nodesRxBps)}`,
+      hint: `${traffic.onlineRelayNodes} 个在线子节点 ${formatBitrate(traffic.nodesRxBps)}`,
       accent: 'violet' as const,
     },
     {
       label: '全网发送',
       value: formatBitrate(traffic.txBps),
-      hint: `主控 ${formatBitrate(traffic.masterTxBps)} + ${traffic.onlineRelayNodes} 节点 ${formatBitrate(traffic.nodesTxBps)}`,
+      hint: `${traffic.onlineRelayNodes} 个在线子节点 ${formatBitrate(traffic.nodesTxBps)}`,
       accent: 'violet' as const,
     },
   ];
@@ -209,7 +186,7 @@ const warnings = computed(() => asStringList(overview.value?.warnings));
             服务端时间 {{ formatDateTime(overview.serverTime) }} · 主控已运行 {{ formatDuration(overview.uptimeSeconds) }} ·
             实时事件会自动刷新本页
           </template>
-          <template v-else>平台概览、中继运行状态与最近操作。</template>
+          <template v-else>平台概览、节点与房间速览、最近操作。</template>
         </p>
       </div>
       <div class="console-head-actions">
@@ -269,86 +246,29 @@ const warnings = computed(() => asStringList(overview.value?.warnings));
         />
       </div>
 
-      <div class="split">
-        <!-- 中继运行状态 -->
-        <section class="console-section">
-          <div class="console-section-head">
-            <div class="console-section-text">
-              <h2 class="console-section-title">主控中继</h2>
-              <p class="console-section-note">单端口共享中继，为所有房间转发（EasyTier network whitelist 通配）</p>
-            </div>
-            <Badge :tone="relay?.running ? 'ok' : 'danger'" dot :pulse="Boolean(relay?.running)">
-              {{ relay?.running ? '运行中' : '未运行' }}
-            </Badge>
+      <!-- system 信息块 -->
+      <section class="console-section">
+        <div class="console-section-head">
+          <div class="console-section-text">
+            <h2 class="console-section-title">系统信息</h2>
+            <p class="console-section-note">主控进程自身的运行时读数（转发全在子节点上，主控只跑控制面）。</p>
           </div>
-
-          <template v-if="relay">
-            <div class="kv">
-              <span class="kv-k">监听地址</span><span class="kv-v mono">{{ relay.listen }}</span>
-              <span class="kv-k">网络名</span><span class="kv-v mono">{{ relay.networkName }}</span>
-              <span class="kv-k">白名单</span>
-              <span class="kv-v mono wrap-anywhere">
-                {{ whitelistPatterns.length > 0 ? whitelistPatterns.join(', ') : '（未配置）' }}
-              </span>
-              <span class="kv-k">CLI 版本</span>
-              <span class="kv-v">
-                <span class="mono">{{ relay.version ?? '未探测到 easytier-cli' }}</span>
-                <Badge v-if="!relay.cliAvailable" tone="warn">流量统计不可用</Badge>
-              </span>
-              <span class="kv-k">RPC Portal</span><span class="kv-v mono">{{ relay.rpcPortal }}</span>
-              <span class="kv-k">配置文件</span>
-              <span class="kv-v mono wrap-anywhere">{{ relay.configFile }}</span>
-              <span class="kv-k">日志文件</span>
-              <span class="kv-v mono wrap-anywhere">{{ relay.logFile }}</span>
-              <span class="kv-k">累计流量</span>
-              <span class="kv-v">
-                收 {{ formatBytes(relay.rxBytes) }} / 发 {{ formatBytes(relay.txBytes) }} ·
-                {{ relay.peerCount }} peers
-              </span>
-              <span class="kv-k">启动于</span>
-              <span class="kv-v">
-                {{ relay.startedAt ? formatRelativeTime(relay.startedAt) : '未记录' }}
-                <span class="cell-sub">（主控已运行 {{ formatDuration(overview?.uptimeSeconds ?? 0) }}）</span>
-              </span>
-            </div>
-
-            <div v-if="relay.lastError" class="notice notice-danger dash-notice">
-              <strong>最近错误：</strong>{{ relay.lastError }}
-            </div>
-            <p v-else class="hint hint-row">最近未记录错误。</p>
-
-            <div class="console-toolbar dash-actions">
-              <RouterLink class="btn btn-sm" to="/console/relay">打开主控中继面板</RouterLink>
-              <RouterLink class="btn btn-sm btn-ghost" to="/console/traffic">查看流量归因</RouterLink>
-            </div>
-          </template>
-          <div v-else class="empty">中继未启动或状态未知。</div>
-        </section>
-
-        <!-- system 信息块 -->
-        <section class="console-section">
-          <div class="console-section-head">
-            <div class="console-section-text">
-              <h2 class="console-section-title">系统信息</h2>
-              <p class="console-section-note">主控进程自身的运行时读数。</p>
-            </div>
-          </div>
-          <div v-if="overview" class="kv">
-            <span class="kv-k">平台版本</span><span class="kv-v mono">{{ overview.version }}</span>
-            <span class="kv-k">EasyTier 核心</span>
-            <span class="kv-v mono">{{ overview.easytierVersion ?? '未探测' }}</span>
-            <span class="kv-k">Node 版本</span><span class="kv-v mono">{{ overview.system?.nodeVersion ?? '未知' }}</span>
-            <span class="kv-k">运行平台</span><span class="kv-v mono">{{ overview.system?.platform ?? '未知' }}</span>
-            <span class="kv-k">Schema 版本</span><span class="kv-v mono">{{ overview.system?.schemaVersion ?? '未知' }}</span>
-            <span class="kv-k">数据库</span>
-            <span class="kv-v mono wrap-anywhere">{{ overview.system?.dbFile ?? '未记录' }}</span>
-            <span class="kv-k">进程 PID</span><span class="kv-v mono">{{ overview.system?.pid ?? '未知' }}</span>
-            <span class="kv-k">内存占用</span><span class="kv-v mono">{{ overview.system?.memoryMb ?? '未知' }} MB</span>
-            <span class="kv-k">服务端时间</span><span class="kv-v mono">{{ formatDateTime(overview.serverTime) }}</span>
-            <span class="kv-k">已运行</span><span class="kv-v">{{ formatDuration(overview.uptimeSeconds) }}</span>
-          </div>
-        </section>
-      </div>
+        </div>
+        <div v-if="overview" class="kv">
+          <span class="kv-k">平台版本</span><span class="kv-v mono">{{ overview.version }}</span>
+          <span class="kv-k">EasyTier 核心</span>
+          <span class="kv-v mono">{{ overview.easytierVersion ?? '未探测' }}</span>
+          <span class="kv-k">Node 版本</span><span class="kv-v mono">{{ overview.system?.nodeVersion ?? '未知' }}</span>
+          <span class="kv-k">运行平台</span><span class="kv-v mono">{{ overview.system?.platform ?? '未知' }}</span>
+          <span class="kv-k">Schema 版本</span><span class="kv-v mono">{{ overview.system?.schemaVersion ?? '未知' }}</span>
+          <span class="kv-k">数据库</span>
+          <span class="kv-v mono wrap-anywhere">{{ overview.system?.dbFile ?? '未记录' }}</span>
+          <span class="kv-k">进程 PID</span><span class="kv-v mono">{{ overview.system?.pid ?? '未知' }}</span>
+          <span class="kv-k">内存占用</span><span class="kv-v mono">{{ overview.system?.memoryMb ?? '未知' }} MB</span>
+          <span class="kv-k">服务端时间</span><span class="kv-v mono">{{ formatDateTime(overview.serverTime) }}</span>
+          <span class="kv-k">已运行</span><span class="kv-v">{{ formatDuration(overview.uptimeSeconds) }}</span>
+        </div>
+      </section>
 
       <!-- 节点表 -->
       <section class="console-section">
@@ -483,18 +403,6 @@ const warnings = computed(() => asStringList(overview.value?.warnings));
   padding: var(--s-4) var(--s-4) var(--s-4) 0;
   border-bottom: 1px solid var(--rule);
 }
-.split {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-  gap: var(--s-6);
-  border-top: 1px solid var(--rule);
-  padding-top: var(--s-5);
-}
-/* split 里的两栏各自不再画上边线，避免出现双重发丝线 */
-.split .console-section {
-  border-top: 0;
-  padding-top: 0;
-}
 .warn-block {
   flex-direction: column;
   align-items: stretch;
@@ -519,15 +427,6 @@ const warnings = computed(() => asStringList(overview.value?.warnings));
   flex: 1;
   min-width: 0;
   overflow-wrap: anywhere;
-}
-.dash-notice {
-  margin-top: var(--s-4);
-}
-.hint-row {
-  margin-top: var(--s-4);
-}
-.dash-actions {
-  margin-top: var(--s-5);
 }
 .tl-led {
   margin-top: 7px;

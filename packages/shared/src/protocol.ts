@@ -96,9 +96,6 @@ export const Routes = {
   adminMailTest: '/admin/mail/test',
   /** 查询邮件服务状态（配置是否齐全、最近一次发信结果） */
   adminMailStatus: '/admin/mail/status',
-  adminRelay: '/admin/relay',
-  adminRelayAcl: '/admin/relay/acl',
-  adminRelayRestart: '/admin/relay/restart',
 } as const;
 
 /* ------------------------------------------------- 建房请求的延迟提示 */
@@ -178,9 +175,7 @@ export type ServerEvent =
   /** 平台流量心跳（管理员与房间页使用） */
   | { type: 'traffic.tick'; report: unknown }
   /* 平台公告 */
-  | { type: 'notice'; level: 'info' | 'warn' | 'error'; message: string }
-  /** 管理台：中继运行时状态 */
-  | { type: 'relay.update'; relay: unknown };
+  | { type: 'notice'; level: 'info' | 'warn' | 'error'; message: string };
 
 export const Topics = {
   /** 平台级统计，落地页与仪表盘 */
