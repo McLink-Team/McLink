@@ -134,6 +134,8 @@ function parseArgs(argv) {
     envFile: '/etc/mclink/mclink.env',
     dryRun: false,
     wait: 120,
+    /** 已废弃、但仍然接受的参数（见 parseArgs 里的 --disable-master-relay） */
+    deprecated: [],
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -154,6 +156,11 @@ function parseArgs(argv) {
       case '--env-file': out.envFile = need(); i += 1; break;
       case '--wait': out.wait = Number(need()); i += 1; break;
       case '--dry-run': out.dryRun = true; break;
+      /**
+       * 废弃参数的无声兼容：主控不再有自带中继（2026-09-28 移除），这个开关没有作用了。
+       * 但它在文档里短暂出现过，老命令（或 shell 历史）带着它时不该直接报"未知参数"。
+       */
+      case '--disable-master-relay': out.deprecated.push(arg); break;
       case '-h':
       case '--help': printUsage(); process.exit(0); break;
       default: die(`未知参数：${arg}（-h 看帮助）`);
@@ -277,6 +284,9 @@ async function main() {
   log(`主控 API：${masterBase}${args.dryRun ? color.dim('（--dry-run）') : ''}`);
   note(`配置文件：${args.envFile}${fs.existsSync(args.envFile) ? '' : '（不存在，参数只来自命令行）'}`);
   note(`本机中继端口：${relayPort}（MCLINK_RELAY_PORT）`);
+  for (const flag of args.deprecated) {
+    warn(`${flag} 已废弃（主控不再自带中继，这个开关没有作用），本次忽略`);
+  }
 
   /* 2. 校验 */
   if (!REGION_IDS.includes(args.region)) {

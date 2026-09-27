@@ -65,7 +65,6 @@ export function registerRoomRoutes(router: Router, app: App): void {
       listenPort: optInt(body, 'listenPort', 1024, 65535) ?? app.settings.current.relayPort,
       rpcPort: optInt(body, 'rpcPort', 1024, 65535) ?? undefined,
       ttlMinutes: 'ttlMinutes' in body ? optInt(body, 'ttlMinutes', 0, 60 * 24 * 30) ?? null : undefined,
-      hostHint: ctx.req.headers.host ?? null,
     });
     log.info('房间创建成功', { room: result.room.id, name, zone });
     return result;
@@ -106,7 +105,6 @@ export function registerRoomRoutes(router: Router, app: App): void {
       deviceName: optStr(body, 'deviceName', 32) ?? null,
       listenPort: optInt(body, 'listenPort', 1024, 65535) ?? app.settings.current.relayPort,
       rpcPort: optInt(body, 'rpcPort', 1024, 65535) ?? undefined,
-      hostHint: ctx.req.headers.host ?? null,
     });
     return result;
   }, { auth: true });
@@ -134,7 +132,6 @@ export function registerRoomRoutes(router: Router, app: App): void {
       ctx.params.id ?? '',
       auth.userId,
       Number.isFinite(listenPort) && listenPort > 1024 ? listenPort : app.settings.current.relayPort,
-      ctx.req.headers.host ?? null,
       // 只接受合法范围内的整数，其余交给服务端按 listenPort 推算
       Number.isFinite(rpcPort) ? rpcPort : null,
     );

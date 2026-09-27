@@ -2,7 +2,8 @@
 /**
  * 主控服务端入口。
  *
- * 启动顺序：装配应用 → 初始化管理员 → 启动 HTTP/WebSocket → 拉起主控中继 → 启动后台任务。
+ * 启动顺序：装配应用 → 初始化管理员 → 启动 HTTP/WebSocket → 启动后台任务
+ * （探测 easytier-cli 版本、每 6 秒按子节点聚合流量、节点健康检查、定期清理）。
  * 任何一步失败都会打印可操作的提示，而不是抛栈让运维猜。
  */
 import { Topics, type ForeignNetworkInfo, type RelayNode } from '@mclink/shared';
@@ -400,7 +401,7 @@ function toNodePublic(row: {
     status: row.status as RelayNode['status'],
     version: null,
     capacityPeers: 0,
-    // 主控中继不参与"按带宽调度"（它永远是兜底，没法被排除掉），所以不带带宽上限
+    // 节点视图：主控不参与调度，所以这类字段只是给界面一个形状完整的对象
     capacityBps: 0,
     peers: row.peers,
     rooms: row.rooms,
