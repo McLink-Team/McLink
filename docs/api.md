@@ -418,8 +418,8 @@
   "relays": [
     { "nodeId": "n_abc123", "region": "cn-east", "label": "relay-sh",
       "url": "tcp://relay-sh.cnnic.link:11010", "udpUrl": "udp://relay-sh.cnnic.link:11010", "latencyMs": null },
-    { "nodeId": "master", "region": "master", "label": "主控中继（兜底）",
-      "url": "tcp://cnnic.link:11010", "udpUrl": "udp://cnnic.link:11010", "latencyMs": null }
+    { "nodeId": "n_def456", "region": "cn-east", "label": "relay-bj",
+      "url": "tcp://relay-bj.cnnic.link:11010", "udpUrl": "udp://relay-bj.cnnic.link:11010", "latencyMs": null }
   ],
   "configToml": "# 由 mclink 主控自动生成，请勿手工编辑 —— 下次同步会被覆盖\ninstance_name = \"mclink-k7qm2p\"\n...",
   "launchArgs": ["-c", "%CONFIG%", "-r", "127.0.0.1:16010", "--rpc-portal-whitelist", "127.0.0.1/32"],
@@ -431,6 +431,9 @@
 ```
 
 * `%CONFIG%` 需由调用方替换为自己落盘配置文件的绝对路径。
+* `relays[]` **只有子节点**（2026-09-27 起主控不再兜底）：内容 = 建房时写进 `room.relayNodeIds`
+  的调度结果，自动模式下是 2 个**不同**节点（第 1 条 = 主中继，第 2 条 = 兜底中继）。
+  不会再出现 `nodeId: "master"` / `region: "master"` 的条目。
 * **只有房主**会拿到非 `null` 的 `aclToml`；成员恒为 `null`。
 * 失败：`403 forbidden`「你不在该房间中」/「等待房主审批」。
 
@@ -836,7 +839,10 @@ WebSocket 只用于平台概览、流量与节点状态。
     `GET /rooms/:id` 与 `GET /rooms/:id/members` 现在都会调用
     `roomService.assertMember()`，非成员返回 403。`/ticket` 与 `/acl` 依旧分别
     校验成员身份与房主身份。
-15. **主控中继兜底地址取自请求的 `Host` 头**：票据里 `nodeId: "master"` 的那条中继记录，
-    在没有配置 `MCLINK_RELAY_PUBLIC_HOST` / `MCLINK_PUBLIC_BASE_URL` 时由请求 `Host` 推导，
-    因此用 `http://127.0.0.1:8787` 建的房间会得到 `tcp://127.0.0.1:11010`。
-    生产环境请显式配置 `MCLINK_RELAY_PUBLIC_HOST`。
+15. **主控中继不再进票据（行为已改）**：历史上票据里固定有一条 `nodeId: "master"` 的兜底中继，
+    地址在没配置 `MCLINK_RELAY_PUBLIC_HOST` / `MCLINK_PUBLIC_BASE_URL` 时由请求 `Host` 推导
+    （所以用 `http://127.0.0.1:8787` 建房会得到 `tcp://127.0.0.1:11010`）。
+    **2026-09-27 起这条推导不再影响票据**：`relays[]` 只来自 `relay_nodes` 的调度结果（子节点），
+    主控要参与就必须被注册成一台普通子节点，一个可调度子节点都没有时建房直接报 503。
+    `MCLINK_RELAY_PUBLIC_HOST` 保留下来，作用变成「把主控注册成普通子节点时用的对外地址」，
+    生产环境仍建议显式配置（不要让地址随请求 `Host` 漂移）。
