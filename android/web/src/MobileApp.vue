@@ -48,6 +48,17 @@ import PublicPlaza from '../../../client/src/components/PublicPlaza.vue';
 import VerifyEmail from '../../../client/src/components/VerifyEmail.vue';
 import MobileTabBar, { type MobileTab } from './MobileTabBar.vue';
 import MobileSettingsPage from './MobileSettingsPage.vue';
+/*
+ * 应用内确认弹层 —— **必须挂**。
+ *
+ * lib/confirm.ts 的 confirmInApp 返回的 Promise 只有这个组件会 resolve。
+ * 移动外壳原来漏挂了它，结果是：踢人、退出房间、关闭房间、轮换密钥、删除消息
+ * 这些按钮点下去**什么都不发生，也不报错**（Promise 永远悬着）。
+ * 用户报的就是"点踢出没有反应"。
+ * 现在 confirm.ts 也加了兜底（没挂就退回系统 confirm），但这个组件**该挂还得挂**：
+ * 只有它在，弹层才是「暖纸台」自己的样子。
+ */
+import ConfirmDialog from '../../../client/src/components/ConfirmDialog.vue';
 import { installKeyboardInset } from './mobile-keyboard.ts';
 import { installMessageNotifier, maybeAskNotifyPermission, cancelPendingNotifications } from './message-notify.ts';
 
@@ -306,6 +317,12 @@ onUnmounted(() => {
         <MobileSettingsPage v-else />
       </template>
     </div>
+
+    <!--
+      应用内确认弹层：整屏遮罩，`position: fixed`，所以放在这一层哪个位置都行。
+      **一个都不能少** —— 见文件上方 import 处的说明（漏挂会让踢人/退出房间等按钮变哑巴）。
+    -->
+    <ConfirmDialog />
 
     <!--
       底部 dock：上沿是「这一屏的主动作」，下面是三项导航。
