@@ -360,7 +360,7 @@ const warnings = computed(() => asStringList(overview.value?.warnings));
           <RouterLink class="btn btn-sm" to="/console/nodes">全部节点</RouterLink>
         </div>
 
-        <div v-if="nodeRows.length === 0" class="empty">还没有注册任何子节点，当前仅使用主控中继兜底。</div>
+        <div v-if="nodeRows.length === 0" class="empty">还没有注册任何子节点，此时建房会直接失败（主控自身不再作兜底中继）。</div>
         <div v-else class="table-wrap">
           <table class="table">
             <thead>

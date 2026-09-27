@@ -369,7 +369,7 @@ async function recomputeAcl(): Promise<void> {
             <span class="kv-v mono wrap-anywhere">{{ detail.room.networkName }}</span>
             <span class="kv-k">中继节点</span>
             <span class="kv-v mono wrap-anywhere">
-              {{ asStringList(detail.room.relayNodeIds).length > 0 ? asStringList(detail.room.relayNodeIds).join(', ') : '仅主控兜底中继' }}
+              {{ asStringList(detail.room.relayNodeIds).length > 0 ? asStringList(detail.room.relayNodeIds).join(', ') : '无（建房时没有可用节点）' }}
             </span>
             <span class="kv-k">累计流量</span>
             <span class="kv-v">

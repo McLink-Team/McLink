@@ -11,7 +11,7 @@
 
 | 规模 | 主控 | 子节点（每个区域） |
 | --- | --- | --- |
-| 试玩（< 10 房间，< 50 人） | 1 核 / 1 GB / 20 GB SSD | 不需要（主控中继兜底） |
+| 试玩（< 10 房间，< 50 人） | 1 核 / 1 GB / 20 GB SSD | 可与主控同机（把主控注册成一台普通子节点） |
 | 小规模（~50 房间，~300 人） | 2 核 / 2 GB / 40 GB SSD | 1 核 / 1 GB / 20 GB |
 | 中等（~300 房间，~2000 人） | 4 核 / 4 GB / 80 GB SSD | 2 核 / 2 GB / 40 GB |
 | 大（千房级） | 8 核 / 8 GB，SQLite 换独立盘 | 4 核 / 4 GB，多台横向铺开 |
@@ -428,7 +428,7 @@ curl -s http://127.0.0.1:8787/api/v1/regions   # 各区域中继可用性
 | `MCLINK_RELAY_SECRET` | 自动生成并落盘 | 中继自身网络密钥 |
 | `MCLINK_RELAY_WHITELIST` | `mclink-room-*` | 允许中继的外来网络 wildmatch 白名单 |
 | `MCLINK_RELAY_NO_TUN` | `true` | 中继是否创建 TUN |
-| `MCLINK_RELAY_PUBLIC_HOST` | 空 | 客户端连接中继的公网主机名（留空时按 `PUBLIC_BASE_URL`→`Host` 回退） |
+| `MCLINK_RELAY_PUBLIC_HOST` | 空 | 主控对外主机名：`PUBLIC_BASE_URL` 为空时用它拼安装/更新指令。**不影响票据**（票据地址只取子节点注册的 `--endpoint`） |
 | `MCLINK_RELAY_BPS_LIMIT` | `0` | 中继出口限速（bit/s，0 = 不限） |
 | `MCLINK_RELAY_MULTITHREAD` | `true` | 中继多线程 |
 | `MCLINK_AUTOSTART_RELAY` | `true` | 是否随主控启动中继（`--no-relay` 会写 false） |

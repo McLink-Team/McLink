@@ -268,8 +268,12 @@ GET /api/v1/rooms/public          （匿名）
    * 没配 `MCLINK_TRUSTED_PROXIES` 时是**兼容模式**：信任回环 + 私网来源的转发头
      （容器里跑反代的老部署不至于一夜翻车），启动日志会有一条 warn 提示去显式配置。
      注意兼容模式的残留问题：内网客户端本身也落在私网段里，因此**内网来源**仍可伪造 IP。
-4. **显式配置 `MCLINK_RELAY_PUBLIC_HOST` / `MCLINK_PUBLIC_BASE_URL`**：否则票据里的主控中继
-   兜底地址会按请求的 `Host` 头推导，可能给出内网地址。
+4. **显式配置 `MCLINK_PUBLIC_BASE_URL`**：它决定安装/更新指令、下载链接与邮件里的**绝对地址**；
+   不配就只能按请求的 `Host` 头猜，反代后面容易猜出内网地址。
+   注意票据**不再受影响**：`relays[]` 的地址只来自子节点注册时填的 `--endpoint`
+   （2026-09-27 起主控不再兜底），所以伪造 `Host` 已经不能把玩家引到别处。
+   `MCLINK_RELAY_PUBLIC_HOST` / `install-server.sh --relay-public-host` 现在只是
+   `MCLINK_PUBLIC_BASE_URL` 为空时，拼安装/更新指令用的「主控对外主机名」回退。
 5. **给 `/etc/mclink/mclink.env` 和 `/etc/mclink/node.env` 设 600**（安装脚本已做）；
    注意 `MCLINK_ADMIN_PASSWORD` 在该文件里是**明文**，别把它提交进 Git。
 6. **备份并保护 `secrets.json`**：它含 JWT 密钥与中继密钥；泄露 = 可伪造登录令牌。

@@ -286,8 +286,9 @@ curl -s -H "Authorization: Bearer <token>" \
 ```
 
 **处置**：管理台上该节点的 `endpoint` 必须是公网可达的 `host:port`（票据下发的就是它，端口取
-「链接端口」）。`MCLINK_RELAY_PUBLIC_HOST` / `install-server.sh --relay-public-host` 只在
-「把主控注册成一台普通子节点」时才有意义，改它**不会**再影响任何票据。
+「链接端口」）。`MCLINK_RELAY_PUBLIC_HOST` / `install-server.sh --relay-public-host` 现在只用于
+「`MCLINK_PUBLIC_BASE_URL` 为空时拼安装/更新指令」，改它**不会**再影响任何票据；
+要把主控本身当节点用，得用 `install-node.sh --endpoint <这台机器的公网地址>:11010` 注册。
 
 ### 6.4 端口没放行
 
@@ -320,8 +321,9 @@ sudo ufw status | grep 11010
 
 ## 7. 票据里出现内网/本机地址
 
-见 §6.3。补充说明：`relayNodes` 里子节点的地址来自管理台登记（`PATCH /admin/nodes/:id` 的
-`endpoint`）；主控兜底地址来自环境变量或 `Host`。**两者都要是玩家能访问的公网地址**。
+见 §6.3。补充说明：票据里的地址**只有**一个来源 —— `relayNodes`（管理台登记的子节点，
+`PATCH /admin/nodes/:id` 的 `endpoint`），**它们必须是玩家能访问的公网地址**。
+主控自有中继已不进票据（§6.3），所以「内网地址」现在一定是某个子节点 `endpoint` 填错了。
 
 ---
 

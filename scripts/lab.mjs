@@ -5,7 +5,8 @@
  * 这不是 mock：脚本会真的拉起 1 个主控中继、1 个子节点、以及 4~5 个客户端
  * easytier-core 进程，然后通过 easytier-cli 的 JSON 输出核对以下结论：
  *
- *   1. 主控只监听一个端口（默认 11010），却同时服务两个不同房间；
+ *   1. 子节点中继只监听一个端口，却同时服务两个不同房间
+ *      （2026-09-27 起主控不再兜底，票据里的中继只来自 relay_nodes 子节点）；
  *   2. 房间之间完全隔离 —— A 房成员看不到 B 房任何 peer；
  *   3. 网络密钥错误者进不了房间（拿得到网络名，但没有密钥就没法形成 peer）；
  *   4. 子节点可以注册上线，并参与房间中继调度；
@@ -955,10 +956,13 @@ async function main() {
   check('已拉起 1 个密钥错误的客户端（用于验证密钥校验）', true, `port=${intruderPort} ip=${intruderIp}`);
 
   step('等待网络收敛（最多 45 秒）');
+  // 2026-09-27 起主控不再兜底：票据里的中继只来自 relay_nodes 里可调度的子节点，
+  // 所以「单一端口同时承载多个房间网络」这个观测点落在子节点中继上。
+  const subNodeRpc = `127.0.0.1:${rpcFor(nodePort)}`;
   const relayWait = await waitFor(
-    '主控中继出现两个外来网络',
+    '子节点中继出现两个外来网络',
     async () => {
-      const r = await foreignNetworksOf(RELAY_RPC);
+      const r = await foreignNetworksOf(subNodeRpc);
       if (r.error) {
         console.log(colors.warn(`    CLI 查询失败: ${r.error}`));
         return null;
@@ -971,9 +975,19 @@ async function main() {
 
   const foreignNames = relayWait?.names ?? [];
   const relayForeign = relayWait?.data ?? {};
-  console.log(colors.dim(`  主控中继上的外来网络: ${foreignNames.join(', ') || '（无）'}`));
+  console.log(colors.dim(`  子节点中继(${subNodeRpc})上的外来网络: ${foreignNames.join(', ') || '（无）'}`));
+  // 主控自带的中继实例已不再进票据，这里只观测不断言：本机库若把主控本身
+  // 也注册成了普通子节点，票据仍可能合法地指向它。
+  const masterForeign = await foreignNetworksOf(RELAY_RPC);
+  console.log(
+    colors.dim(
+      `  [观测] 主控中继(${RELAY_RPC})上的外来网络: ${
+        masterForeign.names.join(', ') || (masterForeign.error ? `查询失败: ${masterForeign.error}` : '（无）')
+      }`,
+    ),
+  );
   check(
-    '主控单一端口同时承载两个房间网络',
+    '中继单一端口同时承载两个房间网络',
     foreignNames.length === 2,
     `实际 ${foreignNames.length} 个: ${foreignNames.join(', ')}`,
   );
@@ -987,18 +1001,9 @@ async function main() {
   // 或分别挂在不同的中继上，单个中继上每房间只会有 1 个 peer。因此下界是 1，
   // 「成员互相可见」由客户端的 peer 列表单独验证。
   check(
-    '主控中继上每个房间都有 peer 挂在上面',
+    '中继上每个房间都有 peer 挂在上面',
     peerCounts[roomA.ticket.networkName] >= 1 && peerCounts[roomB.ticket.networkName] >= 1,
     JSON.stringify(peerCounts),
-  );
-
-  const subNodeRpc = `127.0.0.1:${rpcFor(nodePort)}`;
-  const subRelay = await foreignNetworksOf(subNodeRpc);
-  console.log(colors.dim(`  子节点(${subNodeRpc})上的外来网络: ${subRelay.names.join(', ') || (subRelay.error ? `查询失败: ${subRelay.error}` : '（无）')}`));
-  check(
-    '子节点同样承载了这两个房间（区域中继生效）',
-    subRelay.names.length === 2,
-    subRelay.error ? `CLI 错误: ${subRelay.error}` : `实际 ${subRelay.names.length} 个`,
   );
 
   step('验证房间隔离（这是本次实验的核心断言）');
@@ -1058,7 +1063,7 @@ async function main() {
   const afterUnknown = await waitFor(
     '中继稳定（等待未知网络名的客户端尝试连接）',
     async () => {
-      const r = await foreignNetworksOf(RELAY_RPC);
+      const r = await foreignNetworksOf(subNodeRpc);
       return r.error ? null : r;
     },
     20_000,
@@ -1109,7 +1114,7 @@ async function main() {
   );
 
   step('验证按房间的流量统计');
-  const statsAfter = await cli(RELAY_RPC, ['peer', 'list-foreign']);
+  const statsAfter = await cli(subNodeRpc, ['peer', 'list-foreign']);
   let anyBytes = false;
   for (const entry of Object.values(statsAfter.data ?? {})) {
     for (const peer of entry?.peers ?? []) {
