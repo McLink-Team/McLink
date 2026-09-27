@@ -2,11 +2,12 @@
 /**
  * mclink 端到端集成实验（使用真实的 easytier-core 二进制）。
  *
- * 这不是 mock：脚本会真的拉起 1 个主控中继、1 个子节点、以及 4~5 个客户端
+ * 这不是 mock：脚本会真的拉起 1 个子节点中继、以及 4~5 个客户端
  * easytier-core 进程，然后通过 easytier-cli 的 JSON 输出核对以下结论：
  *
  *   1. 子节点中继只监听一个端口，却同时服务两个不同房间
- *      （2026-09-27 起主控不再兜底，票据里的中继只来自 relay_nodes 子节点）；
+ *      （2026-09-27 起主控不再兜底、2026-09-28 起连自带中继实例也不再启动，
+ *       票据里的中继只来自 relay_nodes 子节点）；
  *   2. 房间之间完全隔离 —— A 房成员看不到 B 房任何 peer；
  *   3. 网络密钥错误者进不了房间（拿得到网络名，但没有密钥就没法形成 peer）；
  *   4. 子节点可以注册上线，并参与房间中继调度；
@@ -34,7 +35,6 @@ const CLI = path.join(VENDOR, process.platform === 'win32' ? 'easytier-cli.exe' 
 const MASTER = process.env.MCLINK_MASTER ?? 'http://127.0.0.1:8787';
 const ADMIN_USER = process.env.MCLINK_ADMIN_USER ?? 'admin';
 const ADMIN_PASS = process.env.MCLINK_ADMIN_PASSWORD ?? 'dev-only-passw0rd';
-const RELAY_RPC = process.env.MCLINK_RELAY_RPC ?? '127.0.0.1:15888';
 
 const LAB_DIR = path.join(REPO_ROOT, '.cache', 'lab');
 const RUN_ID = Date.now().toString(36).slice(-5);
@@ -976,16 +976,6 @@ async function main() {
   const foreignNames = relayWait?.names ?? [];
   const relayForeign = relayWait?.data ?? {};
   console.log(colors.dim(`  子节点中继(${subNodeRpc})上的外来网络: ${foreignNames.join(', ') || '（无）'}`));
-  // 主控自带的中继实例已不再进票据，这里只观测不断言：本机库若把主控本身
-  // 也注册成了普通子节点，票据仍可能合法地指向它。
-  const masterForeign = await foreignNetworksOf(RELAY_RPC);
-  console.log(
-    colors.dim(
-      `  [观测] 主控中继(${RELAY_RPC})上的外来网络: ${
-        masterForeign.names.join(', ') || (masterForeign.error ? `查询失败: ${masterForeign.error}` : '（无）')
-      }`,
-    ),
-  );
   check(
     '中继单一端口同时承载两个房间网络',
     foreignNames.length === 2,

@@ -357,9 +357,10 @@ export interface PlatformOverview {
   rooms: { open: number; total: number; onlinePlayers: number };
   users: { total: number; online: number };
   /**
-   * 平台流量。rxBps/txBps 是**全网聚合**（主控中继 + 所有在线子节点）——
-   * 玩家按区域就近接入，只统计主控会长期显示 0。
-   * masterRxBps / masterTxBps 是主控那一台，nodesRxBps / nodesTxBps 是子节点之和。
+   * 平台流量。转发全部由子节点承担，所以 rxBps/txBps 就是 nodesRxBps/nodesTxBps。
+   *
+   * master* 恒为 0：2026-09-28 起主控不再自带中继实例（「主控中继」这个概念已取消），
+   * 字段留着只为老前端不白屏 —— 它们的语义没有变，只是永远没有来源了。
    */
   traffic: {
     rxBps: number;
@@ -372,10 +373,14 @@ export interface PlatformOverview {
     nodesTxBps: number;
     onlineRelayNodes: number;
   };
-  relay: RelayRuntime | null;
 }
 
-/** 主控自身 EasyTier 中继实例的实时状态 */
+/**
+ * 主控自带 EasyTier 中继实例的实时状态。
+ *
+ * 该实例已于 2026-09-28 取消（票据里的中继只来自 `relay_nodes` 的调度结果），
+ * 类型保留是因为 `RelayManager` 还在（只剩 easytier-cli 版本探测这一件职责）。
+ */
 export interface RelayRuntime {
   running: boolean;
   /** 单端口监听地址，如 0.0.0.0:11010 */
@@ -459,7 +464,7 @@ export interface PlatformSettings {
   relayBandwidthKbps: number;
   /** 是否允许玩家注册（关闭则仅管理员建号） */
   registrationOpen: boolean;
-  /** 主控中继的公共端口 */
+  /** 中继的默认端口：子节点注册/建房不指定端口时用的就是它 */
   relayPort: number;
   /** 公告 */
   announcement: string | null;

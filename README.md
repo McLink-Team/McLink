@@ -6,8 +6,8 @@
 
 ```
 玩家 A（上海）──┐
-玩家 B（广州）──┼──► 主控 :11010（一个端口，承载所有房间）──► 各房间彼此隔离
-玩家 C（成都）──┘        + 可选：各区域子节点中继
+玩家 B（广州）──┼──► 区域中继 :11010（一个端口，承载所有房间）──► 各房间彼此隔离
+玩家 C（成都）──┘        主控只做控制面，不参与转发
 ```
 
 ---
@@ -21,9 +21,10 @@ McLink = **主控（Master）** + **区域子节点（Relay）** + **Windows 客
 * **客户端**在玩家本地托管一个 `easytier-core`，用主控下发的票据加入房间的虚拟网络；
 * 每个房间是一个**独立的 EasyTier 网络**，网络名与密钥随机生成，彼此无法互相发现。
 
-核心工程结论（也是本项目最大的设计点）：**主控只监听一个端口即可承载所有房间**——
+核心工程结论（也是本项目最大的设计点）：**每个中继只监听一个端口即可承载所有房间**——
 中继按网络名（`relay_network_whitelist = "mclink-room-*"`，wildmatch）决定是否为某个网络转发，
-所以新建/关闭房间都不需要重启中继进程，也不需要额外的端口。原理与边界见
+所以新建/关闭房间都不需要重启中继进程，也不需要额外的端口。转发**全部**由子节点承担
+（主控不再自带中继实例，单机部署就把主控这台机器注册成一台普通子节点）。原理与边界见
 [docs/architecture.md](docs/architecture.md)。
 
 ---
@@ -72,7 +73,6 @@ McLink = **主控（Master）** + **区域子节点（Relay）** + **Windows 客
 * **节点管理**：上下线、权重、容量、区域、标签、停用；节点 `pending → online` 自动流转，超时自动判离线。
 * **房间与用户管理**：强制关房、改策略、封禁/解封、角色、流量配额、房间数上限。
 * **流量监控**：平台级/房间级/节点级收发速率与累计用量，72 小时时序曲线，中继外来网络明细。
-* **中继控制**：查看生成的 EasyTier 配置与实时日志、重启中继、下发 ACL、手动重采样。
 * **审计日志**：登录、注册、建房、加入、审批、踢人、轮换密钥、所有管理员操作全部落库。
 * **安全默认值**：scrypt 口令哈希、令牌只存 sha256、会话可吊销、按 IP 限流、房间票据短时效。
 
@@ -85,9 +85,10 @@ McLink = **主控（Master）** + **区域子节点（Relay）** + **Windows 客
    浏览器（玩家/管理员）│  主控 Master   node server/src/index.ts :8787 │
    HTTP + WebSocket   │  REST API · WS Hub · 静态托管(前端) · SQLite  │
                     └───────────────┬──────────────────────────────┘
-                                    │ spawn + easytier-cli(RPC 15888)
+                                    │ 控制面：注册 / 心跳 / 票据 / 调度
                     ┌───────────────▼──────────────┐
-                    │ easytier-core  :11010 TCP+UDP │  ← 单端口共享中继
+                    │ 区域中继（子节点）             │  ← 单端口共享中继
+                    │ easytier-core :11010 TCP+UDP  │
                     │ relay_network_whitelist =     │
                     │   "mclink-room-*"             │
                     └───┬───────────────┬───────────┘
@@ -142,7 +143,7 @@ pnpm lab:dataplane    # 数据面：真实 TCP 跑通，并验证限速真的把
 
 | 实验 | 结果 |
 | --- | --- |
-| `pnpm lab` | **92/92** 断言通过，含「7 份生成的配置全部通过 `easytier-core --check-config`」 |
+| `pnpm lab` | **101/101** 断言通过，含「7 份生成的配置全部通过 `easytier-core --check-config`」 |
 | `pnpm lab:dataplane` | **20/20** 通过：不限速 2 MiB / 11 ms（约 1.5 Gbps）→ 限速 1000 kbps 后 2 MiB / 18.7 s（**896 kbps**） |
 
 详见 [docs/development.md](docs/development.md) 与 [docs/architecture.md](docs/architecture.md) §7.3。
@@ -152,7 +153,7 @@ pnpm lab:dataplane    # 数据面：真实 TCP 跑通，并验证限速真的把
 ```bash
 git clone <仓库地址> /opt/src/mclink && cd /opt/src/mclink
 
-# 主控（默认自带中继；不配 SMTP 的话记得加 --no-verify-email，否则注册会被挡住）
+# 主控（不配 SMTP 的话记得加 --no-verify-email，否则注册会被挡住）
 sudo bash deploy/install-server.sh --public-url https://cnnic.link \
   --smtp-host smtp.exmail.qq.com --smtp-secure ssl \
   --smtp-user no-reply@cnnic.link --smtp-password '<授权码>' \
@@ -163,6 +164,13 @@ sudo bash deploy/install-server.sh --public-url https://cnnic.link \
 安装并启动 systemd 服务、按需放行 ufw，最后打印**只显示一次**的初始管理员密码。
 升级就是 `git pull` 后再跑同一条命令（密钥与邮件配置都会保留）。
 
+> **主控不自带中继**：转发全在子节点上，所以装完主控后必须至少有一个可调度的子节点，
+> 否则建房会报「当前没有可用的中继节点」。只有一台服务器时，把主控这台机器也注册成普通子节点：
+>
+> ```bash
+> sudo node /opt/mclink/app/deploy/register-self-node.mjs --region oversea
+> ```
+
 加一个区域子节点：管理台「节点 → 签发注册密钥」填好区域与端口，它会给你**一条命令**，
 在区域服务器上粘贴执行即可（脚本与 agent 由主控托管，不用先拿仓库）：
 
@@ -172,7 +180,7 @@ curl -fsSL https://cnnic.link/agent/install.sh | sudo bash -s -- \
   --endpoint relay-sh.cnnic.link:21010 --listen-port 11010
 ```
 
-* 端口清单：**8787**（HTTP，建议只给反代）、**11010 TCP+UDP**（中继，必须公网）。
+* 端口清单：**8787**（HTTP，建议只给反代）、**11010 TCP+UDP**（中继，必须公网，开在跑中继的机器上）。
 * 反代与证书：`deploy/nginx.conf.example`（`/ws` 必须单独配置，文件里写了原因）。
 * 速查：[deploy/README.md](deploy/README.md)；完整手册：[docs/deployment.md](docs/deployment.md)。
 
@@ -200,8 +208,8 @@ curl -fsSL https://cnnic.link/agent/install.sh | sudo bash -s -- \
 2. **后端零原生依赖**：`node:sqlite` + Node 原生 TS 剥离，使得服务端**不需要构建步骤**，
    `node server/src/index.ts` 直接跑，也不用在目标机上装编译工具链；
    Rust 方案虽然产物是单个二进制，但要为每个目标平台做交叉编译与产物分发；
-3. **性能不是瓶颈**：主控只做编排与采样（每 5 秒一次 CLI 调用），真正的转发与加密
-   由 EasyTier（Rust 编写）承担；
+3. **性能不是瓶颈**：主控只做编排（不转发、也不再调 CLI 采样），真正的转发与加密
+   由 EasyTier（Rust 编写）承担，且都在子节点上；
 4. **排障与二次开发成本更低**：服务端代码即运行时代码，运维可以直接读、直接改。
 
 代价与边界也如实记录：[docs/security.md](docs/security.md) 列出了当前实现的已知弱点，
@@ -215,7 +223,7 @@ curl -fsSL https://cnnic.link/agent/install.sh | sudo bash -s -- \
 server/                主控后端（Node + TS，直接运行）
   src/api/             REST 路由：public / auth / rooms / agent / admin
   src/services/        业务：auth / rooms / nodes / settings
-  src/easytier/        EasyTier 封装：TOML 生成、子进程托管、CLI、ACL、中继管理
+  src/easytier/        EasyTier 封装：TOML 生成、CLI 版本探测（主控不再托管中继实例）
   src/db/              SQLite 仓储与迁移
   src/ws/              WebSocket 推送中心
 web/                   官网页 + 管理员控制台（Vite + Vue3）
@@ -253,7 +261,7 @@ scripts/               fetch-easytier / lab / capture 辅助脚本
 * **已实测边界**：攻击者若已拿到网络名但密钥错误，EasyTier v2.6.4 仍会把它接入房间的 peer 网表
   （能看到成员虚拟 IP）；主控侧准入与**密钥轮换**仍然有效。需要更强成员认证时建议改用
   EasyTier 的 secure mode + credential（当前未实现）。
-* 默认 **不要对公网直接暴露 8787**，用反向代理做 TLS；中继端口 11010 必须放行 **TCP+UDP**。
+* 默认 **不要对公网直接暴露 8787**，用反向代理做 TLS；跑中继的子节点必须放行 **11010 的 TCP+UDP**。
 * 完整限制清单（含待修复项）见 [docs/security.md](docs/security.md)。
 
 ---

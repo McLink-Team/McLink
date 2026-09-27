@@ -70,7 +70,6 @@
 | GET | `/api/v1/stats` | — | 平台统计（节点/房间/用户/流量） |
 | GET | `/api/v1/downloads` | — | 客户端下载产物列表 |
 | GET | `/api/v1/nodes` | U | 客户端选节点用的在线中继列表：`host` + `port`（**链接端口**，即客户端做 TCP 延迟探测与真正加入房间时连的端口）。公开接口里不给端点，所以这条单独要求登录 |
-| POST | `/api/v1/relay/refresh` | U | 手动触发一次主控中继采样 |
 
 ### 账号
 
@@ -140,10 +139,6 @@
 | GET | `/api/v1/admin/audit` | 审计日志（`action`/`actorId`/`limit`/`offset`） |
 | GET | `/api/v1/admin/settings` | 平台设置 + 默认值 + 受环境变量约束的项 |
 | PATCH | `/api/v1/admin/settings` | 修改平台设置 |
-| GET | `/api/v1/admin/relay` | 主控中继运行时、生成的 TOML、日志尾部、peer 列表、白名单 |
-| POST | `/api/v1/admin/relay/restart` | 重启主控中继 |
-| POST | `/api/v1/admin/relay/acl` | 下发 ACL（`{"aclToml": "...[acl.acl_v1]..."}`） |
-| POST | `/api/v1/admin/relay/refresh` | 手动采样一次中继 |
 | POST | `/api/v1/admin/rooms/recompute-acl` | 按当前策略重算所有开放房间的 ACL 版本（排障用） |
 
 ### 静态资源（非 API）
@@ -726,9 +721,6 @@
   （原因与修法见 `server/src/services/traffic-ledger.ts` 的头部注释）。
   用户维度的分摊方式：把房间的字节按成员**当前上报的实时带宽占比**分给成员
   （EasyTier 中继侧的 peer 列表只有 `peer_id`，拿不到"哪个成员用了多少"）。
-* `POST /admin/relay/acl`：`aclToml` 必须包含 `[acl.acl_v1]`，否则 `400 bad_request`。
-  响应 `{ ok: true, mode: "hot" | "restart" }`：`hot` 表示走 `easytier-cli acl set` 热更新，
-  `restart` 表示当前 CLI 不支持，已通过重启中继生效。
 * `PATCH /admin/settings`：只要请求里出现策略类键（如 `defaultMaxPlayers`）就会更新；
   `registrationOpen`、`announcement`、`clientSha256`、`defaultQuotaBytes` 支持显式 `null`。
   注意 `relayPort`、`registrationOpen`、`relayNetworkWhitelist` 的**环境变量优先级更高**
@@ -795,7 +787,6 @@ ws(s)://<host>/ws?token=<登录令牌>
 | `pong` | `ts`、`serverTime` | ✅ |
 | `error` | `code`、`message` | ✅ |
 | `traffic.tick` | `report`（`{ts,totalRxBps,totalTxBps,totalRxBytes,totalTxBytes,byRoom[],byNode[]}`） | ✅ 发到 `platform`，**最多每 6 秒一次** |
-| `relay.update` | `relay`（`RelayRuntime` + `foreignNetworks`） | ✅ 发到 `traffic` |
 | `node.update` | `node`（`RelayNode`） | ✅ 发到 `nodes`（节点掉线时） |
 | `room.update` | `roomId`、`room` | ✅ 发到 `rooms`（房间过期/被回收时） |
 | `notice` | `level`、`message`（内容是 JSON 字符串） | ✅ 发到 `platform`，每 20 秒一次的平台概览 |
@@ -859,3 +850,6 @@ WebSocket 只用于平台概览、流量与节点状态。
     主控要参与就必须被注册成一台普通子节点（`--endpoint <公网地址>:<链接端口>`），一个可调度子节点都没有时建房直接报 503。
     `MCLINK_RELAY_PUBLIC_HOST` 保留下来，但只用于「`MCLINK_PUBLIC_BASE_URL` 为空时拼安装/更新指令」，
     **不再影响票据**；生产环境仍建议显式配置 `MCLINK_PUBLIC_BASE_URL`（不要让绝对地址随请求 `Host` 漂移）。
+    **2026-09-28 起主控连自带的中继实例也不再启动**：`/admin/relay*`、`POST /relay/refresh`
+    与 WebSocket 的 `relay.update` 一并删除，`/admin/overview` 不再返回 `relay` 字段
+    （`traffic` 里的 `masterRxBps`/`masterTxBps` 保留但恒为 0）。

@@ -4,16 +4,16 @@
 # 脚本会按 --dir / --port 等参数把下面的路径替换成实际值，因此这里给出的是默认布局。
 #
 # 重要：主控需要
-#   1) spawn 子进程 easytier-core（因此不能用 NoNewPrivileges 之外的提权限制来阻断 fork/exec）；
+#   1) spawn 子进程 easytier-cli（版本探测；房间转发全在子节点上，主控不再拉起 easytier-core）；
 #   2) 读写数据目录（SQLite、生成的 EasyTier 配置、日志、下载目录）；
-#   3) 只监听端口，不需要任何 Linux capability（默认 MCLINK_RELAY_NO_TUN=true，中继不创建 TUN 设备）。
+#   3) 只监听端口，不创建 TUN 设备，因此不需要任何 Linux capability。
 #
 # 因此这里用 ProtectSystem=full + 精确的 ReadWritePaths，而**不是** ProtectSystem=strict：
 # strict 会让除 ReadWritePaths 之外的整个文件系统只读（含临时写入、Node 的缓存路径），
 # 排查成本很高，收益与 full 相差不大。
 
 [Unit]
-Description=mclink 主控（房间编排 / 子节点调度 / 共享中继）
+Description=mclink 主控（房间编排 / 子节点调度）
 Documentation=file:///opt/mclink/app/docs/deployment.md
 After=network-online.target
 Wants=network-online.target
@@ -32,8 +32,8 @@ ExecStart=/usr/bin/node server/src/index.ts
 Restart=always
 RestartSec=3
 TimeoutStopSec=20
-# mixed：SIGTERM 只发给主进程（主进程会优雅关闭自己拉起的 easytier-core），
-# 超时后再对整组 SIGKILL，避免留下孤立的 easytier-core
+# mixed：SIGTERM 只发给主进程（主进程自己会收尾，不让 systemd 直接杀整组），
+# 超时后再对整组 SIGKILL，避免留下孤立的子进程
 KillMode=mixed
 KillSignal=SIGTERM
 # 一个房间一个 EasyTier 对等体，对等体多时 fd 消耗不小

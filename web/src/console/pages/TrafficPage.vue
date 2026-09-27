@@ -27,10 +27,8 @@ import StatCard from '../../components/StatCard.vue';
 interface ForeignNetworkMapped extends ForeignNetworkInfo {
   roomName: string | null;
   roomCode: string | null;
-  /** 有几个中继来源在转发它（主控 + 子节点） */
+  /** 有几个子节点在转发它（≥2 = 多台区域节点同时在带同一个网络） */
   relaySources: number;
-  /** 主控中继是否也在转发它 */
-  onMaster: boolean;
 }
 
 interface RoomSeries {
@@ -73,7 +71,7 @@ interface UserUsage {
 
 interface TrafficResponse {
   since: string;
-  /** rxBps/txBps 为全网聚合；masterRxBps 是主控那一台，nodesRxBps 是子节点之和 */
+  /** rxBps/txBps 为全网聚合（= 子节点之和）；master* 恒为 0，字段保留只为老部署兼容 */
   platform: {
     points: TrafficPoint[];
     rxBps: number;
@@ -140,7 +138,7 @@ onMounted(() => {
   client = new RealtimeClient({
     topics: [Topics.traffic, Topics.platform],
     onEvent: (event: ServerEvent) => {
-      if (event.type !== 'relay.update' && event.type !== 'traffic.tick') return;
+      if (event.type !== 'traffic.tick') return;
       const now = Date.now();
       if (now - lastRefresh < 10_000) return;
       lastRefresh = now;
@@ -191,16 +189,16 @@ const cards = computed(() => {
   // 读数用纸白（数据本身不是状态）；只有"外来网络"是值得被注意的信号，用告警色。
   return [
     {
-      // 全网口径：主控中继 + 所有在线子节点（只算主控会长期是 0）
+      // 全网口径：所有在线子节点之和（转发全部由子节点承担，主控不再自带中继）
       label: '全网实时接收',
       value: p ? formatBitrate(p.rxBps) : '未采样',
-      hint: p ? `主控 ${formatBitrate(p.masterRxBps)} + ${p.onlineRelayNodes} 节点 ${formatBitrate(p.nodesRxBps)}` : '未采样',
+      hint: p ? `${p.onlineRelayNodes} 个在线子节点 ${formatBitrate(p.nodesRxBps)}` : '未采样',
       accent: 'accent' as const,
     },
     {
       label: '全网实时发送',
       value: p ? formatBitrate(p.txBps) : '未采样',
-      hint: p ? `主控 ${formatBitrate(p.masterTxBps)} + ${p.onlineRelayNodes} 节点 ${formatBitrate(p.nodesTxBps)}` : '未采样',
+      hint: p ? `${p.onlineRelayNodes} 个在线子节点 ${formatBitrate(p.nodesTxBps)}` : '未采样',
       accent: 'accent' as const,
     },
     { label: '今日流量', ...today, hint: `自然日 00:00 起 · ${today.hint}`, accent: 'accent' as const },
@@ -321,7 +319,7 @@ const cards = computed(() => {
           <div class="console-section-text">
             <h2 class="console-section-title">外来网络 → 房间归因</h2>
             <p class="console-section-note">
-              <strong>主控与子节点</strong>正在转发的房间网络（按网络名去重，多个中继同时带着时速率相加）。
+              <strong>子节点</strong>正在转发的房间网络（按网络名去重，多台节点同时带着时速率相加）。
               这是判断「哪个房间在吃带宽」最直接的视图；
               「未映射」表示该网络的房间已关闭或尚未登记。
             </p>
@@ -329,7 +327,7 @@ const cards = computed(() => {
         </div>
 
         <div v-if="foreignNetworks.length === 0" class="empty">
-          当前没有房间网络正在被转发（主控与子节点都没有），或采样不可用。
+          当前没有房间网络正在被转发（子节点上报为空），或采样不可用。
         </div>
         <div v-else class="table-wrap">
           <table class="table">
@@ -337,7 +335,7 @@ const cards = computed(() => {
               <tr>
                 <th>网络名</th>
                 <th>映射房间</th>
-                <th>中继来源</th>
+                <th>转发节点</th>
                 <th class="table-num">peer</th>
                 <th class="table-num">接收速率</th>
                 <th class="table-num">发送速率</th>
@@ -360,8 +358,8 @@ const cards = computed(() => {
                   <Badge v-else tone="warn">未映射</Badge>
                 </td>
                 <td>
-                  <Badge :tone="f.onMaster ? 'brand' : 'neutral'">{{ f.onMaster ? '主控' : '子节点' }}</Badge>
-                  <div v-if="f.relaySources > 1" class="cell-sub">共 {{ f.relaySources }} 处在转发</div>
+                  <Badge tone="neutral">{{ f.relaySources }} 个子节点</Badge>
+                  <div v-if="f.relaySources > 1" class="cell-sub">多台同时在带这个网络</div>
                 </td>
                 <td class="table-num">{{ f.peerCount }}</td>
                 <td class="table-num">{{ formatBitrate(f.rxBps) }}</td>

@@ -72,9 +72,9 @@ export class TrafficRepo {
   /**
    * 平台总收发曲线。
    *
-   * 优先取 scope='platform'（**全网聚合**：主控中继 + 所有在线子节点）——
-   * 玩家按区域就近接入，流量大头在子节点上，只画主控那条线会长期是 0（线上实测）。
-   * 升级前的库里只有 scope='relay'，此时退回它，免得曲线突然空掉（代价是那一段只有主控的数）。
+   * 优先取 scope='platform'（**全网聚合**：所有在线子节点之和；主控不再自带中继）。
+   * 升级前的库里只有 scope='relay'（那是主控自带中继的采样），此时退回它，
+   * 免得曲线突然空掉 —— 那一段是历史数据，只代表当时主控那一台。
    */
   platformSeries(sinceIso: string, limit = 240): TrafficPoint[] {
     const query = (scope: string): Array<{ ts: string; rx: number; tx: number }> =>

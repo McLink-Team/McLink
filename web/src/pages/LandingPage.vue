@@ -32,11 +32,11 @@ interface MetaInfo {
     openRooms: number;
     onlinePlayers: number;
     users: number;
-    /** 全网中继（主控 + 在线子节点）聚合值 */
+    /** 全网中继（所有在线子节点）聚合值 */
     relayPeers: number;
     relayRxBps: number;
     relayTxBps: number;
-    /** 拆分明细：主控那一台 vs 所有在线子节点之和 */
+    /** 拆分明细：master* 恒为 0（主控不再自带中继），转发全在子节点上 */
     masterRxBps?: number;
     masterTxBps?: number;
     nodesRxBps?: number;
@@ -288,16 +288,14 @@ const steps = [
             </div>
             <div class="readout-row">
               <!--
-                「中继收发」= 全网聚合（主控 + 在线子节点）。玩家按区域就近接入，
-                流量大头在子节点上，只显示主控那一台会长期是 0（线上实测）。
-                悬浮说明里拆开，方便一眼看出量落在哪。
+                「中继收发」= 全网聚合（所有在线子节点之和，转发全在子节点上）。
+                悬浮说明里给出在线节点数，方便一眼看出这些量摊在几台上。
               -->
               <span
                 class="readout-k"
                 :title="
                   stats
-                    ? `主控 ${formatBitrate(stats.masterRxBps ?? 0)} / ${formatBitrate(stats.masterTxBps ?? 0)}，` +
-                      `${stats.onlineRelayNodes ?? 0} 个在线子节点 ${formatBitrate(stats.nodesRxBps ?? 0)} / ${formatBitrate(stats.nodesTxBps ?? 0)}`
+                    ? `${stats.onlineRelayNodes ?? 0} 个在线子节点 ${formatBitrate(stats.nodesRxBps ?? 0)} / ${formatBitrate(stats.nodesTxBps ?? 0)}`
                     : ''
                 "
               >
@@ -386,7 +384,7 @@ const steps = [
               <dt>流量统计</dt>
               <dd>按房间归因的收发速率与累计流量，可用于监控与计费。</dd>
               <dt>管理控制台</dt>
-              <dd>仪表盘、节点、房间、用户、流量、中继、审计、平台设置，全部走网页。</dd>
+              <dd>仪表盘、节点、房间、用户、流量、邮件公告、审计、平台设置，全部走网页。</dd>
             </dl>
           </div>
         </div>
@@ -410,7 +408,7 @@ const steps = [
             <span class="iso-wire" aria-hidden="true" />
             <span class="iso-hub">
               <span class="led led-signal" />
-              主控中继 :{{ meta?.relayPort ?? 11010 }}
+              中继端口 :{{ meta?.relayPort ?? 11010 }}
             </span>
             <span class="iso-wire" aria-hidden="true" />
             <span class="iso-label">客户端 B</span>

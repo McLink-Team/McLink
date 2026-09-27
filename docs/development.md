@@ -129,10 +129,11 @@ curl -sO http://<主控>/downloads/McLink-Setup-0.1.0-x64.exe && sha256sum McLin
 
 ## 4. 端到端实验（`pnpm lab`）
 
-`scripts/lab.mjs` 不是 mock：它会真的拉起 **1 个主控中继 + 1 个子节点 + 4~5 个客户端**
+`scripts/lab.mjs` 不是 mock：它会真的拉起 **1 个子节点中继 + 4~5 个客户端**
 `easytier-core` 进程，然后用 `easytier-cli` 的 JSON 输出核对下面这些结论：
 
-1. 主控只监听一个端口（默认 11010），却同时服务两个不同房间；
+1. 子节点中继只监听一个端口（默认 11010），却同时服务两个不同房间
+   （主控不再自带中继实例，观测点因此在这台子节点上）；
 2. 房间之间完全隔离 —— A 房成员看不到 B 房任何 peer；
 3. 网络密钥错误者进不了房间；
 4. 子节点可以注册上线并参与房间中继调度；
@@ -331,15 +332,15 @@ MCLINK_DATA_DIR=.tmp/dev-data pnpm dev:server
 curl -s -H "Authorization: Bearer <token>" \
   "http://127.0.0.1:8787/api/v1/rooms/<roomId>/ticket?listenPort=11010"
 
-# 看中继生成出来的配置
-cat server/data/easytier/relay.toml
+# 看子节点下发出来的配置（agent 落在节点机器上的那份）
+cat /etc/mclink/relay.toml            # 主控机器上没有它 —— 主控不再自带中继
 
-# 手动问中继要 peer 列表（RPC 只监听本机）
-vendor/easytier/easytier-cli -p 127.0.0.1:15888 -o json peer list
-vendor/easytier/easytier-cli -p 127.0.0.1:15888 -o json peer list-foreign
+# 手动问中继要 peer 列表（RPC 只监听本机；端口 = 16000 + 监听端口 % 1000）
+vendor/easytier/easytier-cli -p 127.0.0.1:16010 -o json peer list
+vendor/easytier/easytier-cli -p 127.0.0.1:16010 -o json peer list-foreign
 
 # 受限沙箱里子进程不能用管道 stdio（会 EPERM），用 capture 脚本落文件
-node scripts/capture.mjs .cache/out.log vendor/easytier/easytier-cli -p 127.0.0.1:15888 peer list
+node scripts/capture.mjs .cache/out.log vendor/easytier/easytier-cli -p 127.0.0.1:16010 peer list
 ```
 
 在 Windows 上调试时常见的坑：
