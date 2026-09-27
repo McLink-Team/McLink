@@ -37,6 +37,7 @@
  */
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import type { AppInfo, CloseAction, MclinkBridge, ProbeTarget } from '../../../client/src/lib/bridge.ts';
+import { probeKey } from '../../../client/src/lib/bridge.ts';
 import type { CliResult, CoreLogEntry, CoreStatus } from '../../../client/src/lib/core-types.ts';
 import { plan as planVpn } from './vpn-plan.ts';
 
@@ -196,6 +197,17 @@ interface MclinkVpnPlugin {
    * 成功了是 `{ok:true, mode:'restart'}`，失败是 `{ok:false, error}`。
    */
   applyAcl(payload: { aclToml: string }): Promise<VpnApplyAclResult>;
+  /**
+   * 节点列表。`data` 的形状与桌面端 `easytier-cli peer list` 的 JSON **一致**
+   * （`ipv4 / hostname / cost / lat_ms / loss_rate / rx_bytes / tx_bytes / tunnel_proto / nat_type`），
+   * 由原生侧 `PeerRows.java` 从内核的 `NetworkInstanceRunningInfo` 映射而来 ——
+   * 所以共用的 `parsePeers()` 一行都不用改。
+   */
+  peers(): Promise<{ ok: boolean; data?: unknown; error?: string }>;
+  /** TCP 探测：键是 `host:port`，`null` = 三次都没连上（与桌面端口径一致） */
+  tcping(payload: {
+    targets: Array<{ host: string; port: number }>;
+  }): Promise<{ results?: Record<string, number | null> }>;
   addListener(eventName: 'statusChanged', handler: (status: VpnStatus) => void): Promise<{ remove: () => Promise<void> }>;
   addListener(eventName: 'log', handler: (payload: VpnEventLogPayload) => void): Promise<{ remove: () => Promise<void> }>;
 }
@@ -263,8 +275,11 @@ const CORE_UNAVAILABLE_MESSAGE =
  * 别再往这张表里加回房主规则相关的话术 —— "手机上不能踢人"这个说法已经不成立。
  */
 const UNSUPPORTED = {
-  peers: '安卓端暂不支持读取节点列表（不是故障）—— 房间能正常联机，这只是桌面端诊断面板里的数据。',
-  cli: '安卓端暂不支持命令行诊断（不是故障）—— 房间能正常联机，这是桌面客户端的排查入口。',
+  // ⚠️ 这两句现在**只在"这台设备上没有原生插件"时**才会出现（桌面浏览器里跑这套外壳，或插件没打进包）。
+  //    别再写成"安卓端暂不支持…" —— 节点列表与 TCP 探测都已经是真实现了，
+  //    那样写会让排查的人以为是平台限制，而不是"这个包里没有插件"。
+  peers: '本机网络内核尚未接入，读不到节点列表（房间本身不受影响）。',
+  cli: '本机网络内核尚未接入，没有命令行诊断（房间本身不受影响）。',
 } as const;
 
 /**
@@ -657,17 +672,35 @@ export function installMobileBridge(): void {
     freePort: async () => derivePort(0),
 
     /**
-     * TCP 延迟探测：Android 的 WebView 里**没法开裸 TCP 连接**（fetch 只走 HTTP(S)，
-     * WebSocket 也不是"连上就断"的探测语义）。返回全 null 是契约允许的值
-     * （见 bridge.ts：`3 次都没连上是 null`），界面会显示「—」，
-     * 而 CreateJoin 用它只做**排序偏好**，不会因为全 null 就选不了节点。
+     * TCP 延迟探测 —— **真实现**（原生侧开 Socket，见 `MclinkVpnPlugin.tcping`）。
      *
-     * 想真做要给 MclinkVpn 再加一个原生方法（原生侧开 Socket 是几行 Java）。
-     * 现在不做的理由：一个恒为「—」的列，比一个假数字诚实。
+     * 口径与桌面端 `client/electron/tcping.cjs` 完全一致：单次 1200ms 超时、连打 3 次取最快、
+     * 连不上给 null（界面显示「—」）。所以安卓上这一列现在是真的，不是恒为「—」的摆设。
+     *
+     * 它顺带还是**判断"隧道通不通"的可靠手段**：ICMP 在虚拟网络上不可信
+     * （对端防火墙默认丢 ICMP、路由表歧义 —— 见 docs/android-vpn.md §5），而 MC 本来就走 TCP，
+     * 所以「TCP 能连上房主的游戏端口」就是"能玩"的判据。
+     *
+     * 插件缺席（桌面浏览器里跑这套外壳）时保持原行为：全 null，不抛异常。
      */
     tcping: async (targets: ProbeTarget[]): Promise<Record<string, number | null>> => {
       const out: Record<string, number | null> = {};
-      for (const t of targets) out[`${t.host}:${t.port}`] = null;
+      for (const t of targets) out[probeKey(t)] = null;
+      const plugin = vpnPlugin();
+      if (!plugin || targets.length === 0) return out;
+      try {
+        const res = await plugin.tcping({
+          targets: targets.map((t) => ({ host: t.host, port: t.port })),
+        });
+        const results = res?.results ?? {};
+        for (const t of targets) {
+          const value = results[probeKey(t)];
+          out[probeKey(t)] = typeof value === 'number' && Number.isFinite(value) ? value : null;
+        }
+      } catch (err) {
+        // 探测失败不该影响建房流程：保持全 null，并把原因写进日志流（界面显示「—」）
+        emitLog({ ts: new Date().toISOString(), stream: 'stderr', line: `调用原生插件失败（tcping）：${String(err)}` });
+      }
       return out;
     },
 
@@ -904,8 +937,31 @@ export function installMobileBridge(): void {
           ? { ok: true as const, mode: result.mode }
           : { ok: true as const };
       },
-      /** peers 为空 = 没有节点可显示，连接诊断面板据此显示"无数据"而不是假的节点列表 */
-      peers: async (): Promise<CliResult> => ({ ok: false, error: UNSUPPORTED.peers }),
+      /**
+       * 节点列表 —— **真实现**（原先返回"安卓端暂不支持"）。
+       *
+       * 数据来自内核自己：`EasyTierJNI.collectNetworkInfos()`，由原生侧 `PeerRows` 映射成
+       * 桌面端 `easytier-cli peer list` 那套行形状，所以共用的 `parsePeers()`、
+       * `relay-fallback.ts` 的"直连/中继"判断一行都不用改就能用。
+       *
+       * `data` 为空数组 = 没有节点可显示，诊断面板显示"无数据"，不是假的节点列表。
+       */
+      peers: async (): Promise<CliResult> => {
+        const plugin = vpnPlugin();
+        if (!plugin) return { ok: false, error: UNSUPPORTED.peers };
+        try {
+          const res = await plugin.peers();
+          if (!res?.ok) {
+            const raw = typeof res?.error === 'string' ? res.error.trim() : '';
+            return { ok: false, error: raw !== '' ? raw : UNSUPPORTED.peers };
+          }
+          return { ok: true, data: res.data ?? [] };
+        } catch (err) {
+          emitLog({ ts: new Date().toISOString(), stream: 'stderr', line: `调用原生插件失败（peers）：${String(err)}` });
+          return { ok: false, error: UNSUPPORTED.peers };
+        }
+      },
+      /** 命令行诊断：安卓上没有 easytier-cli（内核在进程内），这条保持诚实失败 */
       cli: async (): Promise<CliResult> => ({ ok: false, error: UNSUPPORTED.cli }),
 
       onStatus: (handler) => {

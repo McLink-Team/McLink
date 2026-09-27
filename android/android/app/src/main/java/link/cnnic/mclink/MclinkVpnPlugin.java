@@ -19,7 +19,11 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import com.easytier.jni.EasyTierJNI;
 import java.text.SimpleDateFormat;
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
@@ -65,6 +69,11 @@ public class MclinkVpnPlugin extends Plugin implements MclinkVpnState.Listener {
      * 弱网下比首次连接更慢 —— 而超时表现是"房主以为没踢掉"，宁可多等几秒。
      */
     private static final int ACL_TIMEOUT_SECONDS = 35;
+
+    /** TCP 探测的单次超时与次数 —— 与桌面端 `client/electron/tcping.cjs` 逐字一致 */
+    private static final int TCPING_TIMEOUT_MS = 1200;
+
+    private static final int TCPING_ATTEMPTS = 3;
 
     private static final String EVENT_STATUS = "statusChanged";
     private static final String EVENT_LOG = "log";
@@ -176,6 +185,106 @@ public class MclinkVpnPlugin extends Plugin implements MclinkVpnState.Listener {
     @PluginMethod
     public void status(PluginCall call) {
         call.resolve(statusToJs(MclinkVpnState.get()));
+    }
+
+    /**
+     * 节点列表（连接诊断、以及"到房主是直连还是走中继"都靠它）。
+     *
+     * 数据来自 `EasyTierJNI.collectNetworkInfos()` —— 与桌面端 `easytier-cli peer list` 同源
+     * （上游 cli 也是从 `peer_route_pairs` 拼表的），映射见 {@link PeerRows}。
+     *
+     * 为什么放工作线程：JNI 调用 + JSON 解析，几毫秒到几十毫秒，而界面每隔几秒就会问一次；
+     * 放主线程会跟界面抢那点时间，不值得。
+     */
+    @PluginMethod
+    public void peers(PluginCall call) {
+        final MclinkVpnState.Snapshot snapshot = MclinkVpnState.get();
+        if (!snapshot.running) {
+            JSObject out = new JSObject();
+            out.put("ok", false);
+            out.put("error", "还没有联机，暂时没有节点数据");
+            call.resolve(out);
+            return;
+        }
+        new Thread(
+                        () -> {
+                            JSObject out = new JSObject();
+                            try {
+                                String json = EasyTierJNI.collectNetworkInfos();
+                                out.put("ok", true);
+                                out.put("data", PeerRows.from(json, snapshot.instanceName));
+                            } catch (Throwable t) {
+                                out.put("ok", false);
+                                out.put("error", "读取节点信息失败：" + t);
+                            }
+                            resolve(call, out);
+                        },
+                        "mclink-vpn-peers")
+                .start();
+    }
+
+    /**
+     * TCP 连接探测（延迟）。
+     *
+     * 与桌面端 `client/electron/tcping.cjs` **同口径**：单次 1200ms 超时、连打 3 次取最快、
+     * 下限 1ms（亚毫秒握手显示成「0 ms」会让人以为没测到）。键与桌面一致：`host:port`。
+     *
+     * 为什么值得在安卓上也做：它同时解决两件事 ——
+     *   1. 建房页的节点延迟不再全是「—」（此前是空实现，节点选择没有依据）；
+     *   2. **它是"隧道通不通"的可靠判据**：ICMP 在虚拟网络上不可信（对端防火墙、路由表歧义，
+     *      见 docs/android-vpn.md §5），而 MC 本来就走 TCP。
+     */
+    @PluginMethod
+    public void tcping(PluginCall call) {
+        JSArray targets = call.getArray("targets");
+        final List<String[]> list = new ArrayList<>();
+        if (targets != null) {
+            for (int i = 0; i < targets.length(); i += 1) {
+                JSONObject target = targets.optJSONObject(i);
+                if (target == null) continue;
+                String host = target.optString("host", "").trim();
+                int port = target.optInt("port", 0);
+                if (host.isEmpty() || port <= 0 || port > 65535) continue;
+                list.add(new String[] {host, String.valueOf(port)});
+            }
+        }
+        new Thread(
+                        () -> {
+                            JSObject results = new JSObject();
+                            for (String[] target : list) {
+                                Integer ms = probeTcp(target[0], Integer.parseInt(target[1]));
+                                results.put(target[0] + ":" + target[1], ms == null ? JSONObject.NULL : ms);
+                            }
+                            JSObject out = new JSObject();
+                            out.put("results", results);
+                            resolve(call, out);
+                        },
+                        "mclink-vpn-tcping")
+                .start();
+    }
+
+    /** 单次 TCP 握手耗时（ms）；三次都连不上返回 null（契约里 null 就是这个含义）。 */
+    private static Integer probeTcp(String host, int port) {
+        Integer best = null;
+        for (int attempt = 0; attempt < TCPING_ATTEMPTS; attempt += 1) {
+            Socket socket = new Socket();
+            try {
+                long started = System.nanoTime();
+                socket.connect(new InetSocketAddress(host, port), TCPING_TIMEOUT_MS);
+                int ms = (int) ((System.nanoTime() - started) / 1_000_000L);
+                if (ms < 1) ms = 1; // 与桌面端一致：亚毫秒不当 0
+                if (best == null || ms < best) best = ms;
+            } catch (Throwable ignored) {
+                // 连不上不是错误：null 表示"三次都没连上"，界面显示「—」
+            } finally {
+                try {
+                    socket.close();
+                } catch (IOException ignored) {
+                    // 连接本来就没建立，关不掉也无所谓
+                }
+            }
+        }
+        return best;
     }
 
     /**
