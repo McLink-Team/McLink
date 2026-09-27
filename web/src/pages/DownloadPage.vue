@@ -159,8 +159,8 @@ const androidArtifact = computed<DownloadArtifact | null>(
  *
  * 实测三方版本互不一致：apk 文件名是 0.1.0、`android/package.json` 是 0.1.0、
  * 而 `android/android/app/build.gradle` 的 versionName 是 "1.0"、
- * 主控设置里的 clientVersion 是 1.0.7（那是 Windows/macOS 客户端的版本）。
- * 所以只显示**这个文件自己带的**版本，取不到就不显示，绝不把 1.0.7 挂到 apk 上。
+ * 主控设置里的 clientVersion 是 1.0.8（那是 Windows/macOS 客户端的版本）。
+ * 所以只显示**这个文件自己带的**版本，取不到就不显示，绝不把 1.0.8 挂到 apk 上。
  *
  * 顺序：主控给的 `version` 优先；老主控（还没部署这次改动）不给这个字段时，
  * 从文件名里取一段 x.y.z —— **只是显示**，不参与任何挑选逻辑
@@ -300,7 +300,7 @@ const requirements: Array<{ label: string; value: string }> = [
                  留一个 href 指向不存在文件的 <a> 就是死链，所以宁可什么都不给。
 
             版本号取文件自己的（见 androidVersion）：主控的 clientVersion 是
-            Windows/macOS 客户端的 1.0.7，挂到 apk 上就是错的。
+            Windows/macOS 客户端的 1.0.8，挂到 apk 上就是错的。
 
             "你正在用它"这个徽标**不给安卓**：这张卡的位置要留给「测试版」标记 ——
             它会一直是内测签名（debug keystore）包，这件事比"你在用安卓"重要得多。

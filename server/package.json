@@ -1,6 +1,6 @@
 {
   "name": "@mclink/server",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "private": true,
   "type": "module",
   "description": "mclink 主控服务端：房间/房主体系、子节点调度、单端口多房间隔离、流量控制与统计",
