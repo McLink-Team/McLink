@@ -109,10 +109,10 @@ const FAKE_NATIVE_BRIDGE = `
   let aclOverride = null;
   let aclThrow = false;
   /*
-   * `call.reject(message, code)` 那条通道。
+   * call.reject(message, code) 那条通道。
    *
-   * 原生桥把 `result.error` 的键拷到一个 `Capacitor.Exception` 上，所以 JS 侧拿到的是
-   * 一个**带 `code` 的 Error** —— 这与"桥断了/代码自己抛的普通 Error"（没有 code）
+   * 原生桥把 result.error 的键拷到一个 Capacitor.Exception 上，所以 JS 侧拿到的是
+   * 一个**带 code 的 Error** —— 这与"桥断了/代码自己抛的普通 Error"（没有 code）
    * 是两件事，桥必须区别对待（见 mobile-bridge.ts 的 readNativeRejection）。
    * 这里两个都造得出来：给了 code 就是原生拒绝，不给就是普通异常。
    */
@@ -147,8 +147,10 @@ const FAKE_NATIVE_BRIDGE = `
     pushLog: pushLog,
     listenerCount: function (name) { return listeners[name].length; },
     failNextStart: function (result) { startOverride = result; },
+    rejectNextStart: function (spec) { startReject = spec; },
     failNextAcl: function (result) { aclOverride = result; },
     throwNextAcl: function () { aclThrow = true; },
+    rejectNextAcl: function (spec) { aclReject = spec; },
     clearCalls: function () { calls.length = 0; },
     setResponseShape: function (shape) { responseShape = shape; }
   };
@@ -159,6 +161,7 @@ const FAKE_NATIVE_BRIDGE = `
     if (methodName === 'status') return Promise.resolve(snapshot());
     if (methodName === 'logs') return Promise.resolve({ lines: ['[info] 实例已启动', '[info] 隧道已建立'] });
     if (methodName === 'applyAcl') {
+      if (aclReject) { const spec = aclReject; aclReject = null; return rejection(spec); }
       if (aclThrow) { aclThrow = false; return Promise.reject(new Error('原生桥断了')); }
       if (aclOverride) { const o = aclOverride; aclOverride = null; return Promise.resolve(o); }
       // 真机上的默认结果：EasyTier 2.6.4 没有 acl set 热更新 → 重启式施加
@@ -176,6 +179,7 @@ const FAKE_NATIVE_BRIDGE = `
       return Promise.resolve(envelope({ ok: true }));
     }
     if (methodName === 'start') {
+      if (startReject) { const spec = startReject; startReject = null; return rejection(spec); }
       if (startOverride) { const o = startOverride; startOverride = null; return Promise.resolve(o); }
       state.running = true;
       state.instanceName = options && options.instanceName ? options.instanceName : null;
@@ -633,6 +637,55 @@ if (!(await waitFor(withPlugin.evaluate, `window.mclink && window.mclink.core &&
     JSON.stringify(codeFromStatusField.value ?? codeFromStatusField.threw),
   );
 
+  /* ------------------------------------------------ 早退式拒绝（call.reject） */
+
+  r.log('call.reject —— Java 侧早退那条通道（玩家点"拒绝"授权的真实路径）');
+
+  /*
+   * 这一条是整个文件里最该存在的一条断言。
+   *
+   * 玩家在系统 VPN 对话框里点"拒绝"时，Java 走的是 `call.reject(msg, "vpn-denied")`
+   * —— **不是** `resolve({ok:false})`。如果桥把 Promise 拒绝一律当成"桥断了"，
+   * 玩家看到的就是"联机服务没有响应。请退出房间后重新加入…"，
+   * 而正确的话是 §3 表里那句"授权 VPN 是加入虚拟局域网的前提…请重新点连接"。
+   * 前者会让人去重装应用，后者才是他能做的动作。
+   */
+  const deniedByReject = await ask1(`${PAGE_HELPERS}
+    window.__mclinkFake.rejectNextStart({ code: 'vpn-denied', message: '没有授予 VPN 权限：加入虚拟局域网需要它' });
+    window.__t.call('start', async () => window.mclink.core.start({ configToml: ${JSON.stringify(REAL_TOML)}, instanceName: ${JSON.stringify(FIXTURE_INSTANCE)} }))
+  `);
+  check('玩家拒绝授权（call.reject + code=vpn-denied）时 core.start 不抛异常', deniedByReject.ok === true, deniedByReject.threw ?? '');
+  check(
+    '  · 给的是 §3 那句"授权 VPN 是加入虚拟局域网的前提…"（而不是"服务没有响应"）',
+    deniedByReject.ok === true && /授权 VPN/.test(deniedByReject.value?.lastError ?? '') && !/没有响应/.test(deniedByReject.value?.lastError ?? ''),
+    JSON.stringify(deniedByReject.value ?? deniedByReject.threw),
+  );
+  check('  · state=error，不假装 running', deniedByReject.ok === true && deniedByReject.value?.state === 'error', JSON.stringify(deniedByReject.value));
+
+  // 认不出来的 code + 中文 message（如 Java 的 "缺少实例名" 带 internal）→ 显示原话
+  const rejectUnknownCode = await ask1(`${PAGE_HELPERS}
+    window.__mclinkFake.rejectNextStart({ code: 'not-running', message: '还没有联机，无法启动' });
+    window.__t.call('start', async () => window.mclink.core.start({ configToml: ${JSON.stringify(REAL_TOML)}, instanceName: ${JSON.stringify(FIXTURE_INSTANCE)} }))
+  `);
+  check(
+    '只有原生 code（不是 §3 的六种）时，原样显示它那句中文',
+    rejectUnknownCode.ok === true && /还没有联机，无法启动/.test(rejectUnknownCode.value?.lastError ?? ''),
+    JSON.stringify(rejectUnknownCode.value ?? rejectUnknownCode.threw),
+  );
+
+  // 没有 code 的普通异常（桥真的断了）→ 仍然回落成"服务没有响应"
+  const rejectPlain = await ask1(`${PAGE_HELPERS}
+    window.__mclinkFake.rejectNextStart({ message: 'TypeError: postToNative is not a function' });
+    window.__t.call('start', async () => window.mclink.core.start({ configToml: ${JSON.stringify(REAL_TOML)}, instanceName: ${JSON.stringify(FIXTURE_INSTANCE)} }))
+  `);
+  check(
+    '桥真的断了（普通异常、没有 code）→ 回落成"联机服务没有响应"，不把英文堆栈给玩家',
+    rejectPlain.ok === true &&
+      /联机服务没有响应/.test(rejectPlain.value?.lastError ?? '') &&
+      !/postToNative/.test(rejectPlain.value?.lastError ?? ''),
+    JSON.stringify(rejectPlain.value ?? rejectPlain.threw),
+  );
+
   /* ------------------------------------------------ stop / status */
 
   const stopped = await ask1(`${PAGE_HELPERS}
@@ -729,7 +782,12 @@ if (!(await waitFor(withPlugin.evaluate, `window.mclink && window.mclink.core &&
     JSON.stringify(aclFailBare.value ?? aclFailBare.threw),
   );
 
-  // ⑤ 插件抛异常：与 start 一样，不许冒给调用方
+  /*
+   * ⑤ 插件抛异常：与 start 一样，不许冒给调用方
+   *
+   * 注意这里造的是**没有 code 的普通 Error**（桥真的断了的样子）。
+   * 带 code 的那种是"原生拒绝"，语义完全不同，见下面 start 那一段。
+   */
   const aclThrow = await ask1(`${PAGE_HELPERS}
     window.__mclinkFake.throwNextAcl();
     window.__t.call('applyAcl', async () => window.mclink.core.applyAcl(${JSON.stringify(ACL_TOML)}))
@@ -739,6 +797,17 @@ if (!(await waitFor(withPlugin.evaluate, `window.mclink && window.mclink.core &&
     '  · 而是回 {ok:false} + 一句"联机服务没有响应"',
     aclThrow.ok === true && aclThrow.value?.ok === false && /联机服务没有响应/.test(aclThrow.value.error ?? ''),
     JSON.stringify(aclThrow.value),
+  );
+
+  // ⑥ 早退式拒绝（`call.reject(msg, code)`）：原生那句中文比我们编的准确，要用它
+  const aclRejected = await ask1(`${PAGE_HELPERS}
+    window.__mclinkFake.rejectNextAcl({ code: 'not-running', message: '还没有联机，无法应用房间规则' });
+    window.__t.call('applyAcl', async () => window.mclink.core.applyAcl(${JSON.stringify(ACL_TOML)}))
+  `);
+  check(
+    '插件用 call.reject 早退（如"还没联机"）→ 显示原生那句中文，而不是"服务没有响应"',
+    aclRejected.ok === true && isDeepStrictEqual(aclRejected.value, { ok: false, error: '还没有联机，无法应用房间规则' }),
+    JSON.stringify(aclRejected.value ?? aclRejected.threw),
   );
 
   /* ------------------------------------------------ 取消订阅真的生效 */

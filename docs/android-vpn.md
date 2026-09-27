@@ -199,6 +199,17 @@ applyAcl(payload: { aclToml: string }): Promise<{ ok: boolean; mode?: 'hot' | 'r
 `logs()` 的 `limit` 目前**只在前端生效**：原生侧总是返回全部（最多 200 行环形缓冲），
 而且历史行没有逐行时间戳（契约就只有 `lines: string[]`）—— 这一条是已知的近似，不算违约但要知道。
 
+> **⚠️ 失败有两条通道，TS 侧两条都要接（真机上踩过）。**
+>
+> 1. **平铺 `{ ok: false, code?, message? }`** —— 异步流程跑完之后失败（建隧道失败、施加规则失败）。
+> 2. **`call.reject(message, code)`（Promise reject）** —— **早退**：参数不全、还没联机、
+>    **以及玩家在系统对话框里点了「拒绝」VPN 授权**（`MclinkVpnPlugin` 里 `code='vpn-denied'`）。
+>
+> 只处理第 1 条的话，玩家点「拒绝」会看到"联机服务没有响应，请退出房间后重新加入" ——
+> 一句让人去重装应用的话，而正确的话是"授权 VPN 是加入虚拟局域网的前提，请重新点『连接』"。
+> TS 侧的判定口径：**异常的 `code` 是不是字符串**（Capacitor 框架自己的 `UNIMPLEMENTED`/`UNAVAILABLE`
+> 要排除在外）——是，就是原生拒绝，按 `code` 走 §3 的文案表；不是，才是真的桥断了。
+
 事件：
 
 | 事件 | 载荷 | 触发时机 |

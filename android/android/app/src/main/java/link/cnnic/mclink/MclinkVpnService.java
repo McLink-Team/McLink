@@ -80,6 +80,14 @@ public class MclinkVpnService extends VpnService {
     private static final String KEY_MTU = "mtu";
 
     private ParcelFileDescriptor tun;
+    /**
+     * 是否正在施加房间规则。
+     *
+     * 为什么要这个标志：施加一次要重启实例（几秒）。这期间若又来一条（房主连点两次踢人、
+     * 或者踢人的同时改了房间策略），两条并发指令会各自去重启同一个实例 —— 结果谁也说不准，
+     * 而房主看到的是"踢了两个人，第二个没生效"这种无从排查的状态。宁可明确拒绝第二条。
+     */
+    private volatile boolean aclBusy;
 
     public MclinkVpnService() {}
 
@@ -153,6 +161,15 @@ public class MclinkVpnService extends VpnService {
             }
             if (aclToml == null || aclToml.trim().isEmpty()) {
                 MclinkVpnState.setAclOutcome(false, null, "房间规则是空的");
+                return START_STICKY;
+            }
+            /*
+             * 重入保护：施加规则要重启实例（几秒），这期间又来一条就只能排队或者拒绝。
+             * 选拒绝并把话说清楚 —— 两条指令并发重启同一个实例，结果是谁都没把握的，
+             * 而房主看到的是"踢了两个人，第二个没生效"这种说不清的状态。
+             */
+            if (aclBusy) {
+                MclinkVpnState.setAclOutcome(false, null, "正在应用上一条房间规则，请稍候再试");
                 return START_STICKY;
             }
             MclinkVpnState.log("收到新的房间规则，准备重启内核实例（房主会短暂断线约 2 秒）");
@@ -306,6 +323,16 @@ public class MclinkVpnService extends VpnService {
      *    （`setTunFd`）。重启实例后要**再把同一个 fd 交一次** —— 新实例手里没有它。
      */
     private void applyAclAndRestart(String aclToml) {
+        aclBusy = true;
+        try {
+            applyAclAndRestartInner(aclToml);
+        } finally {
+            // 无论成功、失败还是抛异常都要放开 —— 卡住这个标志的后果是"以后再也踢不了人"
+            aclBusy = false;
+        }
+    }
+
+    private void applyAclAndRestartInner(String aclToml) {
         Payload current = Payload.restore(this);
         ParcelFileDescriptor fd = tun;
         if (current == null || fd == null) {
