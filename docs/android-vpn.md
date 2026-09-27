@@ -286,7 +286,20 @@ applyAcl(payload: { aclToml: string }): Promise<{ ok: boolean; mode?: 'hot' | 'r
 | 清单正确 | 解包 APK 用 `aapt2 dump xmltree` 断言：service + `BIND_VPN_SERVICE` + `foregroundServiceType="specialUse"` + 四条权限 | 本机 ✅ |
 | 原生库自洽 | `.cache/scan-so.mjs` 解析 `DT_NEEDED` 含 `libeasytier_ffi.so`、导出符号是 `Java_com_easytier_jni_EasyTierJNI_*` | 本机 ✅ |
 | JS↔原生接线 | 浏览器里注入**假插件**，断言 `core.start` 的入参、事件映射、插件缺失时的诚实降级 | 本机 ✅ |
-| **隧道真的通** | 真机：装 APK → 授权 VPN → ping 房主虚拟 IP → 游戏里连上 | **用户**（本机没有设备） |
+| **隧道真的通** | 真机：装 APK → 授权 VPN → **用 TCP 连房主的游戏端口**（不要用 ping，见下）→ 游戏里连上 | **用户**（本机没有设备） |
+
+> **⚠️ 不要用 ping 判断隧道通不通**（这条判据以前写错了，2026-09-27 改正）。
+>
+> 原因有三，且与安卓无关：
+> 1. **对端如果是 Windows，防火墙默认丢弃入站 ICMP echo** —— 两台电脑互 ping 也一样不通，
+>    但游戏照样能连；
+> 2. **虚拟网卡的路由表歧义**：`docs/development.md` §4.1 早就写明"OS 层 ping 测试不可信"，
+>    所以我们自己的数据面实验（`pnpm lab:dataplane`）走的是 EasyTier 内部的 TCP 端口转发；
+> 3. `adb shell` 的流量归属不建议当判据（shell 是系统 UID）。
+>
+> **我们的 ACL 并没有拦 ICMP**：`server/src/easytier/acl.ts` 的 `DIAGNOSTIC_PROTOCOLS`
+> 在严格端口模式下**特意放行 ICMP/ICMPv6**，注释就是"便于玩家自行排查连通性"。
+> 也就是说 ping 不通**不是**我们的策略造成的 —— 而 MC 走 TCP，用 TCP 测才是有意义的判据。
 
 ### 5.1 用户真机自测清单
 
