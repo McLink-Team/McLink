@@ -318,12 +318,22 @@ export class RoomRepo {
     this.db.run('update rooms set member_count = ?, online_members = ? where id = ?', memberCount, online, id);
   }
 
+  /**
+   * 房间累计流量：**增量**累加（不是覆盖写）。
+   *
+   * 以前这里是 `rx_bytes = excluded.rx_bytes`（覆盖），而传进来的却是中继侧
+   * "从实例启动算起"的累计值 —— 于是中继一重启房间累计就归零，一个房间被两台节点
+   * 同时转发时两边互相覆盖。现在调用方（`services/traffic-ledger.ts`）先算出增量，
+   * 这里只做 `+=`：多源相加、重启不丢历史。
+   *
+   * `peers` 是瞬时值，取最新一次上报（同一房间多源时以最后上报的为准）。
+   */
   incrementUsage(roomId: string, rxBytes: number, txBytes: number, peers: number): void {
     this.db.run(
       `insert into room_usage (room_id, rx_bytes, tx_bytes, peers, updated_at) values (?, ?, ?, ?, ?)
        on conflict(room_id) do update set
-         rx_bytes = excluded.rx_bytes,
-         tx_bytes = excluded.tx_bytes,
+         rx_bytes = room_usage.rx_bytes + excluded.rx_bytes,
+         tx_bytes = room_usage.tx_bytes + excluded.tx_bytes,
          peers = excluded.peers,
          updated_at = excluded.updated_at`,
       roomId,

@@ -582,6 +582,49 @@ update settings
  where key = 'platform'
    and json_extract(value, '$.clientDownloadUrl') = '/downloads/McLink-Setup-1.0.7-x64.exe';
 `;
+/**
+ * V22：流量账本（分钟桶 + **增量**口径）。
+ *
+ * 为什么需要一张新表：`traffic_samples` 存的是**采样瞬间的累计计数器与瞬时速率**
+ * （中继/节点侧 `peer list-foreign` 的 rx_bytes/tx_bytes 是从该实例启动算起的累计值），
+ * 于是：
+ *   · 「累计流量」只能靠 `max(rx_bytes)` 猜，中继一重启就失真（线上主控中继起不来时读到 0）；
+ *   · 一个房间被两台节点同时转发时，两边的累计值互相覆盖（`room_usage` 以前是覆盖写）；
+ *   · 用户维度根本没地方落库（`users.used_bytes` 从来没有写入方，一直是 0）。
+ * 结果就是控制台的「今日累计 / 累计流量 / 用户用量」全都不可用。
+ *
+ * 这张表按**分钟桶 + 维度**记录**增量**（`+=` 累加），维度是 platform / room / node / user：
+ *   · 增量由 `services/traffic-ledger.ts` 的会计模块算出（前后两次采样相减；
+ *     计数器回退 = 该实例重启过，按"本次值即增量"处理）；
+ *   · 于是重启不丢历史、多源可相加、按天/按月既能求和也能画字节曲线；
+ *   · `bucket`/`day` 用**服务器本地时间** —— 界面上「自然日 00:00 起」就是本地时间的语义。
+ *
+ * 保留期比采样长得多（默认 400 天）：曲线看近几小时，账本看月/年。
+ */
+const V22_TRAFFIC_LEDGER = `
+create table if not exists traffic_ledger (
+  bucket      text    not null,
+  day         text    not null,
+  scope       text    not null,
+  scope_id    text    not null,
+  room_id     text,
+  user_id     text,
+  node_id     text,
+  rx_bytes    integer not null default 0,
+  tx_bytes    integer not null default 0,
+  updated_at  text    not null,
+  primary key (bucket, scope, scope_id)
+);
+
+create index if not exists idx_ledger_day_scope on traffic_ledger(day, scope);
+create index if not exists idx_ledger_room on traffic_ledger(room_id, day);
+create index if not exists idx_ledger_user on traffic_ledger(user_id, day);
+create index if not exists idx_ledger_node on traffic_ledger(node_id, day);
+
+-- 旧口径的房间累计流量是"某个来源重启以来的累计值"（覆盖写），换算不出真实总量，
+-- 账本从 0 开始更有意义（房间与用户的其它历史数据不受影响）。
+delete from room_usage;
+`;
 export const MIGRATIONS: readonly string[] = [
   V1_INITIAL,
   V2_RELAY_ROOM_MAP,
@@ -604,6 +647,7 @@ export const MIGRATIONS: readonly string[] = [
   V19_CLIENT_1_0_6,
   V20_CLIENT_1_0_7,
   V21_CLIENT_1_0_8,
+  V22_TRAFFIC_LEDGER,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

@@ -13,7 +13,7 @@ import { Db } from './db/index.ts';
 import { EnrollKeyRepo, EmailCodeRepo, MetaStore, SettingsRepo, UserRepo } from './db/users.ts';
 import { RoomRepo } from './db/rooms.ts';
 import { NodeRepo } from './db/nodes.ts';
-import { AuditRepo, TrafficRepo } from './db/traffic.ts';
+import { AuditRepo, TrafficLedgerRepo, TrafficRepo } from './db/traffic.ts';
 import { MessageRepo } from './db/chat.ts';
 import { AuthService } from './services/auth.ts';
 import { NodeService } from './services/nodes.ts';
@@ -24,17 +24,24 @@ import { MailerService } from './services/mailer.ts';
 import { BroadcastService } from './services/broadcast.ts';
 import { unsubscribeUrl } from './api/unsubscribe.ts';
 import { RelayManager } from './easytier/manager.ts';
+import { TrafficAccountant } from './services/traffic-ledger.ts';
 import { hashPassword } from './util/id.ts';
 
 /**
  * 主控自身的版本。
  *
- * 这是**主控的版本线**，和客户端版本线相互独立（客户端当前 1.0.8，主控本轮发 1.0.0）。
+ * 这是**主控的版本线**，和客户端版本线相互独立（客户端当前 1.0.8，主控本轮发 1.1.0）。
  * 对外出现在 `/meta.version`、控制台「平台版本」，以及 WS `hello.version`。
  * 全仓库只有这一处定义：`ws/hub.ts` 以前自己硬编码了 '0.1.0'，结果握手时宣称的版本
  * 和 `/meta` 长期不一致（docs/api.md 里还写着"与 APP_VERSION 一致"）。
+ *
+ * 1.1.0 装的东西（主控侧）：
+ *   · 中继调度重做：主控不再当兜底中继，每房 1 主 + 1 兜底（两台不同子节点）；
+ *   · 流量账本（`traffic_ledger`）：今日/本月/累计、按房间/节点/用户，都是真增量累加；
+ *   · `deploy/register-self-node.mjs`：一条命令把主控本身注册成子节点（单机部署）。
+ * 客户端 1.0.8 与主控 1.1.0 是同一次发布的两条线，版本号不要求相同。
  */
-export const APP_VERSION = '1.0.0';
+export const APP_VERSION = '1.1.0';
 
 /**
  * 服务内部事件总线。
@@ -95,6 +102,10 @@ export interface App {
   rooms: RoomRepo;
   nodes: NodeRepo;
   traffic: TrafficRepo;
+  /** 流量账本（分钟桶、增量口径）：今日/本月/累计与按用户统计都读它 */
+  ledger: TrafficLedgerRepo;
+  /** 流量会计：把中继/节点上报的累计计数器转成增量并入账 */
+  accountant: TrafficAccountant;
   audit: AuditRepo;
   messages: MessageRepo;
   enrollKeys: EnrollKeyRepo;
@@ -137,6 +148,7 @@ export function createApp(options: CreateAppOptions = {}): App {
   const rooms = new RoomRepo(db);
   const nodes = new NodeRepo(db);
   const traffic = new TrafficRepo(db);
+  const ledger = new TrafficLedgerRepo(db);
   const audit = new AuditRepo(db);
   const messages = new MessageRepo(db);
   const enrollKeys = new EnrollKeyRepo(db);
@@ -170,6 +182,11 @@ export function createApp(options: CreateAppOptions = {}): App {
   const roomService = new RoomService(config, rooms, nodes, users, audit, settings, events, messages, nodeUtil);
   const nodeService = new NodeService(config, nodes, enrollKeys, audit, settings, nodeUtil);
   const relay = new RelayManager(config);
+  /**
+   * 流量会计要在服务都构造好之后建：它依赖 rooms / users / ledger 三个仓储，
+   * 由这里注入（而不是自己 import 单例），单测里可以直接塞假仓储。
+   */
+  const accountant = new TrafficAccountant({ ledger, rooms, users });
 
   const webRoot = resolveWebRoot();
   const downloadsRoot = resolveDownloadsRoot(config);
@@ -184,6 +201,8 @@ export function createApp(options: CreateAppOptions = {}): App {
     rooms,
     nodes,
     traffic,
+    ledger,
+    accountant,
     audit,
     messages,
     enrollKeys,

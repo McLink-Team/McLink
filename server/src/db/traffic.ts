@@ -145,16 +145,230 @@ export class TrafficRepo {
     return this.pruneBatch(keepHours);
   }
 
-  /** 今日累计流量（用于仪表盘） */
-  todayTotals(): { rxBytes: number; txBytes: number } {
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
+  /* 「今日累计」以前实现在这里（对采样表取 max），现在由 TrafficLedgerRepo 负责： */
+
+}
+
+/* ------------------------------------------------------------------ 账本 */
+
+export type LedgerScope = 'platform' | 'room' | 'node' | 'user';
+
+export interface LedgerDelta {
+  scope: LedgerScope;
+  scopeId: string;
+  roomId?: string | null;
+  userId?: string | null;
+  nodeId?: string | null;
+  rxBytes: number;
+  txBytes: number;
+}
+
+const pad2 = (n: number): string => String(n).padStart(2, '0');
+
+/** 本地时间的分钟桶，如 `2026-09-28T01:07` —— 与界面上「自然日」的口径一致 */
+export function localBucket(at: Date = new Date()): string {
+  return `${localDay(at)}T${pad2(at.getHours())}:${pad2(at.getMinutes())}`;
+}
+
+/** 本地时间的日期，如 `2026-09-28` */
+export function localDay(at: Date = new Date()): string {
+  return `${at.getFullYear()}-${pad2(at.getMonth() + 1)}-${pad2(at.getDate())}`;
+}
+
+/**
+ * 流量账本：按分钟桶累加**增量**，支持按维度/按天求和。
+ *
+ * 与 `TrafficRepo` 的分工（别混用）：
+ *   · `TrafficRepo`（traffic_samples）= 瞬时速率曲线，5 秒一条、只留 72 小时；
+ *   · `TrafficLedgerRepo`（traffic_ledger）= 字节账本，分钟桶累加、留 400 天，
+ *     「今日/本月/累计」与按用户/按房间的总量都只认它。
+ */
+export class TrafficLedgerRepo {
+  private readonly db: Db;
+
+  constructor(db: Db) {
+    this.db = db;
+  }
+
+  /** 累加一批增量（同一事务；桶由当前时间决定，调用方不必传） */
+  addMany(items: readonly LedgerDelta[], at: Date = new Date()): void {
+    const rows = items.filter((it) => it.rxBytes !== 0 || it.txBytes !== 0);
+    if (rows.length === 0) return;
+    const bucket = localBucket(at);
+    const day = localDay(at);
+    const ts = nowIso();
+    this.db.transaction(() => {
+      for (const it of rows) {
+        this.db.run(
+          `insert into traffic_ledger (bucket, day, scope, scope_id, room_id, user_id, node_id, rx_bytes, tx_bytes, updated_at)
+           values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           on conflict(bucket, scope, scope_id) do update set
+             rx_bytes = rx_bytes + excluded.rx_bytes,
+             tx_bytes = tx_bytes + excluded.tx_bytes,
+             room_id = coalesce(excluded.room_id, traffic_ledger.room_id),
+             user_id = coalesce(excluded.user_id, traffic_ledger.user_id),
+             node_id = coalesce(excluded.node_id, traffic_ledger.node_id),
+             updated_at = excluded.updated_at`,
+          bucket,
+          day,
+          it.scope,
+          it.scopeId,
+          it.roomId ?? null,
+          it.userId ?? null,
+          it.nodeId ?? null,
+          Math.round(it.rxBytes),
+          Math.round(it.txBytes),
+          ts,
+        );
+      }
+    });
+  }
+
+  /** 区间求和：`sinceDay` / `untilDay` 都是本地日期（含端点） */
+  sum(filter: { scope: LedgerScope; scopeId?: string; sinceDay?: string; untilDay?: string }): {
+    rxBytes: number;
+    txBytes: number;
+  } {
+    const where = ['scope = ?'];
+    const params: unknown[] = [filter.scope];
+    if (filter.scopeId) {
+      where.push('scope_id = ?');
+      params.push(filter.scopeId);
+    }
+    if (filter.sinceDay) {
+      where.push('day >= ?');
+      params.push(filter.sinceDay);
+    }
+    if (filter.untilDay) {
+      where.push('day <= ?');
+      params.push(filter.untilDay);
+    }
     const row = this.db.get<{ rx: number; tx: number }>(
-      `select max(rx_bytes) as rx, max(tx_bytes) as tx from traffic_samples
-       where scope = 'relay' and ts >= ?`,
-      startOfDay.toISOString(),
+      `select coalesce(sum(rx_bytes), 0) as rx, coalesce(sum(tx_bytes), 0) as tx
+       from traffic_ledger where ${where.join(' and ')}`,
+      ...params,
     );
     return { rxBytes: Number(row?.rx ?? 0), txBytes: Number(row?.tx ?? 0) };
+  }
+
+  /** 按 scope_id 分组求和（今日的房间/节点/用户明细用） */
+  byScope(filter: { scope: LedgerScope; sinceDay?: string; limit?: number }): Array<{
+    scopeId: string;
+    roomId: string | null;
+    userId: string | null;
+    nodeId: string | null;
+    rxBytes: number;
+    txBytes: number;
+  }> {
+    const where = ['scope = ?'];
+    const params: unknown[] = [filter.scope];
+    if (filter.sinceDay) {
+      where.push('day >= ?');
+      params.push(filter.sinceDay);
+    }
+    const rows = this.db.all<{
+      scope_id: string;
+      room_id: string | null;
+      user_id: string | null;
+      node_id: string | null;
+      rx: number;
+      tx: number;
+    }>(
+      `select scope_id,
+              max(room_id) as room_id, max(user_id) as user_id, max(node_id) as node_id,
+              coalesce(sum(rx_bytes), 0) as rx, coalesce(sum(tx_bytes), 0) as tx
+       from traffic_ledger where ${where.join(' and ')}
+       group by scope_id
+       order by (sum(rx_bytes) + sum(tx_bytes)) desc
+       limit ?`,
+      ...params,
+      Math.min(Math.max(filter.limit ?? 100, 1), 1000),
+    );
+    return rows.map((r) => ({
+      scopeId: r.scope_id,
+      roomId: r.room_id,
+      userId: r.user_id,
+      nodeId: r.node_id,
+      rxBytes: Number(r.rx),
+      txBytes: Number(r.tx),
+    }));
+  }
+
+  /**
+   * 逐日字节总量（含没有流量的日子补 0）—— 给「近 N 天」柱状图用。
+   * 补 0 在 SQL 里很别扭，这里在内存里补齐：天数上限 366，代价可以忽略。
+   */
+  daySeries(days: number, scope: LedgerScope = 'platform', scopeId = 'all'): Array<{
+    day: string;
+    rxBytes: number;
+    txBytes: number;
+  }> {
+    const span = Math.min(Math.max(Math.round(days), 1), 366);
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    start.setDate(start.getDate() - (span - 1));
+    const rows = this.db.all<{ day: string; rx: number; tx: number }>(
+      `select day, coalesce(sum(rx_bytes), 0) as rx, coalesce(sum(tx_bytes), 0) as tx
+       from traffic_ledger where scope = ? and scope_id = ? and day >= ?
+       group by day`,
+      scope,
+      scopeId,
+      localDay(start),
+    );
+    const map = new Map(rows.map((r) => [r.day, r]));
+    const out: Array<{ day: string; rxBytes: number; txBytes: number }> = [];
+    for (let i = 0; i < span; i += 1) {
+      const at = new Date(start);
+      at.setDate(start.getDate() + i);
+      const key = localDay(at);
+      const hit = map.get(key);
+      out.push({ day: key, rxBytes: Number(hit?.rx ?? 0), txBytes: Number(hit?.tx ?? 0) });
+    }
+    return out;
+  }
+
+  /** 分钟桶序列（字节口径），给流量页画"每分钟走了多少字节" */
+  bucketSeries(filter: { scope: LedgerScope; scopeId?: string; sinceBucket: string; limit?: number }): Array<{
+    bucket: string;
+    rxBytes: number;
+    txBytes: number;
+  }> {
+    const where = ['scope = ?', 'bucket >= ?'];
+    const params: unknown[] = [filter.scope, filter.sinceBucket];
+    if (filter.scopeId) {
+      where.push('scope_id = ?');
+      params.push(filter.scopeId);
+    }
+    const rows = this.db.all<{ bucket: string; rx: number; tx: number }>(
+      `select bucket, coalesce(sum(rx_bytes), 0) as rx, coalesce(sum(tx_bytes), 0) as tx
+       from traffic_ledger where ${where.join(' and ')}
+       group by bucket order by bucket desc limit ?`,
+      ...params,
+      Math.min(Math.max(filter.limit ?? 240, 1), 2000),
+    );
+    return rows
+      .reverse()
+      .map((r) => ({ bucket: r.bucket, rxBytes: Number(r.rx), txBytes: Number(r.tx) }));
+  }
+
+  /** 最近一条账本时间（用来判断账本是否在正常增长） */
+  lastBucket(): string | null {
+    const row = this.db.get<{ bucket: string }>('select max(bucket) as bucket from traffic_ledger');
+    return row?.bucket ?? null;
+  }
+
+  /** 分批清理过期账本（保留默认 400 天，按天删、批间让出事件循环） */
+  pruneBatch(keepDays = 400, limit = 2000): number {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - Math.max(keepDays, 1));
+    const res = this.db.run(
+      `delete from traffic_ledger where rowid in (
+         select rowid from traffic_ledger where day < ? limit ?
+       )`,
+      localDay(cutoff),
+      limit,
+    );
+    return Number(res.changes ?? 0);
   }
 }
 

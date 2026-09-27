@@ -17,6 +17,10 @@ import { parseHumanNumber, parseLatencyMs } from '../src/easytier/manager.ts';
 import { hashRoomPassword, verifyRoomPassword, deriveNetworkName, resolveMemberLink, relayScore, nextRoomExpiry, selectRelays, LATENCY_TIE_BAND_MS, RoomService, type RelayCandidate } from '../src/services/rooms.ts';
 import { Db } from '../src/db/index.ts';
 import { NodeRepo } from '../src/db/nodes.ts';
+import { RoomRepo } from '../src/db/rooms.ts';
+import { UserRepo } from '../src/db/users.ts';
+import { TrafficLedgerRepo, localDay } from '../src/db/traffic.ts';
+import { TrafficAccountant } from '../src/services/traffic-ledger.ts';
 import { ewma, NodeUtilization } from '../src/services/node-utilization.ts';
 import { parseLatencyHints, parsePolicy } from '../src/api/helpers.ts';
 import {
@@ -1294,5 +1298,167 @@ describe('房间过期时间顺延 nextRoomExpiry', () => {
 
   test('到期时间不可解析时直接按现在重算（脏数据不该让房间永不过期）', () => {
     assert.equal(nextRoomExpiry('not-a-date', now, MIN), new Date(now + MIN).toISOString());
+  });
+});
+
+/**
+ * 流量账本与会计。
+ *
+ * 这一组盯的是"累计流量 / 用户用量"这条链上**错了会静默给出假数字**的地方：
+ *   · 中继重启后计数器回退（不能把回退算成增量，也不能重复入账）；
+ *   · 同一房间被两台节点同时转发（必须相加，而不是互相覆盖 —— 改造前就是覆盖写）；
+ *   · 用户维度（按成员上报的带宽份额分摊，`used_bytes` 要真的增长）。
+ */
+describe('流量账本与会计', () => {
+  function fixture() {
+    const db = new Db(':memory:');
+    const users = new UserRepo(db);
+    const rooms = new RoomRepo(db);
+    const ledger = new TrafficLedgerRepo(db);
+    const host = users.create({ username: 'ledger-host', displayName: '房主', passwordHash: 'x' });
+    const guest = users.create({ username: 'ledger-guest', displayName: '成员', passwordHash: 'x' });
+    const room = rooms.create({
+      id: 'r_ledger',
+      code: 'LDGR01',
+      name: '账本房',
+      hostUserId: host.id,
+      access: 'open',
+      visibility: 'public',
+      zone: 'auto',
+      relayNodeIds: ['n_1'],
+      policy: DEFAULT_ROOM_POLICY,
+      networkName: 'mclink-room-ledger',
+      networkSecret: 'secret',
+      subnet: '10.200.9.0/24',
+      subnetSlot: 9,
+      passwordHash: null,
+      expiresAt: null,
+    });
+    rooms.addMember({ roomId: room.id, userId: host.id, role: 'host', status: 'active', virtualIp: '10.200.9.1/24', seat: 1 });
+    rooms.addMember({ roomId: room.id, userId: guest.id, role: 'member', status: 'active', virtualIp: '10.200.9.2/24', seat: 2 });
+    // 心跳：既让成员进入"最近活跃"窗口，又给出分摊份额（房主 3000、成员 1000 → 3:1）
+    rooms.updateMemberHeartbeat(room.id, host.id, { rxBps: 3000, txBps: 3000 });
+    rooms.updateMemberHeartbeat(room.id, guest.id, { rxBps: 1000, txBps: 1000 });
+    const accountant = new TrafficAccountant({ ledger, rooms, users });
+    return { db, users, rooms, ledger, accountant, host, guest, room };
+  }
+
+  test('delta：第一次只记基线，第二次给差值，计数器回退按"新实例从 0 开始"处理', () => {
+    const { db, accountant } = fixture();
+    try {
+      assert.deepEqual(accountant.delta('master|net', 1000, 2000), { rx: 0, tx: 0 }, '第一次是基线');
+      assert.deepEqual(accountant.delta('master|net', 1500, 2600), { rx: 500, tx: 600 });
+      // 实例重启：计数器回到 200/300 —— 这段时间新产生的量就是 200/300
+      assert.deepEqual(accountant.delta('master|net', 200, 300), { rx: 200, tx: 300 });
+    } finally {
+      db.close();
+    }
+  });
+
+  test('account：房间累计是真的加法（两台来源同时转发时相加，而不是覆盖）', () => {
+    const { db, ledger, accountant, rooms } = fixture();
+    try {
+      const net = { networkName: 'mclink-room-ledger', peerCount: 2 };
+      // 第一轮只记基线，什么都不入账
+      accountant.account('master', [{ ...net, rxBytes: 100, txBytes: 200 }]);
+      assert.equal(rooms.usage('r_ledger')?.rxBytes ?? 0, 0, '首轮不该把历史总量记进来');
+
+      accountant.account('master', [{ ...net, rxBytes: 1100, txBytes: 2200 }]);
+      assert.deepEqual(
+        { rx: rooms.usage('r_ledger')!.rxBytes, tx: rooms.usage('r_ledger')!.txBytes },
+        { rx: 1000, tx: 2000 },
+      );
+
+      // 第二台来源（子节点）也在转发同一个房间：累计必须相加
+      accountant.account('node:n_2', [{ ...net, rxBytes: 50, txBytes: 60 }]);
+      accountant.account('node:n_2', [{ ...net, rxBytes: 550, txBytes: 660 }]);
+      const usage = rooms.usage('r_ledger')!;
+      assert.deepEqual({ rx: usage.rxBytes, tx: usage.txBytes }, { rx: 1500, tx: 2600 });
+      assert.equal(usage.peers, 2);
+
+      // 平台维度 = 各来源增量之和
+      const platform = ledger.sum({ scope: 'platform', scopeId: 'all' });
+      assert.deepEqual(platform, { rxBytes: 1500, txBytes: 2600 });
+      // 房间维度记在该房间名下
+      const roomSum = ledger.sum({ scope: 'room', scopeId: 'r_ledger' });
+      assert.deepEqual(roomSum, { rxBytes: 1500, txBytes: 2600 });
+    } finally {
+      db.close();
+    }
+  });
+
+  test('用户维度：按成员上报的带宽份额分摊，used_bytes 真的增长', () => {
+    const { db, ledger, accountant, users, host, guest } = fixture();
+    try {
+      const net = { networkName: 'mclink-room-ledger', peerCount: 2, rxBytes: 0, txBytes: 0 };
+      accountant.account('master', [net]);
+      accountant.account('master', [{ ...net, rxBytes: 1000, txBytes: 2000 }]);
+
+      // 房主 3000 / 成员 1000 → 3:1；增量 rx 1000 + tx 2000 = 3000
+      const hostRow = users.findById(host.id)!;
+      const guestRow = users.findById(guest.id)!;
+      assert.equal(hostRow.used_bytes, 2250);
+      assert.equal(guestRow.used_bytes, 750);
+      assert.equal(hostRow.used_bytes + guestRow.used_bytes, 3000);
+
+      const hostLedger = ledger.sum({ scope: 'user', scopeId: host.id, sinceDay: localDay() });
+      assert.equal(hostLedger.rxBytes + hostLedger.txBytes, 2250);
+    } finally {
+      db.close();
+    }
+  });
+
+  test('forgetSource：中继/节点换实例后重新记基线，不会把新实例的累计当成增量重复入账', () => {
+    const { db, accountant, rooms } = fixture();
+    try {
+      const net = { networkName: 'mclink-room-ledger', peerCount: 1 };
+      accountant.account('master', [{ ...net, rxBytes: 5000, txBytes: 5000 }]);
+      accountant.account('master', [{ ...net, rxBytes: 6000, txBytes: 6000 }]);
+      assert.equal(rooms.usage('r_ledger')!.rxBytes, 1000);
+
+      // 主控中继重启（新实例计数器从 0 开始）
+      accountant.forgetSource('master');
+      accountant.account('master', [{ ...net, rxBytes: 800, txBytes: 800 }]);
+      assert.equal(rooms.usage('r_ledger')!.rxBytes, 1000, '新实例的第一轮只记基线');
+
+      accountant.account('master', [{ ...net, rxBytes: 900, txBytes: 900 }]);
+      assert.equal(rooms.usage('r_ledger')!.rxBytes, 1100, '之后按新实例的差值累加');
+    } finally {
+      db.close();
+    }
+  });
+
+  test('账本查询：区间求和、逐日补零、按 scope 排序、过期分批清理', () => {
+    const { db, ledger } = fixture();
+    try {
+      const today = new Date();
+      const old = new Date(today.getTime() - 500 * 86_400_000);
+      ledger.addMany([{ scope: 'platform', scopeId: 'all', rxBytes: 100, txBytes: 200 }], today);
+      ledger.addMany([{ scope: 'platform', scopeId: 'all', rxBytes: 50, txBytes: 50 }], today);
+      ledger.addMany([{ scope: 'platform', scopeId: 'all', rxBytes: 7, txBytes: 9 }], old);
+      ledger.addMany([{ scope: 'room', scopeId: 'r_a', roomId: 'r_a', rxBytes: 30, txBytes: 40 }], today);
+      ledger.addMany([{ scope: 'room', scopeId: 'r_b', roomId: 'r_b', rxBytes: 90, txBytes: 10 }], today);
+
+      // 同一天的两批累加进同一个桶
+      assert.deepEqual(ledger.sum({ scope: 'platform', scopeId: 'all', sinceDay: localDay(today) }), {
+        rxBytes: 150,
+        txBytes: 250,
+      });
+      // 不加区间就是全量（含那条 500 天前的）
+      assert.deepEqual(ledger.sum({ scope: 'platform', scopeId: 'all' }), { rxBytes: 157, txBytes: 259 });
+
+      const days = ledger.daySeries(30);
+      assert.equal(days.length, 30, '缺数据的日子要补 0，图表才不会断层');
+      assert.deepEqual(days.at(-1), { day: localDay(today), rxBytes: 150, txBytes: 250 });
+      assert.equal(days[0]!.rxBytes, 0);
+
+      const byScope = ledger.byScope({ scope: 'room', sinceDay: localDay(today) });
+      assert.deepEqual(byScope.map((r) => r.scopeId), ['r_b', 'r_a'], '按总量降序（r_b 100 > r_a 70）');
+
+      assert.ok(ledger.pruneBatch(400, 100) >= 1, '500 天前的那条要被清掉');
+      assert.deepEqual(ledger.sum({ scope: 'platform', scopeId: 'all' }), { rxBytes: 150, txBytes: 250 });
+    } finally {
+      db.close();
+    }
   });
 });
