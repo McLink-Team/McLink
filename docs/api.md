@@ -843,6 +843,6 @@ WebSocket 只用于平台概览、流量与节点状态。
     地址在没配置 `MCLINK_RELAY_PUBLIC_HOST` / `MCLINK_PUBLIC_BASE_URL` 时由请求 `Host` 推导
     （所以用 `http://127.0.0.1:8787` 建房会得到 `tcp://127.0.0.1:11010`）。
     **2026-09-27 起这条推导不再影响票据**：`relays[]` 只来自 `relay_nodes` 的调度结果（子节点），
-    主控要参与就必须被注册成一台普通子节点，一个可调度子节点都没有时建房直接报 503。
-    `MCLINK_RELAY_PUBLIC_HOST` 保留下来，作用变成「把主控注册成普通子节点时用的对外地址」，
-    生产环境仍建议显式配置（不要让地址随请求 `Host` 漂移）。
+    主控要参与就必须被注册成一台普通子节点（`--endpoint <公网地址>:<链接端口>`），一个可调度子节点都没有时建房直接报 503。
+    `MCLINK_RELAY_PUBLIC_HOST` 保留下来，但只用于「`MCLINK_PUBLIC_BASE_URL` 为空时拼安装/更新指令」，
+    **不再影响票据**；生产环境仍建议显式配置 `MCLINK_PUBLIC_BASE_URL`（不要让绝对地址随请求 `Host` 漂移）。

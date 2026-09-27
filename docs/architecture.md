@@ -217,7 +217,7 @@ export function deriveNetworkName(secret: string): string {
 | `networkName` / `networkSecret` | EasyTier 网络身份（`[network_identity]`） |
 | `virtualIp` | 本机地址，带前缀，如 `10.200.7.3/24` |
 | `hostVirtualIp` | **房主地址**，玩家在 Minecraft「直接连接」里填的就是它 |
-| `relays[]` | 中继入口列表（`tcp://` 与 `udp://` 成对），来自子节点调度结果 + 主控兜底 |
+| `relays[]` | 中继入口列表（`tcp://` 与 `udp://` 成对），全部来自子节点调度结果（主中继 + 兜底中继） |
 | `configToml` | 服务端生成好的完整 TOML，客户端直接落盘 |
 | `launchArgs` | easytier-core 的完整命令行，其中配置文件路径是占位符 **`%CONFIG%`** |
 | `aclToml` / `aclRevision` | **仅房主**非空；成员为 `null` |

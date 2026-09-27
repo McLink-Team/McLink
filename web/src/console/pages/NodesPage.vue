@@ -363,7 +363,7 @@ async function removeNode(node: RelayNode): Promise<void> {
         </div>
       </div>
       <div v-if="availability.length === 0" class="empty">
-        还没有任何区域注册了节点；此时房间会使用主控自带的兜底中继。
+        还没有任何区域注册了节点；此时建房会直接失败（票据里的中继只会取自区域节点）。
       </div>
       <div v-else class="tally">
         <div v-for="a in availability" :key="a.region" class="tally-item">
