@@ -40,6 +40,8 @@ interface RoomSeries {
   rxBytes?: number;
   txBytes?: number;
   peers?: number;
+  /** 今日字节（账本口径） */
+  today?: BytePair;
 }
 
 interface NodeSeries {
@@ -49,6 +51,24 @@ interface NodeSeries {
   rxBps: number;
   txBps: number;
   peers: number;
+  today?: BytePair;
+}
+
+/** 字节对（账本里所有维度都用它） */
+interface BytePair {
+  rxBytes: number;
+  txBytes: number;
+}
+
+/** 按用户：今日字节 + 终身用量（配额判定用的就是 usedBytes） */
+interface UserUsage {
+  id: string;
+  username: string;
+  displayName: string;
+  todayRxBytes: number;
+  todayTxBytes: number;
+  usedBytes: number;
+  quotaBytes: number | null;
 }
 
 interface TrafficResponse {
@@ -69,7 +89,15 @@ interface TrafficResponse {
   foreignNetworks: ForeignNetworkMapped[];
   rooms: RoomSeries[];
   nodes: NodeSeries[];
-  totals: { rxBytes: number; txBytes: number };
+  /** 今日累计（账本口径） */
+  totals: BytePair;
+  /** 今日 / 本月 / 累计（都来自 traffic_ledger 的增量累加） */
+  totalsRange?: { today: BytePair; month: BytePair; all: BytePair };
+  /** 分钟桶字节：账本里"每分钟走了多少" */
+  bytes?: Array<{ bucket: string; rxBytes: number; txBytes: number }>;
+  /** 近 30 天字节 */
+  days?: Array<{ day: string; rxBytes: number; txBytes: number }>;
+  users?: UserUsage[];
 }
 
 const RANGES = [
@@ -131,12 +159,35 @@ onUnmounted(() => {
 
 const platform = computed(() => asArray(data.value?.platform?.points));
 const totals = computed(() => data.value?.totals ?? { rxBytes: 0, txBytes: 0 });
+const range = computed(
+  () => data.value?.totalsRange ?? { today: totals.value, month: totals.value, all: totals.value },
+);
 const foreignNetworks = computed(() => asArray(data.value?.foreignNetworks));
 const roomSeries = computed(() => asArray(data.value?.rooms));
 const nodeSeries = computed(() => asArray(data.value?.nodes));
+const users = computed(() => asArray(data.value?.users));
+
+/**
+ * 账本曲线：`traffic_ledger` 里的字节桶换成 Sparkline 认的 `TrafficPoint`。
+ * 纵轴是**每桶字节数**（分钟桶 / 天），不是 bit/s —— 所以卡片文案里写清楚了单位，
+ * 免得和上面那条"实时速率"曲线混为一谈。
+ */
+const bytesSeries = computed<TrafficPoint[]>(() =>
+  asArray(data.value?.bytes).map((b) => ({ ts: b.bucket, rxBps: b.rxBytes, txBps: b.txBytes })),
+);
+const daySeries = computed<TrafficPoint[]>(() =>
+  asArray(data.value?.days).map((d) => ({ ts: `${d.day}T00:00`, rxBps: d.rxBytes, txBps: d.txBytes })),
+);
 
 const cards = computed(() => {
   const p = data.value?.platform;
+  const asPair = (b: { rxBytes: number; txBytes: number }): { value: string; hint: string } => ({
+    value: formatBytes(b.rxBytes + b.txBytes),
+    hint: `收 ${formatBytes(b.rxBytes)} · 发 ${formatBytes(b.txBytes)}`,
+  });
+  const today = asPair(range.value.today);
+  const month = asPair(range.value.month);
+  const all = asPair(range.value.all);
   // 读数用纸白（数据本身不是状态）；只有"外来网络"是值得被注意的信号，用告警色。
   return [
     {
@@ -152,8 +203,9 @@ const cards = computed(() => {
       hint: p ? `主控 ${formatBitrate(p.masterTxBps)} + ${p.onlineRelayNodes} 节点 ${formatBitrate(p.nodesTxBps)}` : '未采样',
       accent: 'accent' as const,
     },
-    { label: '今日累计接收', value: formatBytes(totals.value.rxBytes), hint: '自然日 00:00 起', accent: 'accent' as const },
-    { label: '今日累计发送', value: formatBytes(totals.value.txBytes), hint: '自然日 00:00 起', accent: 'accent' as const },
+    { label: '今日流量', ...today, hint: `自然日 00:00 起 · ${today.hint}`, accent: 'accent' as const },
+    { label: '本月流量', ...month, hint: `本月 1 日起 · ${month.hint}`, accent: 'accent' as const },
+    { label: '累计流量', ...all, hint: `账本保留 400 天 · ${all.hint}`, accent: 'accent' as const },
     { label: '外来网络', value: foreignNetworks.value.length, hint: '全网正在转发的房间网络', accent: 'warn' as const },
     { label: '开放房间', value: roomSeries.value.length, hint: '按房间归因的流量序列', accent: 'accent' as const },
   ];
@@ -191,7 +243,7 @@ const cards = computed(() => {
     </header>
 
     <div v-if="loading && !data" class="stat-grid">
-      <div v-for="i in 6" :key="i" class="stat-skeleton">
+      <div v-for="i in 7" :key="i" class="stat-skeleton">
         <div class="skeleton" style="height: 11px; width: 42%" />
         <div class="skeleton" style="height: 24px; width: 62%; margin-top: 9px" />
       </div>
@@ -231,6 +283,36 @@ const cards = computed(() => {
           </div>
         </div>
         <Sparkline :points="platform" compare :height="110" />
+      </section>
+
+      <!-- 字节账本：累计数字的来源 -->
+      <section class="console-section">
+        <div class="console-section-head">
+          <div class="console-section-text">
+            <h2 class="console-section-title">字节账本</h2>
+            <p class="console-section-note">
+              上面那条是**瞬时速率**（采样表，只留 72 小时）；这里是**字节账本**
+              （`traffic_ledger`，逐分钟把增量累加，保留 400 天）——
+              「今日 / 本月 / 累计」与按房间、按用户的用量都取自它。
+              中继重启、同一房间被多台节点同时转发都不会再让数字归零或互相覆盖。
+              纵轴单位是**每个桶的字节数**（左：每分钟；右：每天），不是 bit/s。
+            </p>
+          </div>
+          <div class="legend">
+            <span class="legend-item"><span class="legend-line legend-rx" /> 接收</span>
+            <span class="legend-item"><span class="legend-line legend-tx" /> 发送</span>
+          </div>
+        </div>
+        <div class="ledger-grid">
+          <div class="ledger-cell">
+            <div class="ledger-title">每分钟（本区间）</div>
+            <Sparkline :points="bytesSeries" compare :height="80" />
+          </div>
+          <div class="ledger-cell">
+            <div class="ledger-title">近 30 天</div>
+            <Sparkline :points="daySeries" compare :height="80" />
+          </div>
+        </div>
       </section>
 
       <!-- 外来网络归因 -->
@@ -308,6 +390,7 @@ const cards = computed(() => {
               <tr>
                 <th>房间</th>
                 <th class="table-num">peer</th>
+                <th class="table-num">今日</th>
                 <th class="table-num">累计接收</th>
                 <th class="table-num">累计发送</th>
                 <th class="col-spark">趋势</th>
@@ -317,6 +400,7 @@ const cards = computed(() => {
               <tr v-for="r in roomSeries" :key="r.id">
                 <td class="wrap-anywhere">{{ r.label }}</td>
                 <td class="table-num">{{ r.peers ?? 0 }}</td>
+                <td class="table-num">{{ formatBytes((r.today?.rxBytes ?? 0) + (r.today?.txBytes ?? 0)) }}</td>
                 <td class="table-num">{{ formatBytes(r.rxBytes ?? 0) }}</td>
                 <td class="table-num">{{ formatBytes(r.txBytes ?? 0) }}</td>
                 <td>
@@ -343,6 +427,7 @@ const cards = computed(() => {
               <tr>
                 <th>节点</th>
                 <th class="table-num">peer</th>
+                <th class="table-num">今日</th>
                 <th class="table-num">实时接收</th>
                 <th class="table-num">实时发送</th>
                 <th class="col-spark">趋势</th>
@@ -352,11 +437,53 @@ const cards = computed(() => {
               <tr v-for="n in nodeSeries" :key="n.id">
                 <td class="wrap-anywhere">{{ n.label }}</td>
                 <td class="table-num">{{ n.peers }}</td>
+                <td class="table-num">{{ formatBytes((n.today?.rxBytes ?? 0) + (n.today?.txBytes ?? 0)) }}</td>
                 <td class="table-num">{{ formatBitrate(n.rxBps) }}</td>
                 <td class="table-num">{{ formatBitrate(n.txBps) }}</td>
                 <td>
                   <Sparkline :points="n.points" compare :height="34" :area="false" />
                 </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- 按用户 -->
+      <section class="console-section">
+        <div class="console-section-head">
+          <div class="console-section-text">
+            <h2 class="console-section-title">按用户</h2>
+            <p class="console-section-note">
+              今日字节与终身用量（「累计用量」就是用户列表里那个配额进度用的数）。
+              房间的字节按成员**当前上报的实时带宽占比**分摊给成员 ——
+              EasyTier 的中继侧 peer 列表只有 peer_id，拿不到"哪个成员用了多少"，
+              这是零客户端改动下最接近事实的口径。
+            </p>
+          </div>
+        </div>
+        <div v-if="users.length === 0" class="empty">今日还没有记录到用户流量。</div>
+        <div v-else class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>用户</th>
+                <th class="table-num">今日接收</th>
+                <th class="table-num">今日发送</th>
+                <th class="table-num">累计用量</th>
+                <th class="table-num">配额</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="u in users" :key="u.id">
+                <td class="wrap-anywhere">
+                  <div>{{ u.displayName }}</div>
+                  <div class="cell-sub mono">{{ u.username }}</div>
+                </td>
+                <td class="table-num">{{ formatBytes(u.todayRxBytes) }}</td>
+                <td class="table-num">{{ formatBytes(u.todayTxBytes) }}</td>
+                <td class="table-num">{{ formatBytes(u.usedBytes) }}</td>
+                <td class="table-num">{{ u.quotaBytes ? formatBytes(u.quotaBytes) : '不限' }}</td>
               </tr>
             </tbody>
           </table>
@@ -409,6 +536,20 @@ const cards = computed(() => {
 }
 .col-spark {
   width: 200px;
+}
+/* 账本两联图：窄屏自动堆叠 */
+.ledger-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--s-5);
+}
+.ledger-cell {
+  min-width: 0;
+}
+.ledger-title {
+  font-size: var(--fs-xs);
+  color: var(--paper-dim);
+  margin-bottom: var(--s-2);
 }
 .notice-body {
   flex: 1;

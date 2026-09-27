@@ -199,7 +199,33 @@ async function main(): Promise<void> {
       peers: sample.peerCount + nodeBps.peers,
     });
 
-    let attributed = 0;
+    /**
+     * 真实账本入账：把"从实例启动算起的累计值"变成增量，写进 room_usage / users.used_bytes /
+     * traffic_ledger（见 services/traffic-ledger.ts）。以前这里直接把累计值覆盖写进
+     * room_usage，于是中继一重启房间累计就归零 —— 控制台的「累计流量」因此长期不可信。
+     *
+     * 主控中继换了实例（重启）时先丢基线：新实例的计数器从 0 开始，
+     * 保留旧基线会让回退判定把"新实例的累计"当成增量重复入账。
+     */
+    const relayStartedAt = app.relay.status().startedAt;
+    if (relayStartedAt !== lastRelayStartedAt) {
+      lastRelayStartedAt = relayStartedAt;
+      app.accountant.forgetSource('master');
+    }
+    const accounted = app.accountant.account(
+      'master',
+      sample.foreignNetworks.map((fn) => ({
+        networkName: fn.networkName,
+        rxBytes: fn.rxBytes,
+        txBytes: fn.txBytes,
+        peerCount: fn.peerCount,
+      })),
+    );
+
+    /**
+     * 房间维度的**瞬时速率**曲线仍写 traffic_samples（流量页的近一小时曲线用它）；
+     * 字节账本在 accountant 里写（两者分工见 db/traffic.ts 的注释）。
+     */
     for (const fn of masterForeign) {
       app.traffic.record({
         scope: 'room',
@@ -211,11 +237,8 @@ async function main(): Promise<void> {
         txBps: fn.txBps,
         peers: fn.peerCount,
       });
-      if (fn.roomId) {
-        app.rooms.incrementUsage(fn.roomId, fn.rxBytes, fn.txBytes, fn.peerCount);
-        attributed += 1;
-      }
     }
+    const attributed = accounted.rooms;
 
     // 每 6 秒推一次，避免高频刷新压垮浏览器
     const now = Date.now();
@@ -280,10 +303,19 @@ async function main(): Promise<void> {
         relay: { ...app.relay.status(), foreignNetworks: masterForeign },
       });
     }
-    log.debug('中继采样', { peers: sample.peerCount, rooms: foreignAll.length, attributed });
+    log.debug('中继采样', {
+      peers: sample.peerCount,
+      rooms: foreignAll.length,
+      attributed,
+      rxDelta: accounted.rxBytes,
+      txDelta: accounted.txBytes,
+      userBytes: accounted.userBytes,
+    });
   });
 
   let lastPlatformPush = 0;
+  /** 主控中继实例的启动时间：换了实例就要丢掉账本基线（见上面的 forgetSource） */
+  let lastRelayStartedAt: string | null = null;
   app.relay.startPolling(5000);
 
   // 2) 节点健康检查 + 状态推送
@@ -364,8 +396,19 @@ async function main(): Promise<void> {
       if (removed < 2000) break;
       await new Promise((resolve) => setImmediate(resolve));
     }
-    if (sessions > 0 || samples > 0 || chat > 0) {
-      log.debug('定期清理完成', { sessions, samples, chat });
+    /**
+     * 流量账本保留 400 天：采样表（72 小时）管曲线，账本管"这个月用了多少"。
+     * 同样分批 —— 一年下来按分钟桶 × 维度也就百万级行，一批 2000 行足够。
+     */
+    let ledger = 0;
+    for (let i = 0; i < 2000; i += 1) {
+      const removed = app.ledger.pruneBatch(400, 2000);
+      ledger += removed;
+      if (removed < 2000) break;
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    if (sessions > 0 || samples > 0 || chat > 0 || ledger > 0) {
+      log.debug('定期清理完成', { sessions, samples, chat, ledger });
     }
     /**
      * 维护窗口里做一次显式 checkpoint：把 WAL 累积的页写回主库并截断文件。

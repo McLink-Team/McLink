@@ -7,6 +7,7 @@
 import { Routes } from '@mclink/shared';
 import type { App } from '../app.ts';
 import type { RelayedNetworkSample } from '../services/nodes.ts';
+import type { AccountResult } from '../services/traffic-ledger.ts';
 import type { Router, Ctx } from '../http/kit.ts';
 import { bearerToken, optInt, optStr } from './helpers.ts';
 import { HttpError } from '../util/errors.ts';
@@ -43,6 +44,11 @@ export function registerAgentRoutes(router: Router, app: App): void {
       listenPort: result.node.listenPort,
       connectPort: result.node.connectPort,
     });
+    /**
+     * 重新注册 = 换了节点实例（或重装），它的 foreign 计数器从 0 开始。
+     * 丢掉这个来源的账本基线，避免把"新实例的累计"当成增量重复入账。
+     */
+    app.accountant.forgetSource(`node:${result.node.id}`);
     return result;
   });
 
@@ -63,6 +69,8 @@ export function registerAgentRoutes(router: Router, app: App): void {
     if (Array.isArray(body.roomTraffic)) {
       // 存成 const 再进闭包：TS 的类型收窄不会穿过函数边界
       const roomTraffic = body.roomTraffic;
+      /** 本轮入账结果（房间/用户字节账本），循环里只有在房间登记过时才赋值 */
+      const accountedRef: { value: AccountResult | null } = { value: null };
       const items: Array<Parameters<App['traffic']['record']>[0]> = [];
       /** 这个节点此刻在转发的房间网络 —— 给控制台的「外来网络」做全网聚合 */
       const relayed: RelayedNetworkSample[] = [];
@@ -103,7 +111,13 @@ export function registerAgentRoutes(router: Router, app: App): void {
             peers: peerCount,
           });
           if (roomRow) {
-            app.rooms.incrementUsage(roomRow.id, rxBytes, txBytes, peerCount);
+            /**
+             * 房间/用户的**字节账本**交给会计模块：节点上报的是"自节点实例启动算起的
+             * 累计值"，直接累加会重复记账、节点一重启又归零（见 services/traffic-ledger.ts）。
+             */
+            accountedRef.value = app.accountant.account(`node:${row.id}`, [
+              { networkName, rxBytes, txBytes, peerCount },
+            ]);
           }
         }
         app.traffic.recordMany(items);
@@ -113,6 +127,16 @@ export function registerAgentRoutes(router: Router, app: App): void {
          */
         app.nodeService.noteRelayingNetworks(row.id, relayed);
       });
+      const accounted = accountedRef.value;
+      if (accounted && accounted.rxBytes + accounted.txBytes > 0) {
+        log.debug('子节点流量入账', {
+          node: row.id,
+          rxDelta: accounted.rxBytes,
+          txDelta: accounted.txBytes,
+          rooms: accounted.rooms,
+          userBytes: accounted.userBytes,
+        });
+      }
     }
 
     // 节点级样本

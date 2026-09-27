@@ -13,6 +13,7 @@ import { buildOverview } from './public.ts';
 import { DEFAULT_SETTINGS, toPublicSettings } from '../services/settings.ts';
 import { SCHEMA_VERSION } from '../db/schema.ts';
 import { mergeRelayedNetworks } from '../services/nodes.ts';
+import { localBucket, localDay } from '../db/traffic.ts';
 
 const log = logger('api:admin');
 
@@ -58,6 +59,11 @@ function redactPatch(patch: Partial<PlatformSettings>): Record<string, unknown> 
  */
 function splitPatterns(value: string): string[] {
   return value.split(/\s+/).filter((s) => s.length > 0);
+}
+
+/** 账本用的分钟桶：`minutes` 分钟前的那个桶（本地时间，与 `traffic_ledger.bucket` 同口径） */
+function bucketSince(minutes: number): string {
+  return localBucket(new Date(Date.now() - Math.max(1, minutes) * 60_000));
 }
 
 export function registerAdminRoutes(router: Router, app: App): void {
@@ -414,6 +420,23 @@ export function registerAdminRoutes(router: Router, app: App): void {
     /** 全网聚合要用：所有在线子节点的速率之和（离线节点表里还留着最后上报的数，不算） */
     const nodeBps = app.nodes.totalBps();
 
+    /**
+     * 字节账本（`traffic_ledger`）：今日/本月/累计、逐房间与逐用户的"用了多少流量"都读它。
+     * 它记的是**增量累加**，所以中继重启、多台节点同时转发都不会让数字失真
+     * （原因见 db/schema.ts 的 V22 迁移注释与 services/traffic-ledger.ts）。
+     */
+    const today = localDay();
+    const monthStart = localDay(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
+    /** 各维度"今日"的明细，查一次复用（按 scope_id 索引） */
+    const ledgerOf = (scope: 'room' | 'node' | 'user'): Map<string, { rxBytes: number; txBytes: number }> =>
+      new Map(
+        app.ledger.byScope({ scope, sinceDay: today, limit: 1000 }).map((row) => [
+          row.scopeId,
+          { rxBytes: row.rxBytes, txBytes: row.txBytes },
+        ]),
+      );
+    const todayBytes = app.ledger.sum({ scope: 'platform', scopeId: 'all', sinceDay: today });
+
     const rooms = scope === 'room' && scopeId
       ? [{ id: scopeId, label: scopeId, points: app.traffic.series('room', scopeId, since, 480) }]
       : app
@@ -425,9 +448,11 @@ export function registerAdminRoutes(router: Router, app: App): void {
               id: row.id,
               label: `${row.name} (${row.code})`,
               points: app.traffic.series('room', row.id, since, 120),
+              /** 累计流量（账本累加，重启不归零、两台节点同时转发也会相加） */
               rxBytes: usage?.rxBytes ?? 0,
               txBytes: usage?.txBytes ?? 0,
               peers: usage?.peers ?? 0,
+              today: ledgerOf('room').get(row.id) ?? { rxBytes: 0, txBytes: 0 },
             };
           });
 
@@ -438,6 +463,8 @@ export function registerAdminRoutes(router: Router, app: App): void {
       rxBps: n.rxBps,
       txBps: n.txBps,
       peers: n.peers,
+      /** 今日字节（账本口径，与「累计流量」同一份数据） */
+      today: ledgerOf('node').get(n.id) ?? { rxBytes: 0, txBytes: 0 },
     }));
 
     /**
@@ -496,7 +523,37 @@ export function registerAdminRoutes(router: Router, app: App): void {
       foreignNetworks,
       rooms,
       nodes,
-      totals: app.traffic.todayTotals(),
+      /**
+       * 按用户：今日字节 + 终身用量（`users.used_bytes`，配额判定也用它）。
+       * 分摊方式见 services/traffic-ledger.ts 的 `#memberShares`：按成员上报的实时
+       * 带宽占比把房间增量分给成员 —— EasyTier 的 foreign peer 列表只给 peer_id，
+       * 拿不到"哪个成员用了多少"（upstream 的 `PeerInfo` 里 IP 字段是空的）。
+       */
+      users: (() => {
+        const todayByUser = ledgerOf('user');
+        return app.users
+          .list({ limit: 200 })
+          .rows.map((u) => ({
+            id: u.id,
+            username: u.username,
+            displayName: u.display_name ?? u.username,
+            todayRxBytes: todayByUser.get(u.id)?.rxBytes ?? 0,
+            todayTxBytes: todayByUser.get(u.id)?.txBytes ?? 0,
+            usedBytes: u.used_bytes,
+            quotaBytes: u.quota_bytes,
+          }))
+          .filter((u) => u.usedBytes > 0 || u.todayRxBytes > 0 || u.todayTxBytes > 0);
+      })(),
+      /** 今日累计（页面顶部那两张卡片的真实数值） */
+      totals: { rxBytes: todayBytes.rxBytes, txBytes: todayBytes.txBytes },
+      totalsRange: {
+        today: todayBytes,
+        month: app.ledger.sum({ scope: 'platform', scopeId: 'all', sinceDay: monthStart }),
+        all: app.ledger.sum({ scope: 'platform', scopeId: 'all' }),
+      },
+      /** 分钟桶字节（"每分钟走了多少"）与近 30 天（月视图） */
+      bytes: app.ledger.bucketSeries({ scope: 'platform', scopeId: 'all', sinceBucket: bucketSince(minutes), limit: 480 }),
+      days: app.ledger.daySeries(30),
     };
   }, { auth: true, admin: true });
 

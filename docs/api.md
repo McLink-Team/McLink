@@ -712,7 +712,20 @@
 * `PATCH /admin/users/:id`：`{ banned?, role?, quotaBytes?, maxRooms?, resetUsage? }`。
   不能封禁自己、不能撤销自己的管理员权限。封禁会同时删除该用户全部会话。
 * `GET /admin/traffic`：`minutes` 会被裁剪到 5–10080（7 天），`scope=room|node|platform`；
-  响应含 `platform.points`、`foreignNetworks`、`rooms[]`、`nodes[]`、`totals`。
+  响应含 `platform.points`、`foreignNetworks`、`rooms[]`、`nodes[]`、`totals`，以及
+  **字节账本**三件套（2026-09-28 起，见下）：
+  * `totalsRange: { today, month, all }` —— 今日 / 本月 / 累计（都取自 `traffic_ledger`）；
+  * `bytes[]: { bucket, rxBytes, txBytes }` —— 分钟桶字节（"每分钟走了多少"）；
+  * `days[]: { day, rxBytes, txBytes }` —— 近 30 天（缺数据的日子补 0）；
+  * `users[]: { id, username, displayName, todayRxBytes, todayTxBytes, usedBytes, quotaBytes }`
+    —— 按用户的今日与终身用量（只列有用量的账号）；
+  * `rooms[].today` / `nodes[].today` —— 各自今日的字节数。
+  口径：`traffic_samples` 存的是**瞬时速率**（5 秒一条、留 72 小时），
+  `traffic_ledger` 存的是**增量字节账本**（分钟桶、留 400 天）。
+  「累计流量」「用户用量」一律以账本为准 —— 前者会被中继重启与多台节点同时转发搞坏
+  （原因与修法见 `server/src/services/traffic-ledger.ts` 的头部注释）。
+  用户维度的分摊方式：把房间的字节按成员**当前上报的实时带宽占比**分给成员
+  （EasyTier 中继侧的 peer 列表只有 `peer_id`，拿不到"哪个成员用了多少"）。
 * `POST /admin/relay/acl`：`aclToml` 必须包含 `[acl.acl_v1]`，否则 `400 bad_request`。
   响应 `{ ok: true, mode: "hot" | "restart" }`：`hot` 表示走 `easytier-cli acl set` 热更新，
   `restart` 表示当前 CLI 不支持，已通过重启中继生效。

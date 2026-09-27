@@ -11,6 +11,7 @@ import { APP_VERSION } from '../app.ts';
 import { mergeRelayedNetworks } from '../services/nodes.ts';
 import type { Router } from '../http/kit.ts';
 import { endpointHost, nodeConnectPort } from '../db/nodes.ts';
+import { localDay } from '../db/traffic.ts';
 import { logger } from '../logger.ts';
 import { handleUnsubscribe } from './unsubscribe.ts';
 
@@ -239,7 +240,12 @@ export function buildOverview(app: App): PlatformOverview {
   const nodeCounts = app.nodes.countByStatus();
   const sample = app.relay.latest();
   const nodeBps = app.nodes.totalBps();
-  const today = app.traffic.todayTotals();
+  /**
+   * 今日累计：读**账本**而不是采样表。
+   * 采样表存的是"某来源自启动以来的累计值"，取 `max()` 只能猜，中继一重启就失真；
+   * 账本记的是逐分钟增量之和（见 db/schema.ts 的 V22 与 services/traffic-ledger.ts）。
+   */
+  const today = app.ledger.sum({ scope: 'platform', scopeId: 'all', sinceDay: localDay() });
   const relay = app.relay.status();
   return {
     serverTime: new Date().toISOString(),
