@@ -22,6 +22,9 @@ pnpm fetch:easytier   # 下载 EasyTier 发行包到 vendor/easytier/
 pnpm dev:server       # 启动主控：http://127.0.0.1:8787
 ```
 
+> 🌐 **国内网络**：主远端是 GitHub，`git push` / `git pull` 需要挂代理（本仓库已配好 7890）
+> —— 见 **§10.2**；远端约定、主控部署路径、以及那几个"打真接口"的检查脚本都在 **§10**。
+
 首次启动会在 `server/data/` 生成 `secrets.json`（JWT / 中继密钥 / 初始管理员密码）并建管理员账号。
 管理员密码会打印在启动日志里；也可以自己指定：
 
@@ -382,3 +385,90 @@ pnpm verify:lockfile     # 退出码 0 = lockfile 与所有 package.json 一致
 
 它等价于 `pnpm install --frozen-lockfile --lockfile-only`。故意把 `package.json` 改坏
 验证过：会以退出码 1 报 `ERR_PNPM_OUTDATED_LOCKFILE`，所以是真守卫而不是摆设。
+
+## 10. 远端、网络与部署（运维笔记）
+
+### 10.1 远端：GitHub 是主远端
+
+| 远端名 | 地址 | 用途 |
+| --- | --- | --- |
+| `origin` | `https://github.com/luo-die/mclink`（私有） | **主远端**：`git push` / `git pull` 都走它 |
+| `gitlab` | `git@gitlab.com:mc7984239/mc.git` | 历史备份，**不再推**（GitLab CI 额度已用完） |
+
+推 `v*` 标签**不会**触发构建：`.github/workflows/build-clients.yml` 只留了
+`workflow_dispatch`（要出 mac 包就去 Actions →「构建客户端」→ Run workflow）。
+私有仓库额度与产物大小限制见 `docs/build-clients.md`。
+
+### 10.2 国内网络：GitHub 要挂代理（本机用 7890）
+
+不挂代理时的症状长这样（都是"连不上"，不是权限问题）：
+
+```
+fatal: unable to access 'https://github.com/luo-die/mclink.git/': Recv failure: Connection was reset
+fatal: unable to access 'https://github.com/luo-die/mclink.git/':
+       Failed to connect to github.com port 443 after 21055 ms
+```
+
+本仓库已经配好**只对 github.com 生效**的代理（写在 `.git/config`，不污染其它仓库）：
+
+```bash
+git config --local http.https://github.com.proxy http://127.0.0.1:7890
+git config --local --get-regexp proxy                            # 查看
+git config --local --unset http.https://github.com.proxy         # 关掉
+```
+
+- 想让所有仓库都走代理：把 `--local` 换成 `--global`。
+- 先确认代理本身是通的：
+
+  ```bash
+  curl -x http://127.0.0.1:7890 -sI https://github.com | head -1
+  # 期望：HTTP/1.1 200 Connection established
+  ```
+
+- 走 **SSH**（`git@github.com:` 那种地址）时代理要写进 `~/.ssh/config`：
+
+  ```
+  Host github.com
+    HostName ssh.github.com
+    Port 443
+    User git
+    IdentityFile ~/.ssh/github_mclink
+    IdentitiesOnly yes
+    ProxyCommand connect -H 127.0.0.1:7890 %h %p    # connect.exe 随 Git for Windows 一起装
+  ```
+
+> 主控服务器上如果也连不上 GitHub，同样处理；那台机器是用**只读 deploy key**
+> （`~/.ssh/github_mclink`）拉的，key 加在仓库的 Settings → Deploy keys。
+
+### 10.3 主控部署：源码目录 ≠ 运行目录
+
+- 源码克隆在 `/opt/src/mclink`（**有 `.git`**）；运行目录 `/opt/mclink/app` 是
+  `deploy/install-server.sh` 用 tar 同步出来的产物、**故意不含 `.git`** ——
+  在 `/opt/mclink/app` 里执行 `git pull` 会报 `fatal: not a git repository`。
+- 升级流程：
+
+```bash
+cd /opt/src/mclink
+git pull
+sudo bash "$PWD/deploy/install-server.sh" --skip-install --skip-web   # 无新依赖/前端改动时
+```
+
+`install-server.sh` 负责同步源码到 `/opt/mclink/app`、跑迁移、重启 `mclink-server`。
+
+### 10.4 那几个"打真接口"的检查脚本
+
+单测只覆盖纯函数，**接线错了它们抓不到** —— 这一条是踩了两次换来的：
+「心跳不下发配置」（脚本测的是 agent 从来不走的 `/agent/config` 拉取接口）、
+「手选节点落错槽」（纯函数是对的，调用处顺序错了）。所以动过相关代码后，
+对着一个**跑起来的开发主控**跑一遍：
+
+```bash
+pnpm dev:server                                # 另开一个终端保持运行（默认 8787）
+
+node scripts/check-node-config-revision.mjs    # 配置版本 +1 / 心跳下发配置（10 项）
+node scripts/check-relay-slots.mjs             # 手选节点落槽顺序（6 项；自造节点、跑完清理）
+node client/scripts/verify-platform.mjs        # 平台分支 + CI/文档静态断言（85 项）
+```
+
+三个脚本的默认管理员密码都是 `dev-only-passw0rd`，可用 `MCLINK_ADMIN_PASSWORD` /
+`MCLINK_MASTER` 覆盖；它们会在开发库里留下一次性注册密钥（未使用）。
