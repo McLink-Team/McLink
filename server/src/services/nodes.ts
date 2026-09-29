@@ -548,6 +548,22 @@ export class NodeService {
     if (fields.listenPort !== undefined && normalizePort(fields.listenPort) !== this.listenPortOf(row)) {
       this.nodes.bumpConfigRevision(id);
     }
+    /**
+     * **改名 / 改「只协助打洞」也要 +1 配置版本**（用户实测踩到的坑）。
+     *
+     * 这两项都进节点自己的 generated config：
+     *   · 名字 → 实例的 `hostname`（客户端在内核 peer 列表里看到的就是它，带 `PublicServer_` 前缀）；
+     *   · assist_only → `disable_relay_data`。
+     * 以前只有**端口**变更才会 bump，于是"在控制台把 `阿里云上海` 改成 `上海阿里云 2Mbps BGP`"
+     * 之后，节点永远不重新取配置 → 内核里还叫旧名字 → 客户端的「打洞 / 中继」角色判定
+     * 按"内核名字 ↔ 票据名字"对齐时对不上，界面上只能显示「角色未知」。
+     */
+    if (fields.name !== undefined && fields.name !== row.name) {
+      this.nodes.bumpConfigRevision(id);
+    }
+    if (fields.assistOnly !== undefined && (fields.assistOnly ? 1 : 0) !== (row.assist_only ?? 0)) {
+      this.nodes.bumpConfigRevision(id);
+    }
     this.nodes.updateMeta(id, patch);
     const fresh = this.get(id);
     this.audit.write({

@@ -94,6 +94,28 @@ check('短标签（<3 字符）不参与包含匹配，避免误吞', () => {
   assert.equal(relayRoleOf('完全无关的一台', { punchLabel: 'a', allLabels: ['a'] }), null);
 });
 
+console.log('\n▸ 用户实测的那组真实数据（词序不同 + 带宽后缀）');
+/** 票据里是长名字（含带宽/线路说明），节点内核里还是改名前的短名字 */
+const realNames = {
+  punchLabel: '上海阿里云 2Mbps BGP',
+  allLabels: ['上海阿里云 2Mbps BGP', '常山移动 200Mbps'],
+};
+check('内核 `PublicServer_阿里云上海` → 第一槽（打洞）', () => {
+  assert.equal(relayRoleOf('PublicServer_阿里云上海', realNames), 'punch');
+});
+check('内核 `PublicServer_常山移动` → 第二槽（中继）', () => {
+  assert.equal(relayRoleOf('PublicServer_常山移动', realNames), 'relay');
+});
+check('两行的角色必须不同（这次的 bug 就是这样被抓出来的）', () => {
+  const roles = ['PublicServer_阿里云上海', 'PublicServer_常山移动'].map((h) => relayRoleOf(h, realNames));
+  assert.equal(new Set(roles).size, 2, `实际 ${JSON.stringify(roles)}`);
+});
+check('字符集合匹配是"唯一命中"才认：两台都像时返回 null', () => {
+  const ambiguous = { punchLabel: '上海阿里云 2Mbps BGP', allLabels: ['上海阿里云 2Mbps BGP', '上海阿里云 200Mbps'] };
+  // `阿里云上海` 的字符同时出现在两个 label 里 → 不猜
+  assert.equal(relayRoleOf('PublicServer_阿里云上海', ambiguous), null);
+});
+
 if (process.exitCode === 1) {
   console.error('\n✗ 有断言失败');
 } else {
