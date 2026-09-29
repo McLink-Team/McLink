@@ -272,7 +272,7 @@ check('macOS 产物上传有两道口子：dmg 必传 ≤7 天，zip 由 input �
   );
 })());
 check('未签名：工作流关掉证书自动发现', gh.env?.CSC_IDENTITY_AUTO_DISCOVERY === 'false');
-check('两种触发方式都在：手动 Run workflow + 推 v* 标签', Boolean(ghOn.workflow_dispatch) && (ghOn.push?.tags ?? []).includes('v*'));
+check('只在手动触发：工作流不接受 push/tag 触发（推标签不该白花私有仓库额度）', Boolean(ghOn.workflow_dispatch) && !ghOn.push);
 check('Windows job 仍在（回归），但手动跑时默认跳过（不白花私有仓库额度）', Boolean(ghJobs.windows) && /inputs\.windows/.test(String(ghJobs.windows?.if ?? '')));
 check('pnpm 由 pnpm/action-setup 安装（不依赖 corepack 是否随 Node 分发）', /pnpm\/action-setup/.test(macSteps) && !/corepack/.test(macSteps));
 
@@ -308,6 +308,8 @@ check('写了未签名包的后果与绕过方式', /xattr -dr com\.apple\.quara
 check('写了"CI 只能在推送后验证"这条边界', /推送/.test(doc) && /未验证|无法在本地验证|只能在/.test(doc));
 check('写了 GitHub Actions 这条备用路线（GitLab 配额用完时用）', /build-clients\.yml/.test(doc) && /Run workflow/.test(doc));
 check('写了镜像仓库地址与私有仓库的前提（额度 + 500MB 存储）', /github\.com\/example\/mclink/.test(doc) && /500\s?MB/.test(doc) && /2,000|2000/.test(doc));
+check('写了远端约定（GitHub 是 origin，GitLab 只读、不再推）', /远端约定/.test(doc) && /GitLab 的远端已改名/.test(doc));
+check('没有留下过时的 `git push github main` 指令（远端已改名成 origin）', !/git push github main/.test(doc));
 check('写了 runner 不能回退到已废弃的 macos-14', /macos-15/.test(doc) && /deprecated/.test(doc));
 check('写了 Linux 硬出这条应急路线的限制（没 dmg / 没签名）', /build-macos-on-linux\.sh/.test(doc) && /hdiutil/.test(doc) && /hdiutil/.test(read('deploy/build-macos-on-linux.sh')));
 
