@@ -473,16 +473,17 @@ export function isBigPipeNode(row: NodeRow, thresholdBps: number): boolean {
 }
 
 /**
- * 中继槽（真正承载数据的那台）：**大带宽档 → 客户端实测延迟优先**。
+ * 中继槽（真正承载数据的那台）：**大带宽档 → 沿用 `selectRelays` 的权重优先规则**。
  *
- * 与 `selectRelays` 的区别只有一个：主键换成延迟而不是权重（用户要求"兜底（= 中继）节点
- * 也要按延迟优先"）。其余判据沿用同一套：真有余量的优先 → 延迟升序 → 权重降序 →
- * 空余带宽 → relayScore → peers。没有延迟提示的节点排在最后（与 `selectRelays` 一致）。
+ * 用户 2026-09-28 的两次口径最终收敛成这样：中继槽**也要权重参与**，只有权重一致时才走
+ * 后续规则（延迟 → 5ms 档内比空余带宽 → relayScore → peers）。所以这里不再另写一套比较器，
+ * 直接把候选池过滤成"大带宽档 + 能承载数据"，然后调用与槽 1 同一个 `selectRelays` ——
+ * 排序规则只有一份，改一处两处都跟着变。
  *
- * 延迟用的是**建房那个客户端上报的 tcping**（`latencyHints`）：它测的正是
+ * 延迟用的是**建房那个客户端上报的 tcping**（`latencyHints`）：权重一致时它测的正是
  * "这台机器到我这条链路"，而中继槽就是给这个房间的人用的。
  *
- * 模块级函数（不是类私有方法）是为了让单测能用假对象直接钉住这套排序
+ * 模块级函数（不是类私有方法）是为了让单测能用假对象直接钉住这套规则
  * —— 见 `test/unit.test.ts` 的 `schedule()`。
  */
 export function pickRelayNode(
@@ -496,37 +497,13 @@ export function pickRelayNode(
   if (rest.length === 0) return null;
   const big = rest.filter((c) => isBigPipeNode(c.row, thresholdBps));
   if (big.length === 0) {
-    log.warn('没有大带宽档的中继节点，中继槽只能从全部候选里按延迟挑（见设置「大带宽档门槛」）', {
+    log.warn('没有大带宽档的中继节点，中继槽只能从全部候选里挑（见设置「大带宽档门槛」）', {
       zone,
       candidates: rest.length,
     });
   }
   const candidates = big.length > 0 ? big : rest;
-
-  const hintMs = new Map<string, number>();
-  for (const hint of latencyHints) {
-    if (!hint || typeof hint.nodeId !== 'string') continue;
-    if (typeof hint.ms !== 'number' || !Number.isFinite(hint.ms) || hint.ms < 0) continue;
-    const prev = hintMs.get(hint.nodeId);
-    if (prev === undefined || hint.ms < prev) hintMs.set(hint.nodeId, hint.ms);
-  }
-  const ranked = candidates.map((c) => ({
-    candidate: c,
-    headroom: hasHeadroom(c),
-    ms: (hasHeadroom(c) ? hintMs.get(c.row.id) : undefined) ?? Number.POSITIVE_INFINITY,
-    bwFree: freeBandwidth(c.utilization),
-    score: relayScore(c.row, c.utilization),
-  }));
-  ranked.sort(
-    (a, b) =>
-      Number(b.headroom) - Number(a.headroom) ||
-      (a.ms === b.ms ? 0 : a.ms - b.ms) ||
-      b.candidate.row.weight - a.candidate.row.weight ||
-      b.bwFree - a.bwFree ||
-      b.score - a.score ||
-      a.candidate.row.peers - b.candidate.row.peers,
-  );
-  return ranked[0]?.candidate.row ?? null;
+  return selectRelays(candidates, latencyHints, 1)[0] ?? null;
 }
 
 /**

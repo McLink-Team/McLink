@@ -738,8 +738,8 @@ async function removeNode(node: RelayNode): Promise<void> {
               <span class="hint">
                 打开后这台节点**不转发房间流量**，只作为双方都能连上的公共 peer 协调 P2P 打洞
                 （生成配置写 <span class="mono">disable_relay_data</span>，EasyTier 会广播 avoid-relay）。
-                房间调度把这类节点放在**槽 1（打洞节点）**，真正承载数据的是槽 2 的中继节点 ——
-                带宽很少的机器就该这么用。
+                房间调度把这类节点放在**槽 1（打洞节点）**，真正承载数据的是槽 2 的中继节点
+                （从大带宽档里按**权重 → 权重一致才比延迟**挑出来）。带宽很少的机器就该这么用。
               </span>
             </label>
             <span class="hint">改这个会 +1 配置版本，节点下一次心跳（≤20 秒）自动应用并重启一次核心。</span>

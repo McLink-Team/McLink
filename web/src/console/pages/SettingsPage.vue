@@ -597,8 +597,9 @@ const envWhitelist = computed(() => asPatternList(env.value?.relayNetworkWhiteli
             <label class="label" for="s-scale">房间中继过载阈值（Mbps）</label>
             <input id="s-scale" v-model="form.relayScaleMbps" class="input" type="number" min="0" />
             <span class="hint">
-              某房间的中继速率（收+发）连续 3 分钟超过它，平台会把该房间的大带宽节点提到主中继位置，
-              让**之后进房的人**走大管子（房里的人不受影响）；流量回落 3 分钟后自动还原。0 = 关闭。
+              某房间的中继速率（收+发）连续 3 分钟超过它，平台会把该房间的**中继槽**换成
+              当前最空的大带宽节点，让**之后进房的人**走大管子（房里的人不受影响）；
+              流量回落 3 分钟后自动还原。0 = 关闭。
             </span>
           </div>
           <div class="field">
