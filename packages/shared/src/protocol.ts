@@ -170,6 +170,16 @@ export type ServerEvent =
   | { type: 'room.message'; roomId: string; message: unknown }
   /** 房间聊天：某条消息被房主删除 */
   | { type: 'room.messageDeleted'; roomId: string; messageId: number }
+  /**
+   * 平台**建议**切换中继（只是建议，客户端**绝不能自动切**）。
+   *
+   * 触发：这个房间的中继过载，主控已经把中继槽换成更空闲的大带宽节点 —— 但房间里
+   * 已经连上的客户端用的是进房那一刻的配置，要生效只能重取票据重建隧道（会卡顿几秒）。
+   * 玩家可能正在联机的关键时刻，所以由**他自己决定**切不切：
+   * 客户端收到这条就把 `message` 复用消息通知那条链路弹出来，玩家点「切换」再走
+   * `reenterRoom()`（不调用 leave，房主也不会关房）。老客户端会忽略这个未知事件。
+   */
+  | { type: 'room.relayHint'; roomId: string; message: string }
   /** 中继节点上下线 */
   | { type: 'node.update'; node: unknown }
   /** 平台流量心跳（管理员与房间页使用） */

@@ -1507,7 +1507,7 @@ export class RoomService {
   promoteOverloadedRooms(
     samples: ReadonlyArray<{ networkName: string; rxBps: number; txBps: number }>,
     now = Date.now(),
-  ): Array<{ roomId: string; code: string; to: string; from: string; rxBps: number; txBps: number }> {
+  ): Array<{ roomId: string; code: string; to: string; from: string; rxBps: number; txBps: number; message: string }> {
     const threshold = Math.max(0, this.settings.current.relayScaleMbps) * 1_000_000;
     if (threshold <= 0) return [];
 
@@ -1522,7 +1522,16 @@ export class RoomService {
       rate.set(row.id, current);
     }
 
-    const promoted: Array<{ roomId: string; code: string; to: string; from: string; rxBps: number; txBps: number }> = [];
+    const promoted: Array<{
+      roomId: string;
+      code: string;
+      to: string;
+      from: string;
+      rxBps: number;
+      txBps: number;
+      /** 给玩家的建议文案（客户端复用消息通知弹出来，切不切由玩家决定） */
+      message: string;
+    }> = [];
     for (const [roomId, r] of rate) {
       const total = r.rx + r.tx;
       const over = total >= threshold;
@@ -1567,6 +1576,21 @@ export class RoomService {
         this.rooms.setRelayNodeIds(roomId, [punchId, candidate.row.id]);
         this.#scaled.set(roomId, { previous: current, rxBps: r.rx, txBps: r.tx, at: now });
         this.#loadWindows.set(roomId, 0);
+        /**
+         * 给玩家一条**建议**（不是自动切换）。
+         *
+         * 为什么要人工确认：换中继要重建隧道、卡顿几秒，而玩家可能正在联机的关键时刻
+         * （打 BOSS、比赛最后一把）。所以主控只把"有更空闲的中继可用"这条信息推出去，
+         * 切不切由玩家自己决定 —— 客户端收到 `room.relayHint` 后复用消息通知那条链路
+         * 弹提示，玩家点了才走 `reenterRoom()`（那条路径不调 leave，房主也不会关房）。
+         *
+         * 同时写一条房间系统消息：聊天记录里留痕，事后追溯"这个房间被换过中继"。
+         */
+        const message =
+          '平台提示：这个房间的中继有点挤，已经为你准备了更空闲的中继。' +
+          '想切换的话回到首页在「最近进入」里点一下这个房间（会卡顿几秒）；' +
+          '请不要点「退出房间」—— 房主退出会关闭房间。不切换也不影响继续联机。';
+        this.systemMessage(roomId, message);
         promoted.push({
           roomId,
           code: row.code,
@@ -1574,6 +1598,7 @@ export class RoomService {
           from: relayId,
           rxBps: r.rx,
           txBps: r.tx,
+          message,
         });
         continue;
       }

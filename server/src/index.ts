@@ -262,13 +262,22 @@ async function main(): Promise<void> {
        */
       const promoted = app.roomService.promoteOverloadedRooms(app.nodeService.relayingNetworks());
       for (const event of promoted) {
-        log.warn('房间中继过载：已把大带宽节点提为主中继（只影响之后进房的人）', {
+        log.warn('房间中继过载：已把中继槽换成更空的大带宽节点（只影响之后进房的人）', {
           room: event.roomId,
           code: event.code,
-          bigPipe: event.to,
+          newRelay: event.to,
           demoted: event.from,
           rxBps: Math.round(event.rxBps),
           txBps: Math.round(event.txBps),
+        });
+        /**
+         * 推给房间里的玩家：**建议**切换（不是自动切）。
+         * 客户端复用消息通知那条链路弹提示，玩家自己决定；老客户端会忽略这个未知事件。
+         */
+        hub.publish(Topics.room(event.roomId), {
+          type: 'room.relayHint',
+          roomId: event.roomId,
+          message: event.message,
         });
         const row = app.rooms.findById(event.roomId);
         if (row) hub.publish(Topics.rooms, { type: 'room.update', roomId: row.id, room: toRoom(row) });
