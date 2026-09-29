@@ -91,27 +91,32 @@ node client/scripts/verify-platform.mjs    # YAML 语法 + job/tags/artifacts/�
 ### 路线 B：GitHub Actions（GitLab 额度用完时走这条）
 
 GitLab SaaS 的 macOS runner 吃**每月共享额度**，额度用完之后 `build:macos` 就起不来了
-（pipeline 报配额相关的错误，而不是构建失败）。GitHub 这边宽松得多：**公开仓库的标准
-runner 免费且不限量**，私有仓库也有每月免费额度（macOS 按 10 倍折算）。
-仓库里已经配好 `.github/workflows/build-clients.yml`，步骤与 GitLab 的 `build:macos` 一一对应
-（`--mac zip --arm64 --x64` → `assert-artifacts.mjs --macos` → `sign-macos-app.sh` → 上传 dmg/zip）。
+（pipeline 报配额相关的错误，而不是构建失败）。
+
+镜像仓库：**<https://github.com/example/backup>**（**私有** —— 公开仓库的 runner 免费不限量，
+但那等于把 mclink 的源码整个公开，所以选私有）。工作流 `.github/workflows/build-clients.yml`
+的步骤与 GitLab 的 `build:macos` 一一对应
+（`--mac zip --arm64 --x64` → `assert-artifacts.mjs --macos` → `sign-macos-app.sh` → 上传产物）。
 
 ```bash
-# 一次性：加一个 GitHub 远端并推上去（只推分支即可，不必推 tag —— 见下表）
-git remote add github git@github.com:<你的账号>/<仓库>.git
+# 一次性：加远端并推上去（只推分支，别推 tag —— 见下表）
+git remote add github https://github.com/example/backup.git
 git push github main
 ```
 
-然后 GitHub → **Actions** →「构建客户端（Windows / macOS）」→ **Run workflow**；
-跑完在这次的 **Artifacts → mclink-macos** 里下载（两个架构 × dmg/zip，共 4 个文件，保留 30 天）。
+然后 GitHub → **Actions** →「构建客户端（Windows / macOS）」→ **Run workflow**（分支选 `main`）；
+跑完在这次的 **Artifacts → `mclink-macos`** 里下载，默认是**两个 dmg**（arm64 + x64）。
 
 | 事项 | 说明 |
 | --- | --- |
-| 从哪个提交构建 | **从 `main` 跑**：1.0.9 的 mac 包要带上「mac 的更新提示不该指向 Windows 安装包」这处修复，它是打 tag 之后才提交的。版本号取自 `client/package.json`（仍是 1.0.9），文件名不变，主控照旧认。推 `v*` 标签也会触发这个工作流，那种情况下出的是标签当时的代码。 |
+| 从哪个提交构建 | **从 `main` 跑**：1.0.9 的 mac 包要带上「mac 的更新提示不该指向 Windows 安装包」这处修复，它是打 tag 之后才提交的。版本号取自 `client/package.json`（仍是 1.0.9），文件名不变，主控照旧认。 |
 | runner | pin 在 **`macos-15`**（arm64，仍在 GA）。**别改回 `macos-14`**：GitHub 已把它标记为 deprecated；也别用 `macos-latest`（会被自动迁移到新系统）或 `-intel` / `-large`（x64 / 收费的更大规格）。 |
 | Windows job | 手动跑时**默认跳过**（要出就勾上 input `windows`）—— mac 包不需要它，而私有仓库的额度按分钟扣（Windows 还按 2 倍折算）。 |
-| 额度 | 私有仓库：一次 mac 构建十几分钟，按 10 倍折算约 100+ 分钟额度；公开仓库不计量。 |
+| **别推 tag** | 推 `v*` 标签也会触发这个工作流，等于再花一次额度（一次 mac 构建 ≈ 月度额度的 1/10）。镜像仓库里只要 `main`。 |
+| 额度 | GitHub Free 的私有仓库是 **2,000 分钟/月**，macOS 按 **10 倍**折算：一次 mac 构建（十几分钟）≈ 100~200 分钟额度，一个月够十几次。 |
+| 存储 | 私有仓库的 Actions 存储只有 **500 MB**，而两个架构 × dmg + zip 差不多正好 500MB —— 所以工作流**默认只上传两个 dmg**（≈260MB，保留 7 天）。要 zip 就勾 input `full_artifacts`（只留 1 天，且可能顶到上限）。 |
 | 日志里的校验值 | 最后一步用 `shasum -a 256` 打印 dmg/zip 的校验值 —— 传完可以拿它核对有没有传错文件。 |
+| 认证 | 开发机不用装 `gh`、也不用重新授权：Windows 凭据管理器里存着 `example` 的 token（scope `repo` + `workflow`，后者是推 workflow 文件必需的），`git push` 会直接用它。 |
 
 ### 路线 C：在 Linux 服务器上硬出（应急：没 dmg、没签名）
 
@@ -176,7 +181,7 @@ CI 跑完后也可以在主控上一条命令取产物（`deploy/fetch-release-f
 `build:windows` 与 `build:macos` 两个 job 的 artifacts）。
 
 走**路线 B（GitHub Actions）**时没有这个脚本：产物是 run 页面上下载的
-`mclink-macos.zip`，解开就是那 4 个文件（`*.dmg` / `*.zip`），
+`mclink-macos.zip`，解开就是那两个 dmg（勾了 `full_artifacts` 才另有 zip），
 `scp` 进 `data/downloads/` 后按上一步改权限即可。
 
 ---

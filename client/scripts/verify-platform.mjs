@@ -259,10 +259,17 @@ check('macOS job 跑了 mac 打包 + 产物断言 + 签名脚本（与 GitLab jo
   return /dist\.mjs --mac/.test(macSteps) && /assert-artifacts\.mjs --macos/.test(macSteps) && /sign-macos-app\.sh/.test(macSteps);
 })());
 check('两个架构都在（--arm64 --x64）', /--arm64/.test(macSteps) && /--x64/.test(macSteps));
-check('macOS 产物（dmg + zip）作为 artifact 上传，且没产物就失败', (() => {
-  const up = (ghMac?.steps ?? []).find((s) => String(s.uses ?? '').startsWith('actions/upload-artifact'));
-  const p = String(up?.with?.path ?? '');
-  return p.includes('.dmg') && p.includes('.zip') && up?.with?.['if-no-files-found'] === 'error';
+check('macOS 产物上传有两道口子：dmg 必传 ≤7 天，zip 由 input 控制（私有仓库 500MB 存储上限）', (() => {
+  const ups = (ghMac?.steps ?? []).filter((s) => String(s.uses ?? '').startsWith('actions/upload-artifact'));
+  const dmg = ups.find((s) => String(s.with?.path ?? '') === 'client/release/*.dmg');
+  const zip = ups.find((s) => String(s.with?.path ?? '') === 'client/release/*.zip');
+  return (
+    Boolean(dmg) &&
+    dmg.with?.['if-no-files-found'] === 'error' &&
+    Number(dmg.with?.['retention-days'] ?? 99) <= 7 &&
+    Boolean(zip) &&
+    /inputs\.full_artifacts/.test(String(zip.if ?? ''))
+  );
 })());
 check('未签名：工作流关掉证书自动发现', gh.env?.CSC_IDENTITY_AUTO_DISCOVERY === 'false');
 check('两种触发方式都在：手动 Run workflow + 推 v* 标签', Boolean(ghOn.workflow_dispatch) && (ghOn.push?.tags ?? []).includes('v*'));
@@ -300,6 +307,7 @@ check('写了 GitLab CI 怎么触发', /build:macos/.test(doc) && /Run pipeline/
 check('写了未签名包的后果与绕过方式', /xattr -dr com\.apple\.quarantine/.test(doc) && /Gatekeeper/.test(doc));
 check('写了"CI 只能在推送后验证"这条边界', /推送/.test(doc) && /未验证|无法在本地验证|只能在/.test(doc));
 check('写了 GitHub Actions 这条备用路线（GitLab 配额用完时用）', /build-clients\.yml/.test(doc) && /Run workflow/.test(doc));
+check('写了镜像仓库地址与私有仓库的前提（额度 + 500MB 存储）', /github\.com\/example\/mclink/.test(doc) && /500\s?MB/.test(doc) && /2,000|2000/.test(doc));
 check('写了 runner 不能回退到已废弃的 macos-14', /macos-15/.test(doc) && /deprecated/.test(doc));
 check('写了 Linux 硬出这条应急路线的限制（没 dmg / 没签名）', /build-macos-on-linux\.sh/.test(doc) && /hdiutil/.test(doc) && /hdiutil/.test(read('deploy/build-macos-on-linux.sh')));
 

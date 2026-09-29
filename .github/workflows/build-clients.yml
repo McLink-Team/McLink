@@ -23,15 +23,27 @@ name: 构建客户端（Windows / macOS）
 #
 # 怎么用
 # ------
-#   git remote add github git@github.com:<你的账号>/<仓库>.git
-#   git push github main          # 只推分支即可，不必推 tag（原因见下）
+# 镜像仓库：**https://github.com/example/backup**（私有）
+#
+#   git remote add github https://github.com/example/backup.git   # 只需一次
+#   git push github main
 #   GitHub → Actions →「构建客户端」→ Run workflow
-# 跑完在这次的 Artifacts 里下载 **mclink-macos**（两个架构 × dmg/zip，共 4 个文件）。
+# 跑完在这次的 Artifacts 里下载 **mclink-macos**（默认是两个 dmg）。
 #
 # 为什么建议从 **main** 跑、而不是从 v1.0.9 标签跑：1.0.9 的 mac 包要带上
 # 「mac 客户端的更新提示不该指向 Windows 安装包」这处修复，而它是在打标签之后才提交的。
 # 版本号由 client/package.json 决定（1.0.9），文件名不变，主控下载页照旧能认。
-# 推 tag 时这个工作流也会跑（两条路线语义一致），那种情况下出的是标签当时的代码。
+# 推 tag 也会触发这个工作流（两条路线语义一致），但**别为了省事把标签一起推** ——
+# 私有仓库的额度是有限的，一次 mac 构建就要吃掉约 1/10 的月度额度。
+#
+# 额度与存储（私有仓库，GitHub Free）
+# ---------------------------------
+#   · 分钟：2,000 分钟/月，macOS 按 **10 倍**折算 → 一次 mac 构建（十几分钟）≈ 100~200 分钟额度。
+#     公开仓库不计量，但那样 mclink 的源码就公开了。
+#   · 存储：**500 MB**。一次 mac 产物（两个架构 × dmg + zip）差不多正好 500MB，
+#     所以这里**默认只上传两个 dmg**（≈260MB，玩家拖进「应用程序」用的就是它），
+#     保留 7 天；需要 zip 时勾上 input `full_artifacts`（只留 1 天，且可能超 500MB 上限）。
+#   · 校验值在日志最后一步（`shasum -a 256`）里，传完可以拿它核对有没有传错文件。
 #
 # 产物与签名
 # ----------
@@ -52,6 +64,11 @@ on:
         default: https://cnnic.link
       windows:
         description: 顺便出 Windows 包（mac 包不需要它；私有仓库会多花额度）
+        type: boolean
+        required: false
+        default: false
+      full_artifacts:
+        description: 连 zip 一起上传（私有仓库存储上限 500MB，容易超）
         type: boolean
         required: false
         default: false
@@ -170,11 +187,23 @@ jobs:
           du -ch client/release/*.dmg client/release/*.zip 2>/dev/null | tail -1 || true
           shasum -a 256 client/release/*.dmg client/release/*.zip 2>/dev/null || true
 
-      - uses: actions/upload-artifact@v4
+      # 私有仓库的 Actions 存储只有 500MB（GitHub Free），而两个架构 × dmg + zip 差不多
+      # 正好 500MB —— 默认只留 dmg（玩家双击拖进「应用程序」用的就是它），保留 7 天。
+      - name: 上传产物（dmg）
+        uses: actions/upload-artifact@v4
         with:
           name: mclink-macos
-          path: |
-            client/release/*.dmg
-            client/release/*.zip
+          path: client/release/*.dmg
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 7
+
+      # zip 是给"习惯解压"的玩家与下载页的第二入口用的：要它就勾 full_artifacts。
+      # 只留 1 天 —— 它和 dmg 加起来会顶到 500MB 的存储上限。
+      - name: 上传产物（zip，可选）
+        if: inputs.full_artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mclink-macos-zip
+          path: client/release/*.zip
+          if-no-files-found: error
+          retention-days: 1
