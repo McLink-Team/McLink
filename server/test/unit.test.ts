@@ -1523,6 +1523,7 @@ describe('房间两个槽位：打洞节点 + 中继节点', () => {
     ];
     const picked = pickRoomRelays(
       pool,
+      pool,
       [
         { nodeId: 'small', ms: 5 },
         { nodeId: 'big-slow', ms: 40 },
@@ -1534,9 +1535,28 @@ describe('房间两个槽位：打洞节点 + 中继节点', () => {
     assert.deepEqual(picked, ['punch', 'big-fast'], '槽 1 = 打洞节点；槽 2 = 大管子里延迟最低的那台');
   });
 
-  test('延迟优先是中继槽的主键：权重更高但慢的大管子照样输', () => {
+  test('打洞节点永远不会进中继槽（它不承载数据，进去等于这个房间没有中继）', () => {
+    // 打洞节点延迟最低、带宽最大、权重最高 —— 任何一条"看着该选它"的理由都给它了
+    const punchLike = cand('punch-like', { assist_only: 1, capacity_bps: 1_000_000_000, weight: 999 });
+    const plain = cand('plain', { capacity_bps: 20_000_000 });
     const picked = pickRoomRelays(
-      [cand('punch', { assist_only: 1 }), cand('heavy', { weight: 500 }), cand('light', { weight: 1 })],
+      [punchLike, plain],
+      [punchLike, plain],
+      [
+        { nodeId: 'punch-like', ms: 1 },
+        { nodeId: 'plain', ms: 300 },
+      ],
+      2,
+      BIG,
+    );
+    assert.deepEqual(picked, ['punch-like', 'plain'], '中继槽只能是能承载数据的那台');
+  });
+
+  test('延迟优先是中继槽的主键：权重更高但慢的大管子照样输', () => {
+    const pool = [cand('punch', { assist_only: 1 }), cand('heavy', { weight: 500 }), cand('light', { weight: 1 })];
+    const picked = pickRoomRelays(
+      pool,
+      pool,
       [
         { nodeId: 'heavy', ms: 90 },
         { nodeId: 'light', ms: 12 },
@@ -1548,8 +1568,10 @@ describe('房间两个槽位：打洞节点 + 中继节点', () => {
   });
 
   test('没有标 assist 的节点时，槽 1 退回原规则（与旧行为一致）', () => {
+    const pool = [cand('w-high', { weight: 300 }), cand('w-low', { weight: 1 })];
     const picked = pickRoomRelays(
-      [cand('w-high', { weight: 300 }), cand('w-low', { weight: 1 })],
+      pool,
+      pool,
       [
         { nodeId: 'w-high', ms: 200 },
         { nodeId: 'w-low', ms: 5 },
@@ -1561,9 +1583,51 @@ describe('房间两个槽位：打洞节点 + 中继节点', () => {
     assert.deepEqual(picked, ['w-high', 'w-low']);
   });
 
-  test('大带宽档为空时中继槽不硬凑：退回全部候选并仍给两台', () => {
+  test('本区域只有打洞节点：中继槽从**别的区域**调一台（跨区兜底）', () => {
+    const zonePool = [cand('punch-east', { assist_only: 1, region: 'cn-east' } as Partial<NodeRow>)];
+    const allPool = [
+      ...zonePool,
+      cand('relay-south', { region: 'cn-south', capacity_bps: 200_000_000 }),
+      cand('relay-north', { region: 'cn-north', capacity_bps: 200_000_000 }),
+    ];
     const picked = pickRoomRelays(
-      [cand('a', { capacity_bps: 1_000_000 }), cand('b', { capacity_bps: 2_000_000 })],
+      zonePool,
+      allPool,
+      [
+        { nodeId: 'relay-south', ms: 35 },
+        { nodeId: 'relay-north', ms: 60 },
+      ],
+      2,
+      BIG,
+      'cn-east',
+    );
+    assert.deepEqual(picked, ['punch-east', 'relay-south'], '槽 1 留在本区域；槽 2 取跨区里延迟最低的那台');
+  });
+
+  test('本区域有能承载数据的节点时**不跨区**（区域仍是硬条件）', () => {
+    const zonePool = [
+      cand('punch-east', { assist_only: 1 }),
+      cand('relay-east-slow', { capacity_bps: 200_000_000 }),
+    ];
+    const allPool = [...zonePool, cand('relay-south-fast', { capacity_bps: 200_000_000 })];
+    const picked = pickRoomRelays(
+      zonePool,
+      allPool,
+      [
+        { nodeId: 'relay-east-slow', ms: 80 },
+        { nodeId: 'relay-south-fast', ms: 5 }, // 更快的外区节点也不该被拉进来
+      ],
+      2,
+      BIG,
+    );
+    assert.deepEqual(picked, ['punch-east', 'relay-east-slow']);
+  });
+
+  test('大带宽档为空时中继槽不硬凑：退回全部候选并仍给两台', () => {
+    const pool = [cand('a', { capacity_bps: 1_000_000 }), cand('b', { capacity_bps: 2_000_000 })];
+    const picked = pickRoomRelays(
+      pool,
+      pool,
       [
         { nodeId: 'a', ms: 30 },
         { nodeId: 'b', ms: 10 },
@@ -1577,13 +1641,14 @@ describe('房间两个槽位：打洞节点 + 中继节点', () => {
   });
 
   test('capacity_bps = 0（控制台没填 = 不限）算大带宽档', () => {
-    const picked = pickRoomRelays([cand('punch', { assist_only: 1 }), cand('unset')], [], 2, BIG);
+    const pool = [cand('punch', { assist_only: 1 }), cand('unset')];
+    const picked = pickRoomRelays(pool, pool, [], 2, BIG);
     assert.equal(picked.length, 2, '没填容量的节点不该被判成小管子');
     assert.equal(picked[0], 'punch');
   });
 
-  test('只有一个候选时只返回一台（不重复、也不凭空造一台）', () => {
-    assert.deepEqual(pickRoomRelays([cand('only')], [], 2, BIG), ['only']);
-    assert.deepEqual(pickRoomRelays([], [], 2, BIG), []);
+  test('只有一个能承载的候选时只返回一台（不重复、也不凭空造一台）', () => {
+    assert.deepEqual(pickRoomRelays([cand('only')], [cand('only')], [], 2, BIG), ['only']);
+    assert.deepEqual(pickRoomRelays([], [], [], 2, BIG), []);
   });
 });

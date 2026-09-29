@@ -531,29 +531,50 @@ export function pickRelayNode(
  *   · 槽 2 放大管子：因为槽 1 转不了数据，"客户端走中继时用哪台"就由结构决定，
  *     不需要客户端配合 —— 这正是我们要的确定性。
  *
- * 两条硬纪律：
+ * 三条硬纪律：
  *   · 没有标 assist 的节点时，槽 1 退回原规则（等价于旧的"主中继"），行为向后兼容；
+ *   · **打洞节点永远不会被放进槽 2** —— 它不承载数据，放进去等于这个房间没有中继；
  *   · 没有大带宽档时槽 2 退回全部候选并记 warn，绝不为了满足约束而少给一台中继。
+ *
+ * 跨区域调中继（用户 2026-09-28 追加）：区域仍然是硬条件，但**本区域一个能承载数据的
+ * 节点都没有**（全是"只协助打洞"）时，槽 2 从**全局池**里挑一台（延迟优先 —— 跨区时
+ * 它自然就挑最近的那个外区节点），并记一条 warn。槽 1（打洞）仍然留在本区域：
+ * 打洞节点要和玩家近，"帮打洞"这件事跨区没有意义。
  */
 export function pickRoomRelays(
-  pool: readonly RelayCandidate[],
+  zonePool: readonly RelayCandidate[],
+  allPool: readonly RelayCandidate[],
   latencyHints: readonly RelayLatencyHint[],
   max: number,
   thresholdBps: number,
   zone = '',
 ): string[] {
-  if (max <= 0 || pool.length === 0) return [];
-  if (max === 1 || pool.length === 1) {
-    return selectRelays(pool, latencyHints, Math.min(max, pool.length)).map((n) => n.id);
-  }
+  if (max <= 0 || zonePool.length === 0) return [];
+  if (max === 1) return selectRelays(zonePool, latencyHints, 1).map((n) => n.id);
 
   // 槽 1：优先从「只协助打洞」的节点里挑（同一套排序：权重 → 延迟 → 空余带宽）
-  const assist = pool.filter((c) => c.row.assist_only === 1);
-  const punch = selectRelays(assist.length > 0 ? assist : pool, latencyHints, 1)[0];
+  const assist = zonePool.filter((c) => c.row.assist_only === 1);
+  const punch = selectRelays(assist.length > 0 ? assist : zonePool, latencyHints, 1)[0];
   if (!punch) return [];
 
+  /**
+   * 槽 2 的候选必须是**能承载数据的节点**（排除打洞节点）。
+   * 本区域一台都没有时跨区调 —— 这是"某个区域只有打洞节点"的唯一解法；
+   * 否则该区域建出来的房间只有一条打洞路径，实际没有中继可用。
+   */
+  const local = zonePool.filter((c) => c.row.assist_only !== 1);
+  const crossed = local.length === 0;
+  const candidates = crossed ? allPool.filter((c) => c.row.assist_only !== 1) : local;
+  if (candidates.length === 0) return [punch.id];
+  if (crossed) {
+    log.warn('本区域没有可承载数据的中继节点（只有打洞节点），已从其它区域调一台', {
+      zone,
+      candidates: candidates.length,
+    });
+  }
+
   // 槽 2：大带宽档 + 客户端实测延迟优先
-  const relay = pickRelayNode(pool, latencyHints, punch.id, thresholdBps, zone);
+  const relay = pickRelayNode(candidates, latencyHints, punch.id, thresholdBps, zone);
   return relay ? [punch.id, relay.id] : [punch.id];
 }
 
@@ -1420,14 +1441,15 @@ export class RoomService {
     }
 
     if (zone === 'auto') {
-      return this.pickRelays(pool, latencyHints, max, zone);
+      return this.pickRelays(pool, pool, latencyHints, max, zone);
     }
     const inZone = pool.filter((c) => c.row.region === zone);
     if (inZone.length === 0) {
       log.warn('指定区域没有可用节点，回退到全局调度', { zone });
-      return this.pickRelays(pool, latencyHints, max, zone);
+      return this.pickRelays(pool, pool, latencyHints, max, zone);
     }
-    return this.pickRelays(inZone, latencyHints, Math.min(max, inZone.length), zone);
+    // 注意这里传的是**两个**池：区域池用于槽 1，全局池只在"本区域没有可承载节点"时给槽 2 兜底
+    return this.pickRelays(inZone, pool, latencyHints, max, zone);
   }
 
   /** 大带宽档门槛（字节/秒），见模块级 `isBigPipeNode` */
@@ -1445,12 +1467,13 @@ export class RoomService {
    * 这里只负责把平台设置里的门槛读出来。
    */
   pickRelays(
-    pool: readonly RelayCandidate[],
+    zonePool: readonly RelayCandidate[],
+    allPool: readonly RelayCandidate[],
     latencyHints: readonly RelayLatencyHint[],
     max: number,
     zone: string,
   ): string[] {
-    return pickRoomRelays(pool, latencyHints, max, this.bigPipeThresholdBps(), zone);
+    return pickRoomRelays(zonePool, allPool, latencyHints, max, this.bigPipeThresholdBps(), zone);
   }
 
   /**
