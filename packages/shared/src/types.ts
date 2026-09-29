@@ -99,6 +99,14 @@ export interface RelayNode {
    */
   capacityBps: number;
   /**
+   * 「只协助打洞」：这台节点不转发房间数据，只作为双方都能连上的公共 peer 协调 P2P 打洞。
+   *
+   * 生成节点配置时会写 `disable_relay_data = true`（EasyTier 广播 avoid-relay，
+   * OSPF 给它的中继链路极大代价）。房间调度会把这类节点放在**槽 1（打洞节点）**，
+   * 槽 2 才是真正承载数据的中继节点。
+   */
+  assistOnly?: boolean;
+  /**
    * 实时：带宽利用率的 EWMA（0–1，时间常数 3 分钟）。
    * 只有主控进程里算得出来（需要相邻两次心跳差分），所以是运行时字段而非库里的列。
    */
@@ -462,6 +470,25 @@ export interface PlatformSettings {
   defaultCapacityPeers: number;
   /** 平台级总出口限速（kbps），0 = 不限；写入中继的 foreign_relay_bps_limit */
   relayBandwidthKbps: number;
+  /**
+   * 「大带宽档」的门槛（字节/秒）。
+   *
+   * 节点的 `capacity_bps`（控制台里那个「带宽上限 Mbps」）≥ 它就当成大管子；
+   * **没填（0 = 不限）也算大管子** —— 界面上 0 的语义本来就是"不构成约束"。
+   *
+   * 用途有两条，都只影响**新票据**（后来进房的人），在房的人不变：
+   *   1. 房间的第二台中继（兜底）优先从大带宽档里选，让每个房间一开局就握着一条大管子；
+   *   2. 房间中继流量持续过大时，把大带宽节点提到主中继位置（见 `relayScaleMbps`）。
+   */
+  relayBigPipeBps: number;
+  /**
+   * 房间中继「过载」的判据（Mbps，rx+tx 之和）。
+   *
+   * 连续 6 个 30 秒窗口（≈3 分钟）超过它，就把该房间的大带宽中继提到主中继位置，
+   * 让后来进房的人走大管子；同一房间 10 分钟内最多调一次（避免来回抖）。
+   * 0 = 关闭自动提升（兜底仍会挑大带宽节点）。
+   */
+  relayScaleMbps: number;
   /** 是否允许玩家注册（关闭则仅管理员建号） */
   registrationOpen: boolean;
   /** 中继的默认端口：子节点注册/建房不指定端口时用的就是它 */

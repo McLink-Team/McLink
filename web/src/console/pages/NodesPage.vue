@@ -207,6 +207,8 @@ const editForm = reactive({
   capacityPeers: '500',
   /** 带宽上限，单位 Mbps（按云厂商口径填，如「5 Mbps BGP」填 5；空 = 不限） */
   capacityMbps: '',
+  /** 只协助打洞：不转发房间数据（带宽很少的机器用这个） */
+  assistOnly: false,
   tags: '',
 });
 
@@ -222,6 +224,7 @@ function openEdit(node: RelayNode): void {
   editForm.capacityPeers = String(node.capacityPeers);
   // 库里存的是 bit/s，界面上按 Mbps 填（云厂商口径）；0 显示成空 = 不限
   editForm.capacityMbps = node.capacityBps > 0 ? String(node.capacityBps / 1_000_000) : '';
+  editForm.assistOnly = node.assistOnly === true;
   editForm.tags = asStringList(node.tags).join(', ');
 }
 
@@ -239,6 +242,7 @@ async function saveEdit(): Promise<void> {
       weight: toInt(editForm.weight, node.weight),
       capacityPeers: toInt(editForm.capacityPeers, node.capacityPeers),
       capacityBps: Math.max(0, Math.round(toFloat(editForm.capacityMbps, 0) * 1_000_000)),
+      assistOnly: editForm.assistOnly,
       tags: editForm.tags
         .split(/[,，\s]+/)
         .map((t) => t.trim())
@@ -726,6 +730,19 @@ async function removeNode(node: RelayNode): Promise<void> {
               按云厂商口径填（5 Mbps 就填 5）。调度按 <b>3 分钟平均</b>利用率算余量：
               带宽吃紧的节点只是不再优先分配<b>新</b>房间，不会影响正在联机的房间。
             </span>
+          </div>
+          <div class="field">
+            <label class="label" for="e-assist">只协助打洞（不中继）</label>
+            <label class="switch-row">
+              <input id="e-assist" v-model="editForm.assistOnly" type="checkbox" />
+              <span class="hint">
+                打开后这台节点**不转发房间流量**，只作为双方都能连上的公共 peer 协调 P2P 打洞
+                （生成配置写 <span class="mono">disable_relay_data</span>，EasyTier 会广播 avoid-relay）。
+                房间调度把这类节点放在**槽 1（打洞节点）**，真正承载数据的是槽 2 的中继节点 ——
+                带宽很少的机器就该这么用。
+              </span>
+            </label>
+            <span class="hint">改这个会 +1 配置版本，节点下一次心跳（≤20 秒）自动应用并重启一次核心。</span>
           </div>
         </div>
         <div class="field">

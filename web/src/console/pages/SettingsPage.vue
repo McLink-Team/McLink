@@ -119,6 +119,8 @@ const form = reactive({
   roomTtlMinutes: '720',
   defaultCapacityPeers: '500',
   relayBandwidthKbps: '0',
+  relayBigPipeMbps: '10',
+  relayScaleMbps: '8',
   /* 邮件 */
   requireEmailVerification: true,
   smtpHost: '',
@@ -150,6 +152,9 @@ function fillFrom(value: SettingsView): void {
   form.roomTtlMinutes = String(value.roomTtlMinutes);
   form.defaultCapacityPeers = String(value.defaultCapacityPeers);
   form.relayBandwidthKbps = String(value.relayBandwidthKbps);
+  // 服务端存的是字节/秒与 Mbps；界面统一按 Mbps 填（与节点编辑里的「带宽上限」同一口径）
+  form.relayBigPipeMbps = String(Math.round((value.relayBigPipeBps ?? 0) / 1_000_000));
+  form.relayScaleMbps = String(value.relayScaleMbps ?? 0);
   form.requireEmailVerification = value.requireEmailVerification;
   form.smtpHost = value.smtpHost;
   form.smtpPort = String(value.smtpPort);
@@ -202,6 +207,8 @@ async function save(): Promise<void> {
       roomTtlMinutes: Math.max(0, toInt(form.roomTtlMinutes, 720)),
       defaultCapacityPeers: Math.max(10, toInt(form.defaultCapacityPeers, 500)),
       relayBandwidthKbps: Math.max(0, toInt(form.relayBandwidthKbps, 0)),
+      relayBigPipeBps: Math.max(0, Math.round(toFloat(form.relayBigPipeMbps, 0) * 1_000_000)),
+      relayScaleMbps: Math.max(0, toInt(form.relayScaleMbps, 0)),
       requireEmailVerification: form.requireEmailVerification,
       smtpHost: form.smtpHost.trim(),
       smtpPort: Math.min(65535, Math.max(1, toInt(form.smtpPort, 465))),
@@ -573,6 +580,22 @@ const envWhitelist = computed(() => asPatternList(env.value?.relayNetworkWhiteli
             <label class="label" for="s-bw">平台级中继出口限速（kbps）</label>
             <input id="s-bw" v-model="form.relayBandwidthKbps" class="input" type="number" min="0" />
             <span class="hint">0 表示不限；会写入中继与子节点的 foreign_relay_bps_limit（按 bit/s 下发）。</span>
+          </div>
+          <div class="field">
+            <label class="label" for="s-bigpipe">大带宽档门槛（Mbps）</label>
+            <input id="s-bigpipe" v-model="form.relayBigPipeMbps" class="input" type="number" min="0" />
+            <span class="hint">
+              节点的「带宽上限」≥ 它就算大管子（**没填 = 不限，也算大管子**）。
+              房间的第二台中继（兜底）优先从大带宽档里选，让每个房间一开局就握着一条大管子。
+            </span>
+          </div>
+          <div class="field">
+            <label class="label" for="s-scale">房间中继过载阈值（Mbps）</label>
+            <input id="s-scale" v-model="form.relayScaleMbps" class="input" type="number" min="0" />
+            <span class="hint">
+              某房间的中继速率（收+发）连续 3 分钟超过它，平台会把该房间的大带宽节点提到主中继位置，
+              让**之后进房的人**走大管子（房里的人不受影响）；流量回落 3 分钟后自动还原。0 = 关闭。
+            </span>
           </div>
         </div>
       </section>

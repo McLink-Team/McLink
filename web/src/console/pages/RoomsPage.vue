@@ -43,8 +43,17 @@ interface RoomDetail {
   usage: RoomUsage;
   accessLog: AccessLogEntry[];
   aclToml: string;
-  /** 建房时锁定的中继名单（带名字；服务端老版本可能没有这个字段） */
-  scheduledRelays?: Array<{ id: string; name: string | null; region: string | null; status: string | null; exists: boolean }>;
+  /** 建房时锁定的中继名单（带名字与槽位角色；服务端老版本可能没有这个字段） */
+  scheduledRelays?: Array<{
+    id: string;
+    name: string | null;
+    region: string | null;
+    status: string | null;
+    exists: boolean;
+    /** 槽 1 = 打洞节点（不承载数据），槽 2 = 中继节点（真正转发房间流量） */
+    role?: 'punch' | 'relay';
+    assistOnly?: boolean;
+  }>;
   /** 此刻真正在承载这个房间的节点（带名字） */
   relayNodes?: Array<{ id: string; name: string; region: string | null; scheduled: boolean }>;
 }
@@ -383,14 +392,20 @@ async function recomputeAcl(): Promise<void> {
             <span class="kv-k">中继节点</span>
             <span class="kv-v wrap-anywhere">
               <!--
-                显示**节点名**而不是 n_xxxx：调度名单里存的是内部 ID，
-                运营看房间详情时要知道的是"哪台机器"，不是一串 ID。
+                两个槽位有明确分工（服务端 `RoomService.#pickRelays`）：
+                  槽 1 = 打洞节点：协助 P2P 打洞，**不承载数据**；
+                  槽 2 = 中继节点：真正转发房间流量的那台（大带宽档 + 延迟优先挑出来的）。
+                显示**节点名**而不是 n_xxxx：运营要知道的是"哪台机器"，不是一串内部 ID。
               -->
               <template v-if="detail.scheduledRelays && detail.scheduledRelays.length > 0">
-                <Badge v-for="r in detail.scheduledRelays" :key="r.id" :tone="r.exists ? 'neutral' : 'warn'">
-                  {{ relayLabel(r) }}
+                <Badge
+                  v-for="r in detail.scheduledRelays"
+                  :key="r.id"
+                  :tone="r.exists ? (r.role === 'relay' ? 'ok' : 'neutral') : 'warn'"
+                >
+                  {{ r.role === 'relay' ? '中继' : '打洞' }} · {{ relayLabel(r) }}
                 </Badge>
-                <span class="cell-sub">建房时调度（主中继 + 兜底中继）</span>
+                <span class="cell-sub">建房时调度（打洞节点 + 中继节点）</span>
               </template>
               <template v-else-if="asStringList(detail.room.relayNodeIds).length > 0">
                 {{ asStringList(detail.room.relayNodeIds).join(', ') }}

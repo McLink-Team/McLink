@@ -625,6 +625,21 @@ create index if not exists idx_ledger_node on traffic_ledger(node_id, day);
 -- 账本从 0 开始更有意义（房间与用户的其它历史数据不受影响）。
 delete from room_usage;
 `;
+/**
+ * V23：节点角色 —— 「只协助打洞」。
+ *
+ * 带宽很少的机器不该扛房间流量。`assist_only = 1` 的节点在生成配置时会写
+ * `disable_relay_data = true`：它照样是房间里的一个 peer（两端通过它交换公网地址、
+ * 协调打洞），但 OSPF 会给它的中继链路一个极大代价，**数据不会落到它身上**。
+ *
+ * 于是房间的两个槽位有了明确分工（见 `RoomService.#pickRelays`）：
+ *   槽 1 = 打洞节点（优先从 assist_only 里选），槽 2 = 中继节点（真正承载数据的那台，
+ *   从"大带宽档"里按**客户端实测延迟**优先挑）。因为槽 1 不转发数据，
+ *   "客户端走中继时用哪台"这件事就由结构决定，不需要客户端配合。
+ */
+const V23_NODE_ASSIST_ONLY = `
+alter table relay_nodes add column assist_only integer not null default 0;
+`;
 export const MIGRATIONS: readonly string[] = [
   V1_INITIAL,
   V2_RELAY_ROOM_MAP,
@@ -648,6 +663,7 @@ export const MIGRATIONS: readonly string[] = [
   V20_CLIENT_1_0_7,
   V21_CLIENT_1_0_8,
   V22_TRAFFIC_LEDGER,
+  V23_NODE_ASSIST_ONLY,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

@@ -251,6 +251,28 @@ async function main(): Promise<void> {
       // 成员在线状态刷新
       const openRows = app.rooms.listAll({ status: 'open', limit: 200 }).rows;
       for (const row of openRows) app.rooms.recalcCounts(row.id);
+
+      /**
+       * 房间中继过载 → 把大带宽节点提到主中继位置。
+       *
+       * 数据源就是子节点心跳报上来的逐房间速率（`relayingNetworks()`），
+       * 不需要主控自己转发任何流量。**只影响新票据**：后来进房/重进房的人按新顺序连，
+       * 房里的人这一局不变（用户明确接受的取舍：原来的那台已经到负载边缘，
+       * 让后来的人走大管子就够了）。
+       */
+      const promoted = app.roomService.promoteOverloadedRooms(app.nodeService.relayingNetworks());
+      for (const event of promoted) {
+        log.warn('房间中继过载：已把大带宽节点提为主中继（只影响之后进房的人）', {
+          room: event.roomId,
+          code: event.code,
+          bigPipe: event.to,
+          demoted: event.from,
+          rxBps: Math.round(event.rxBps),
+          txBps: Math.round(event.txBps),
+        });
+        const row = app.rooms.findById(event.roomId);
+        if (row) hub.publish(Topics.rooms, { type: 'room.update', roomId: row.id, room: toRoom(row) });
+      }
     }, 30_000),
   );
 

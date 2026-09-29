@@ -14,7 +14,7 @@ import { test, describe } from 'node:test';
 import { renderAcl, renderEasytierToml, buildLaunchArgs, tomlString, aclToJson, rpcPortalForListenPort, usableRpcPort } from '../src/easytier/config.ts';
 import { buildRoomAcl, isAclEmpty } from '../src/easytier/acl.ts';
 import { parseHumanNumber, parseLatencyMs } from '../src/easytier/manager.ts';
-import { hashRoomPassword, verifyRoomPassword, deriveNetworkName, resolveMemberLink, relayScore, nextRoomExpiry, selectRelays, LATENCY_TIE_BAND_MS, RoomService, type RelayCandidate } from '../src/services/rooms.ts';
+import { hashRoomPassword, verifyRoomPassword, deriveNetworkName, resolveMemberLink, relayScore, nextRoomExpiry, selectRelays, pickRoomRelays, LATENCY_TIE_BAND_MS, RoomService, type RelayCandidate } from '../src/services/rooms.ts';
 import { Db } from '../src/db/index.ts';
 import { NodeRepo } from '../src/db/nodes.ts';
 import { RoomRepo } from '../src/db/rooms.ts';
@@ -1208,13 +1208,21 @@ describe('权重优先调度 selectRelays / scheduleRelays', () => {
   });
 
   /**
-   * 只喂 `scheduleRelays` 真正用到的那几个依赖（候选查询 + 利用率采样），
-   * 这样区域过滤、带宽吃紧过滤、回退全局这些**服务层硬条件**也能被单测直接钉住。
+   * 只喂 `scheduleRelays` 真正用到的那几个依赖（候选查询 + 利用率采样 + 平台设置里的门槛），
+   * 这样区域过滤、带宽吃紧过滤、回退全局、两个槽位的选法这些**服务层规则**也能被单测直接钉住。
+   *
+   * `relayBigPipeBps: 0` 表示"所有节点都算大带宽档"（等价于没配容量），
+   * 于是中继槽就退化成"延迟优先"，正好让下面几条老断言继续描述同一个语义。
    */
-  function schedule(rows: NodeRow[], utilizationOf: (row: NodeRow) => number = () => 0) {
+  function schedule(
+    rows: NodeRow[],
+    utilizationOf: (row: NodeRow) => number = () => 0,
+    relayBigPipeBps = 0,
+  ) {
     const fake = Object.assign(Object.create(RoomService.prototype) as RoomService, {
       nodes: { listSchedulable: () => rows },
       utilizationOf,
+      settings: { current: { relayBigPipeBps, relayScaleMbps: 0 } },
     });
     return (zone: string, hints: RelayLatencyHint[] = [], max = 2): string[] =>
       RoomService.prototype.scheduleRelays.call(fake, zone, hints, max);
@@ -1489,5 +1497,93 @@ describe('流量账本与会计', () => {
     } finally {
       db.close();
     }
+  });
+});
+
+/**
+ * 两个槽位：槽 1 = 打洞节点（`assist_only`，不承载数据），槽 2 = 中继节点。
+ *
+ * 这一组盯的是用户 2026-09-28 拍板的模型：把带宽少的机器标成"只协助打洞"，
+ * 让它们只协调 P2P 打洞；真正承载数据的中继槽从**大带宽档**里按**客户端实测延迟**挑。
+ */
+describe('房间两个槽位：打洞节点 + 中继节点', () => {
+  const cand = (id: string, over: Partial<NodeRow> = {}, utilization = 0): RelayCandidate => ({
+    row: { id, capacity_peers: 500, peers: 0, weight: 100, status: 'online', ...over } as NodeRow,
+    utilization,
+  });
+  /** 大带宽档门槛固定 10 Mbps，与默认设置一致 */
+  const BIG = 10_000_000;
+
+  test('槽 1 优先挑「只协助打洞」的节点，槽 2 从大带宽档里按延迟挑', () => {
+    const pool = [
+      cand('punch', { assist_only: 1, capacity_bps: 5_000_000, weight: 1 }),
+      cand('small', { capacity_bps: 5_000_000 }), // 小管子：不该当侦中继
+      cand('big-slow', { capacity_bps: 100_000_000 }),
+      cand('big-fast', { capacity_bps: 200_000_000 }),
+    ];
+    const picked = pickRoomRelays(
+      pool,
+      [
+        { nodeId: 'small', ms: 5 },
+        { nodeId: 'big-slow', ms: 40 },
+        { nodeId: 'big-fast', ms: 20 },
+      ],
+      2,
+      BIG,
+    );
+    assert.deepEqual(picked, ['punch', 'big-fast'], '槽 1 = 打洞节点；槽 2 = 大管子里延迟最低的那台');
+  });
+
+  test('延迟优先是中继槽的主键：权重更高但慢的大管子照样输', () => {
+    const picked = pickRoomRelays(
+      [cand('punch', { assist_only: 1 }), cand('heavy', { weight: 500 }), cand('light', { weight: 1 })],
+      [
+        { nodeId: 'heavy', ms: 90 },
+        { nodeId: 'light', ms: 12 },
+      ],
+      2,
+      BIG,
+    );
+    assert.deepEqual(picked, ['punch', 'light']);
+  });
+
+  test('没有标 assist 的节点时，槽 1 退回原规则（与旧行为一致）', () => {
+    const picked = pickRoomRelays(
+      [cand('w-high', { weight: 300 }), cand('w-low', { weight: 1 })],
+      [
+        { nodeId: 'w-high', ms: 200 },
+        { nodeId: 'w-low', ms: 5 },
+      ],
+      2,
+      BIG,
+    );
+    // 槽 1 用 selectRelays（权重优先）→ w-high；槽 2 再按延迟挑 → w-low
+    assert.deepEqual(picked, ['w-high', 'w-low']);
+  });
+
+  test('大带宽档为空时中继槽不硬凑：退回全部候选并仍给两台', () => {
+    const picked = pickRoomRelays(
+      [cand('a', { capacity_bps: 1_000_000 }), cand('b', { capacity_bps: 2_000_000 })],
+      [
+        { nodeId: 'a', ms: 30 },
+        { nodeId: 'b', ms: 10 },
+      ],
+      2,
+      BIG,
+    );
+    // 两台都是小管子 → 槽 1 按原规则（权重相同则延迟优先）挑 b，槽 2 只能拿剩下的 a。
+    // 关键是**一台都不少给**：宁可两台都小，也不能让房间只剩一台中继。
+    assert.deepEqual(picked, ['b', 'a'], '池子里没有大管子：仍然给足两台');
+  });
+
+  test('capacity_bps = 0（控制台没填 = 不限）算大带宽档', () => {
+    const picked = pickRoomRelays([cand('punch', { assist_only: 1 }), cand('unset')], [], 2, BIG);
+    assert.equal(picked.length, 2, '没填容量的节点不该被判成小管子');
+    assert.equal(picked[0], 'punch');
+  });
+
+  test('只有一个候选时只返回一台（不重复、也不凭空造一台）', () => {
+    assert.deepEqual(pickRoomRelays([cand('only')], [], 2, BIG), ['only']);
+    assert.deepEqual(pickRoomRelays([], [], 2, BIG), []);
   });
 });

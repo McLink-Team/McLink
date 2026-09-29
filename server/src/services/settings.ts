@@ -30,6 +30,9 @@ export const DEFAULT_SETTINGS: PlatformSettings = {
   roomTtlMinutes: 720,
   defaultCapacityPeers: 500,
   relayBandwidthKbps: 0,
+  // 大带宽档门槛 10 Mbps（用户拍板：超过 10M 就算大管子）；房间中继过载判据 8 Mbps
+  relayBigPipeBps: 10_000_000,
+  relayScaleMbps: 8,
   registrationOpen: true,
   relayPort: 11010,
   announcement: null,

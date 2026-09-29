@@ -224,6 +224,11 @@ export function registerAdminRoutes(router: Router, app: App): void {
       capacityPeers: optInt(body, 'capacityPeers', 10, 100_000),
       // 带宽上限（bit/s）：0 = 不限。调度会按 3 分钟 EWMA 利用率算余量
       capacityBps: optInt(body, 'capacityBps', 0, 1e12),
+      /**
+       * 「只协助打洞」：不转发房间数据（生成配置写 `disable_relay_data`）。
+       * 带宽很少的机器用它当"帮打洞的"，别让它扛房间流量。
+       */
+      assistOnly: optBool(body, 'assistOnly'),
       tags: Array.isArray(body.tags) ? body.tags.map((t) => String(t).slice(0, 24)).slice(0, 8) : undefined,
     });
     app.audit.write({
@@ -307,7 +312,7 @@ export function registerAdminRoutes(router: Router, app: App): void {
     const room = toRoom(row);
     const scheduledIds = new Set(room.relayNodeIds);
     /** 调度名单里的节点（建房时锁定）—— 解析成名字，界面上不该出现 n_xxxx 这种内部 ID */
-    const scheduledRelays = room.relayNodeIds.map((id) => {
+    const scheduledRelays = room.relayNodeIds.map((id, index) => {
       const node = app.nodes.findById(id);
       return {
         id,
@@ -316,6 +321,13 @@ export function registerAdminRoutes(router: Router, app: App): void {
         status: node?.status ?? null,
         /** 节点记录已被删除时为 false */
         exists: Boolean(node),
+        /**
+         * 槽位角色（见 `RoomService.#pickRelays`）：
+         * 槽 1 = 打洞节点（协调 P2P，不承载数据），槽 2 = 中继节点（真正转发房间流量）。
+         */
+        role: index === 0 ? ('punch' as const) : ('relay' as const),
+        /** 这台是不是被标了「只协助打洞」 */
+        assistOnly: node?.assist_only === 1,
       };
     });
     const relayNodes = mergeRelayedNetworks([], app.nodeService.relayingNetworks())
@@ -337,6 +349,8 @@ export function registerAdminRoutes(router: Router, app: App): void {
       scheduledRelays,
       /** 此刻真正在替这个房间转发的节点（空数组 = 现在没有任何节点在带它） */
       relayNodes,
+      /** 非 null = 这个房间因为中继过载被自动把大带宽节点提到了主中继位置 */
+      autoScaled: app.roomService.relayScaleState(roomId),
       accessLog: app.rooms.recentAccess(roomId, 50),
       aclToml: app.roomService.aclToml(roomId),
     };
@@ -663,7 +677,15 @@ export function registerAdminRoutes(router: Router, app: App): void {
     if ('defaultQuotaBytes' in body) {
       patch.defaultQuotaBytes = body.defaultQuotaBytes === null ? null : optInt(body, 'defaultQuotaBytes', 0, Number.MAX_SAFE_INTEGER) ?? null;
     }
-    for (const key of ['defaultMaxRooms', 'defaultMaxPlayers', 'roomTtlMinutes', 'defaultCapacityPeers', 'relayBandwidthKbps'] as const) {
+    for (const key of [
+      'defaultMaxRooms',
+      'defaultMaxPlayers',
+      'roomTtlMinutes',
+      'defaultCapacityPeers',
+      'relayBandwidthKbps',
+      'relayBigPipeBps',
+      'relayScaleMbps',
+    ] as const) {
       if (key in body) {
         const value = optInt(body, key, 0, 100_000_000);
         if (value !== undefined) patch[key] = value;
