@@ -21,7 +21,7 @@ import { RoomRepo } from '../src/db/rooms.ts';
 import { UserRepo } from '../src/db/users.ts';
 import { TrafficLedgerRepo, localDay } from '../src/db/traffic.ts';
 import { TrafficAccountant } from '../src/services/traffic-ledger.ts';
-import { ewma, NodeUtilization } from '../src/services/node-utilization.ts';
+import { ewma, NodeUtilization, shedUtilFor, UTIL_SHED } from '../src/services/node-utilization.ts';
 import { parseLatencyHints, parsePolicy } from '../src/api/helpers.ts';
 import {
   buildMessage,
@@ -1218,11 +1218,12 @@ describe('权重优先调度 selectRelays / scheduleRelays', () => {
     rows: NodeRow[],
     utilizationOf: (row: NodeRow) => number = () => 0,
     relayBigPipeBps = 0,
+    relaySmallShedPercent = 90,
   ) {
     const fake = Object.assign(Object.create(RoomService.prototype) as RoomService, {
       nodes: { listSchedulable: () => rows },
       utilizationOf,
-      settings: { current: { relayBigPipeBps, relayScaleMbps: 0 } },
+      settings: { current: { relayBigPipeBps, relayScaleMbps: 0, relaySmallShedPercent } },
     });
     return (zone: string, hints: RelayLatencyHint[] = [], max = 2): string[] =>
       RoomService.prototype.scheduleRelays.call(fake, zone, hints, max);
@@ -1650,5 +1651,69 @@ describe('房间两个槽位：打洞节点 + 中继节点', () => {
   test('只有一个能承载的候选时只返回一台（不重复、也不凭空造一台）', () => {
     assert.deepEqual(pickRoomRelays([cand('only')], [cand('only')], [], 2, BIG), ['only']);
     assert.deepEqual(pickRoomRelays([], [], [], 2, BIG), []);
+  });
+});
+
+/**
+ * 小带宽节点**提前卸荷**（用户 2026-09-28 提的）：
+ * 「让小宽带节点只在宽带负载超过 80% 的时候停止新增中继，默认还是可以中继的」。
+ *
+ * 这一组盯的就是"那条线是按节点分档的、而且只挡新房间"：
+ *   · 小管子 80%（可配、封顶 90%），大管子仍然 90%；
+ *   · `capacity_bps = 0`（不限）不受影响；
+ *   · 状态机（degraded）与调度（不再接新房间）用的是**同一条线**。
+ */
+describe('小带宽节点提前卸荷（80% 停止新增中继）', () => {
+  const BIG = 10_000_000;
+  const SMALL = 5_000_000;
+  const rowOf = (id: string, region: string, over: Partial<NodeRow> = {}): NodeRow =>
+    ({ id, region, capacity_peers: 500, peers: 0, weight: 100, status: 'online', ...over }) as NodeRow;
+  /** 与前面那组同款：只喂 scheduleRelays 真正用到的依赖 */
+  function schedule(
+    rows: NodeRow[],
+    utilizationOf: (row: NodeRow) => number = () => 0,
+    relayBigPipeBps = 0,
+    relaySmallShedPercent = 90,
+  ) {
+    const fake = Object.assign(Object.create(RoomService.prototype) as RoomService, {
+      nodes: { listSchedulable: () => rows },
+      utilizationOf,
+      settings: { current: { relayBigPipeBps, relayScaleMbps: 0, relaySmallShedPercent } },
+    });
+    return (zone: string, hints: RelayLatencyHint[] = [], max = 2): string[] =>
+      RoomService.prototype.scheduleRelays.call(fake, zone, hints, max);
+  }
+
+  test('shedUtilFor：小管子 80%，大管子/未填容量仍 90%，且封顶 90%', () => {
+    assert.equal(shedUtilFor(SMALL, BIG, 80), 0.8, '小管子：80% 就卸荷');
+    assert.equal(shedUtilFor(BIG, BIG, 80), UTIL_SHED, '够大档：仍走全局线');
+    assert.equal(shedUtilFor(200_000_000, BIG, 80), UTIL_SHED);
+    assert.equal(shedUtilFor(0, BIG, 80), UTIL_SHED, '没填容量（= 不限）不算小管子');
+    assert.equal(shedUtilFor(null, BIG, 80), UTIL_SHED);
+    assert.equal(shedUtilFor(SMALL, BIG, 95), UTIL_SHED, '配得比 90% 高时封顶在 90%，不会比全局线更晚');
+    assert.equal(shedUtilFor(SMALL, BIG, 50), 0.5, '管理员可以调得更保守');
+  });
+
+  test('状态机用同一条线：小管子 85% 就 degraded，大管子 85% 还是 online', () => {
+    assert.equal(nextNodeStatus('online', 0, 500, 0.85, shedUtilFor(SMALL, BIG, 80)), 'degraded');
+    assert.equal(nextNodeStatus('online', 0, 500, 0.85, shedUtilFor(BIG, BIG, 80)), null, '大管子 85% 仍有富余');
+  });
+
+  test('调度侧：小管子到了自己的线就不再接新房间，大管子照旧', () => {
+    const rows = [
+      rowOf('small-busy', 'cn-east', { capacity_bps: SMALL }),
+      rowOf('big-idle', 'cn-east', { capacity_bps: 200_000_000 }),
+    ];
+    const util = (row: NodeRow) => (row.id === 'small-busy' ? 0.85 : 0.1);
+    // 小管子线 = 80% → 85% 那台被移出候选，只剩大管子
+    const pick = schedule(rows, util, BIG, 80);
+    assert.deepEqual(pick('cn-east'), ['big-idle'], '小管子 85% 时不再接新房间');
+    // 大管子线 = 90% → 85% 仍然合格（证明这条线是**按节点分档**的，不是全局降线）
+    const onlyBig = [rowOf('big-busy', 'cn-east', { capacity_bps: 200_000_000 })];
+    const pickBig = schedule(onlyBig, () => 0.85, BIG, 80);
+    assert.deepEqual(pickBig('cn-east'), ['big-busy']);
+    // 默认（设置里没给这个值）= 90%：85% 的小管子照旧能接
+    const pickDefault = schedule(rows, util);
+    assert.equal(pickDefault('cn-east').includes('small-busy'), true, '没配这条线时行为不变');
   });
 });

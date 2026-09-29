@@ -22,7 +22,7 @@ import { sha256, shortId, randomBytesBuf } from '../util/id.ts';
 import { renderEasytierToml, buildLaunchArgs, rpcPortalForListenPort, CONFIG_PLACEHOLDER } from '../easytier/config.ts';
 import type { ServerConfig } from '../config.ts';
 import type { SettingsService } from './settings.ts';
-import { NodeUtilization } from './node-utilization.ts';
+import { NodeUtilization, shedUtilFor } from './node-utilization.ts';
 
 const log = logger('nodes');
 
@@ -37,6 +37,10 @@ const UTIL_RESTORE = 0.7;
  * 阈值上的节点会来回抖（每 20 秒一次心跳就翻一次状态，控制台看着像抽风）。
  * 返回 null 表示维持原状。
  *
+ * `shedUtil` 是这台节点自己的带宽卸荷线（小带宽节点更低，默认 80%，见
+ * `node-utilization.ts` 的 `shedUtilFor`）—— 与调度侧「不再接新房间」用的是同一条线，
+ * 免得出现"状态还 online 但调度已经不选它"这种两套口径。
+ *
  * 注意它只影响**新票据**：已经跑着的房间不动，我们也不会去改节点配置 ——
  * 改配置要重启 easytier-core，会把该节点上所有房间一起抖断。
  */
@@ -45,8 +49,9 @@ export function nextNodeStatus(
   peers: number,
   capacityPeers: number,
   utilization: number,
+  shedUtil: number = UTIL_SHED,
 ): 'online' | 'degraded' | null {
-  const busy = peers > capacityPeers * 0.9 || utilization >= UTIL_SHED;
+  const busy = peers > capacityPeers * 0.9 || utilization >= shedUtil;
   const free = peers < capacityPeers * 0.8 && utilization <= UTIL_RESTORE;
   if (status === 'online' && busy) return 'degraded';
   if (status === 'degraded' && free) return 'online';
@@ -409,7 +414,10 @@ export class NodeService {
        */
       const peers = Math.max(0, input.peers);
       const utilization = this.util.utilization(row.id, fresh.capacity_bps ?? 0);
-      const next = nextNodeStatus(fresh.status, peers, fresh.capacity_peers, utilization);
+      const settings = this.settings.current;
+      // 与调度侧同一条线：小带宽节点 80%（可配）就卸荷，其余 90%
+      const shed = shedUtilFor(fresh.capacity_bps, settings.relayBigPipeBps, settings.relaySmallShedPercent);
+      const next = nextNodeStatus(fresh.status, peers, fresh.capacity_peers, utilization, shed);
       if (next === 'degraded') {
         this.nodes.setStatus(row.id, 'degraded');
         log.warn('节点负载吃紧：已降权，新房间不再优先分配给它（运行中的房间不受影响）', {

@@ -121,6 +121,7 @@ const form = reactive({
   relayBandwidthKbps: '0',
   relayBigPipeMbps: '10',
   relayScaleMbps: '8',
+  relaySmallShedPercent: '80',
   /* 邮件 */
   requireEmailVerification: true,
   smtpHost: '',
@@ -155,6 +156,7 @@ function fillFrom(value: SettingsView): void {
   // 服务端存的是字节/秒与 Mbps；界面统一按 Mbps 填（与节点编辑里的「带宽上限」同一口径）
   form.relayBigPipeMbps = String(Math.round((value.relayBigPipeBps ?? 0) / 1_000_000));
   form.relayScaleMbps = String(value.relayScaleMbps ?? 0);
+  form.relaySmallShedPercent = String(value.relaySmallShedPercent ?? 80);
   form.requireEmailVerification = value.requireEmailVerification;
   form.smtpHost = value.smtpHost;
   form.smtpPort = String(value.smtpPort);
@@ -209,6 +211,8 @@ async function save(): Promise<void> {
       relayBandwidthKbps: Math.max(0, toInt(form.relayBandwidthKbps, 0)),
       relayBigPipeBps: Math.max(0, Math.round(toFloat(form.relayBigPipeMbps, 0) * 1_000_000)),
       relayScaleMbps: Math.max(0, toInt(form.relayScaleMbps, 0)),
+      // 封顶 90%：小管子可以更早卸荷，但不该比全局线更晚
+      relaySmallShedPercent: Math.min(90, Math.max(1, toInt(form.relaySmallShedPercent, 80))),
       requireEmailVerification: form.requireEmailVerification,
       smtpHost: form.smtpHost.trim(),
       smtpPort: Math.min(65535, Math.max(1, toInt(form.smtpPort, 465))),
@@ -595,6 +599,15 @@ const envWhitelist = computed(() => asPatternList(env.value?.relayNetworkWhiteli
             <span class="hint">
               某房间的中继速率（收+发）连续 3 分钟超过它，平台会把该房间的大带宽节点提到主中继位置，
               让**之后进房的人**走大管子（房里的人不受影响）；流量回落 3 分钟后自动还原。0 = 关闭。
+            </span>
+          </div>
+          <div class="field">
+            <label class="label" for="s-small-shed">小带宽节点卸荷线（%）</label>
+            <input id="s-small-shed" v-model="form.relaySmallShedPercent" class="input" type="number" min="1" max="90" />
+            <span class="hint">
+              大带宽节点跑到 90% 才不再接新房间；**小管子**（填了带宽上限、但不到「大带宽档门槛」的节点）
+              到这个百分比就停止**新增中继** —— 默认 80%，封顶 90%。
+              ⚠️ 只挡新房间：已经在上面跑的房间一个都不动，节点默认仍然正常中继。
             </span>
           </div>
         </div>
