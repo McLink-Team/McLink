@@ -45,10 +45,14 @@ export interface RelayTicketNames {
 /**
  * 内核 peer 行属于哪个槽位。
  *
- * 匹配分两趟：
- *   1. 归一化后**完全相同**（正常情况都走这一趟）；
- *   2. 归一化后**互相包含**（名字被截断、被加了别的前缀/后缀时的兜底）——
- *      长名字优先，且只在 label 足够长（≥3 字符）时才认，避免"a"这种短名字误吞。
+ * 匹配分三趟（从严到宽）：
+ *   1. 归一化后**完全相同** —— 正常情况都走这一趟；
+ *   2. 归一化后**互相包含** —— 名字被截断、或末尾多了说明性的后缀；
+ *   3. **字符集合包含**（短名字的每个字符都出现在长名字里，且短名字 ≥3 字符）——
+ *      用来兜住"词序不同 / 中间多了字"的情况。用户实测就是这个：
+ *      票据里叫 `华东-A（2 Mbps）`，而节点内核里还是改名前的 `阿里云上海`
+ *      （词序正好相反），前两趟都对不上。
+ *      第 3 趟只在**唯一命中**时才认（多个 label 都像就返回 null），避免把两台搞混。
  *
  * @returns `'punch'` 打洞节点 / `'relay'` 中继节点 / `null` 认不出来（**不标角色**：
  *          标错比不标更糟，玩家会照着一个错的角色去排障）
@@ -62,17 +66,29 @@ export function relayRoleOf(hostname: string, names: RelayTicketNames): 'punch' 
     .filter((entry) => entry.key.length > 0);
   if (entries.length === 0) return null;
 
-  let hit = entries.find((entry) => entry.key === key);
-  if (!hit) {
-    hit = entries
-      .filter((entry) => entry.key.length >= 3 && (key.includes(entry.key) || entry.key.includes(key)))
-      // 长名字优先：`阿里云上海` 比 `上海` 更可能是同一台
-      .sort((a, b) => b.key.length - a.key.length)[0];
-  }
-  if (!hit) return null;
-
   const punchKey = relayNameKey(names.punchLabel ?? '');
   // 票据里没给打洞槽（老主控只下发一台）时也不瞎猜
   if (!punchKey) return null;
+
+  // ① 完全相同
+  let hit = entries.find((entry) => entry.key === key);
+  // ② 互相包含（长名字优先）
+  if (!hit) {
+    hit = entries
+      .filter((entry) => entry.key.length >= 3 && (key.includes(entry.key) || entry.key.includes(key)))
+      .sort((a, b) => b.key.length - a.key.length)[0];
+  }
+  // ③ 字符集合包含 —— 只在唯一命中时才认
+  if (!hit) {
+    const byChars = entries.filter((entry) => {
+      const [short, long] = entry.key.length <= key.length ? [entry.key, key] : [key, entry.key];
+      if (short.length < 3) return false;
+      const pool = new Set([...long]);
+      return [...short].every((ch) => pool.has(ch));
+    });
+    if (byChars.length === 1) hit = byChars[0];
+  }
+  if (!hit) return null;
+
   return punchKey === hit.key ? 'punch' : 'relay';
 }
