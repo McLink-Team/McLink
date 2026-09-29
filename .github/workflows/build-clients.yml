@@ -13,28 +13,25 @@ name: 构建客户端（Windows / macOS）
 # 出来的是**未签名**包，Apple 芯片的机器双击就是「已损坏，无法打开」。
 # 那条路能出什么、怎么出，见 deploy/build-macos-on-linux.sh 的头部注释（只出 zip，不推荐）。
 #
-# 为什么用 GitHub 而不是 GitLab
-# ----------------------------
-# 主路线原本是 GitLab CI 的 build:macos（.gitlab-ci.yml），但它跑在 GitLab SaaS 的
-# macOS runner 上、要吃每月的共享额度 —— 额度用完之后那条 job 就跑不动了。
-# GitHub 这边：**公开仓库的标准 runner 免费且不限量**，私有仓库也有每月免费额度
-# （macOS 按 10 倍折算成额度，一次构建十几分钟）。所以把仓库镜像一份到 GitHub，
-# 需要 mac 包时在这里手动跑一次即可 —— 两条路线的脚本步骤保持一致。
+# 为什么用 GitHub
+# --------------
+# GitHub 现在是**主仓库**（git 远端 `origin` 指向它），GitLab 只留作历史备份
+# （远端名 `gitlab`，不再推）。macOS 包也只剩这一条出包路径：GitLab SaaS 的
+# macOS runner 吃每月共享额度、额度已经用完，而 GitHub 私有仓库有 2,000 分钟/月
+# （macOS 按 10 倍折算），够用且可控。
 #
 # 怎么用
 # ------
-# 镜像仓库：**https://github.com/luo-die/mclink**（私有）
+# 仓库：**https://github.com/luo-die/mclink**（私有）
 #
-#   git remote add github https://github.com/luo-die/mclink.git   # 只需一次
-#   git push github main
+#   git push                       # origin 已经是 GitHub，不用再加远端
 #   GitHub → Actions →「构建客户端」→ Run workflow
 # 跑完在这次的 Artifacts 里下载 **mclink-macos**（默认是两个 dmg）。
 #
-# 为什么建议从 **main** 跑、而不是从 v1.0.9 标签跑：1.0.9 的 mac 包要带上
-# 「mac 客户端的更新提示不该指向 Windows 安装包」这处修复，而它是在打标签之后才提交的。
-# 版本号由 client/package.json 决定（1.0.9），文件名不变，主控下载页照旧能认。
-# 推 tag 也会触发这个工作流（两条路线语义一致），但**别为了省事把标签一起推** ——
-# 私有仓库的额度是有限的，一次 mac 构建就要吃掉约 1/10 的月度额度。
+# 从哪个提交构建：**直接在当前主分支（main）上跑**。1.0.9 的 mac 包要带上
+# 「mac 客户端的更新提示不该指向 Windows 安装包」这处修复，而它是在打 v1.0.9 标签
+# 之后才提交的 —— 从标签构建会漏掉它。版本号由 client/package.json 决定（1.0.9），
+# 文件名不变，主控下载页照旧能认；重跑同一个 ref 会覆盖同名 artifact，是安全的。
 #
 # 额度与存储（私有仓库，GitHub Free）
 # ---------------------------------
@@ -56,6 +53,13 @@ name: 构建客户端（Windows / macOS）
 #     双击就是「已损坏，无法打开」。玩家首次打开还需绕过 Gatekeeper，见 docs/build-clients.md。
 
 on:
+  # **只保留手动触发**（workflow_dispatch）：GitHub 现在是主仓库，标签也会推上来，
+  # 而一次 mac 构建要吃掉私有仓库月度额度的 1/10 —— 让"推个标签"顺手触发构建是危险的。
+  # 需要 mac 包时到 Actions →「构建客户端」→ Run workflow 点一次。
+  # 如果哪天确实想让 `v*` 标签自动出包，在下面加回：
+  #   push:
+  #     tags:
+  #       - 'v*'
   workflow_dispatch:
     inputs:
       master:
@@ -72,9 +76,6 @@ on:
         type: boolean
         required: false
         default: false
-  push:
-    tags:
-      - 'v*'
 
 env:
   # 没有证书时让 electron-builder 跳过签名发现（macOS 上仍由 sign-macos-app.sh 做 ad-hoc 签名）

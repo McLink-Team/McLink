@@ -1,5 +1,10 @@
 # GitLab CI：出 Windows 与 macOS 客户端安装包
 #
+# ⚠️ 现状：**主仓库已经换成 GitHub**（`origin` = github.com/luo-die/mclink，私有），
+#    GitLab 远端改名成 `gitlab` 只读保留、不再推 —— 所以本文件当前**不会被触发**。
+#    保留它的理由：GitLab 共享额度恢复后，这条是现成的备用出包路径
+#    （见 docs/build-clients.md 的 1.1；macOS 包现在默认走 1.2 的 GitHub Actions）。
+#
 # ⚠️ 本文件里的 build:windows 是**既有 job，本次 macOS 改造一行未动**（回归门槛：
 #    Windows 出包能力不能因为加 mac 支持而变坏）。macOS 的改动全部落在 build:macos。
 #
