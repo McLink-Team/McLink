@@ -554,11 +554,16 @@ interface MetaForUpdate {
   /**
    * 按平台分好的产物（主控 side buildClientDownloads）。
    *
-   * 为什么更新检查要看它：`clientVersion` / `clientDownloadUrl` 是**桌面端**那条线
-   * （平台设置里的「客户端版本」，现在是 1.0.9）。安卓有自己的版本线（1.0.x），
-   * 拿桌面版本去比就会出现"手机上提示有新版本 1.0.9，点开给的是 Windows 安装包"。
+   * 为什么更新检查要看它：`clientVersion` / `clientDownloadUrl` 是**Windows 桌面端**
+   * 那条线（平台设置里的「客户端版本」= 1.0.9，"下载地址"指向 Setup-x64.exe）。
+   * 安卓与 macOS 各有自己的产物，拿桌面版本去比就会出现
+   * "提示有新版本 1.0.9，点开给的是 Windows 安装包" —— 安卓踩过一次，macOS 同一个毛病。
    */
-  clientDownloads?: { android?: MetaArtifact | null } | null;
+  clientDownloads?: {
+    android?: MetaArtifact | null;
+    macos?: MetaArtifact | null;
+    macosIntel?: MetaArtifact | null;
+  } | null;
 }
 
 /**
@@ -597,6 +602,33 @@ export async function checkForUpdate(meta?: MetaForUpdate): Promise<void> {
       return;
     }
 
+    /*
+     * macOS 也走自己的产物，理由与安卓同源：桌面端那条线（`clientVersion` +
+     * `clientDownloadUrl`）指的是 **Windows 安装包**。不管平台一律提示的话，
+     * Mac 玩家点「立即更新」会下到一个 .exe，而且页面上的 sha256 还是那个 .exe 的
+     * —— 提示一个装不上的东西，比不提示更糟。
+     *
+     * 拿不到 mac 产物时同样**不提示**（老主控的 /meta 里没有 clientDownloads.macos）。
+     * 官网下载页不受影响：那边由主控侧 buildClientDownloads 兜底（新版本还没 mac 包时
+     * 会回落到目录里现有的 mac 包），所以这里安静地不提示即可。
+     */
+    if (isMac) {
+      const mac = m.clientDownloads?.macos ?? m.clientDownloads?.macosIntel ?? null;
+      const latest = (mac?.version ?? '').trim();
+      if (!mac || !latest || compareVersions(latest, state.localVersion) <= 0) {
+        state.update = null;
+        return;
+      }
+      const url = absoluteDownloadUrl(mac.url);
+      if (!url) {
+        state.update = null;
+        return;
+      }
+      state.update = { latest, url, sizeBytes: mac.size ?? null, sha256: mac.sha256 ?? null };
+      return;
+    }
+
+    /* Windows 走桌面端这条线（它的产物就是设置里那个 Setup-x64.exe）；Linux 目前没有独立产物，一并沿用。 */
     const latest = (m.clientVersion ?? '').trim();
     if (!latest || compareVersions(latest, state.localVersion) <= 0) {
       state.update = null;
