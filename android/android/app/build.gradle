@@ -7,16 +7,17 @@ android {
         applicationId "link.cnnic.mclink"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 104
+        versionCode 105
         /*
          * 版本号与 android/package.json 的 version **必须一致**。
          *
          * 之前这里写死 "1.0" 而 package.json 是 0.1.0、APK 文件名又是 0.1.0 ——
          * 同一个包在三个地方有三个版本号，玩家报问题时说不清装的是哪个。
          * 0.2.0 = 第一条能真正联机的安卓版本线（里程碑 2）。
-         * 1.0.3 → 1.0.4 = 跟桌面端 1.0.8 同一批：中继徽标语义、初始化即探测延迟。
+         * 1.0.4 → 1.0.5 = 跟桌面端 1.0.9 同一批：房间页「打洞节点 / 中继节点」徽标、
+         * 中继建议提醒（玩家自己点切换）、名字匹配的宽容化。
          */
-        versionName "1.0.4"
+        versionName "1.0.5"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         /*
          * 默认只打 arm64-v8a（真机都是它），但**可以用属性覆盖** —— 因为 PC 上的 Android 模拟器是 x86_64：
