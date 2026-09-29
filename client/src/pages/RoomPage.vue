@@ -263,6 +263,20 @@ const relayNames = computed<RelayTicketNames>(() => {
 
 const relayRole = (p: PeerView): 'punch' | 'relay' | null => relayRoleOf(p.hostname ?? '', relayNames.value);
 
+/**
+ * 认不出角色时，把**两边的原始名字**摆在界面上（而不是只写「角色未知」）。
+ *
+ * 为什么这么做：这一条判据的口径是"内核报的 hostname ↔ 票据里的节点名"，
+ * 两者一旦对不上，光看界面根本不知道差在哪（上一轮就是靠猜，来回装了两遍包）。
+ * 把票据里的名字直接显示出来，截图一眼就能看出是"名字被改过""带了别的前缀"，
+ * 还是"票据里压根没有这台"。
+ */
+const relayNameHint = computed(() => {
+  const labels = relayNames.value.allLabels.filter((l) => l.trim().length > 0);
+  if (labels.length === 0) return '票据里没有中继名单（老主控？）';
+  return `票据中继：${labels.join('、')}`;
+});
+
 /* ------------------------------------------------------- 丢包与回落中继 */
 
 /**
@@ -819,7 +833,12 @@ async function doLeave(): Promise<void> {
                 <div v-for="p in relayPeers" :key="`r-${p.ipv4}${p.hostname}`" class="roster-row">
                   <span class="grow roster-main">
                     <span class="roster-name">{{ p.hostname || '未命名中继' }}</span>
-                    <span class="roster-sub">{{ p.ipv4 || '平台下发的中继入口' }}</span>
+                    <!--
+                      认不出角色时把票据里的名字显示出来（见 relayNameHint 的注释）：
+                      "内核报的名字" 与 "票据里的名字" 摆在一起，一眼能看出差在哪。
+                    -->
+                    <span v-if="relayRole(p) === null" class="roster-sub">{{ relayNameHint }}</span>
+                    <span v-else class="roster-sub">{{ p.ipv4 || '平台下发的中继入口' }}</span>
                   </span>
                   <span
                     v-if="relayRole(p) === 'punch'"
@@ -839,7 +858,7 @@ async function doLeave(): Promise<void> {
                   <span
                     v-else
                     class="badge badge-neutral"
-                    title="认不出这台是打洞节点还是中继节点：内核报的 hostname 与票据里的节点名对不上"
+                    :title="`认不出这台是打洞节点还是中继节点：内核报的 hostname 是「${p.hostname}」，${relayNameHint}`"
                   >
                     角色未知
                   </span>
