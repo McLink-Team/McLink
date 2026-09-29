@@ -640,6 +640,36 @@ delete from room_usage;
 const V23_NODE_ASSIST_ONLY = `
 alter table relay_nodes add column assist_only integer not null default 0;
 `;
+/**
+ * V24：客户端版本 1.0.8 → 1.0.9（**主控版本线同时并到 1.0.9**）。
+ *
+ * 1.0.9 是一次"中继模型"的换代，玩家能感知的有四件事：
+ *   1. 每个房间两台中继分成两个槽位：**槽 1 = 打洞节点**（只协调 P2P 打洞，不承载数据）、
+ *      **槽 2 = 中继节点**（真正转发房间流量）；客户端房间页按票据顺序标「打洞节点 / 中继节点」。
+ *   2. 中继槽从「大带宽档」（默认 ≥10 Mbps；没填带宽上限也算）里挑，**权重优先、权重一致才比延迟**；
+ *      小带宽节点利用率到 **80%** 就停止新增中继（大带宽节点仍是 90%），只挡新房间。
+ *   3. 房间中继过载时，主控会把中继槽换成更空的大带宽节点，并给房里的客户端推一条
+ *      **建议**（`room.relayHint`）—— **不自动切**，玩家自己决定（切一次要重建隧道、卡几秒）。
+ *   4. 流量统计修好了：「今日/本月/累计」与「按用户用量」改成真增量累加
+ *      （新增 `traffic_ledger`，见 V22），重启不再归零。
+ * 部署侧：主控不再自带中继实例（转发全部下沉到子节点）。
+ *
+ * 纪律同前：只动"还停在上一版默认值"的部署，管理员手改过的一律不碰；
+ * 从更老的版本升上来会依次跑 V21 → V24，最终都落在 1.0.9。
+ */
+const V24_CLIENT_1_0_9 = `
+update settings
+   set value = json_set(value, '$.clientVersion', '1.0.9'),
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ where key = 'platform'
+   and json_extract(value, '$.clientVersion') = '1.0.8';
+
+update settings
+   set value = json_set(value, '$.clientDownloadUrl', '/downloads/McLink-Setup-1.0.9-x64.exe'),
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ where key = 'platform'
+   and json_extract(value, '$.clientDownloadUrl') = '/downloads/McLink-Setup-1.0.8-x64.exe';
+`;
 export const MIGRATIONS: readonly string[] = [
   V1_INITIAL,
   V2_RELAY_ROOM_MAP,
@@ -664,6 +694,7 @@ export const MIGRATIONS: readonly string[] = [
   V21_CLIENT_1_0_8,
   V22_TRAFFIC_LEDGER,
   V23_NODE_ASSIST_ONLY,
+  V24_CLIENT_1_0_9,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

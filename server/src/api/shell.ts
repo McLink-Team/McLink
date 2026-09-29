@@ -98,7 +98,7 @@ export function renderShell(
    */
   set(/(<meta\s+name="twitter:title"\s+content=")[^"]*(")/, `$1${esc(`${siteName} · ${PLATFORM_TAG}`)}$2`);
   set(/(<meta\s+name="twitter:description"\s+content=")[^"]*(")/, `$1${esc(desc)}$2`);
-  // 结构化数据里的客户端版本：写死在 HTML 里必然随发布过期（客户端已经是 1.0.8 了）
+  // 结构化数据里的客户端版本：写死在 HTML 里必然随发布过期（客户端已经是 1.0.9 了）
   set(/("softwareVersion"\s*:\s*")[^"]*(")/, `$1${esc(s.clientVersion)}$2`);
   // noscript 里的品牌与正文：不跑 JS 的爬虫只看得到这里
   out = out.replace(/<h1>[\s\S]*?<\/h1>\s*<p>/, `<h1>${esc(siteName)} —— ${esc(PLATFORM_TAG)}</h1>\n      <p>`);

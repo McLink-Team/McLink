@@ -107,9 +107,9 @@ bash deploy/sign-macos-app.sh
 
 ```bash
 # 1) 把产物拷进下载目录（Debian 上默认路径）
-sudo cp McLink-1.0.8-macos-arm64.dmg /opt/mclink/data/downloads/
-sudo cp McLink-1.0.8-macos-arm64.zip /opt/mclink/data/downloads/
-sudo chown mclink:mclink /opt/mclink/data/downloads/McLink-1.0.8-macos-*
+sudo cp McLink-1.0.9-macos-arm64.dmg /opt/mclink/data/downloads/
+sudo cp McLink-1.0.9-macos-arm64.zip /opt/mclink/data/downloads/
+sudo chown mclink:mclink /opt/mclink/data/downloads/McLink-1.0.9-macos-*
 ```
 
 ```bash
