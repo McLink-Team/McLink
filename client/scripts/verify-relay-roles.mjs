@@ -35,9 +35,15 @@ check('剥掉 PublicServer_ 前缀、去空白、忽略大小写', () => {
   assert.equal(relayNameKey('public_server_常山移动'), relayNameKey('常山移动'));
   assert.equal(relayNameKey('publicserver_常山移动'), relayNameKey('常山移动'));
 });
+check('空白 / 分隔符 / 全角括号统一（名字两侧来源不同，容错要够）', () => {
+  assert.equal(relayNameKey('阿里云 上海'), relayNameKey('阿里云-上海'));
+  assert.equal(relayNameKey('阿里云-上海'), relayNameKey('阿里云_上海'));
+  assert.equal(relayNameKey('阿里云（上海）'), relayNameKey('阿里云(上海)'));
+  assert.equal(relayNameKey('华东 · 阿里云'), relayNameKey('华东阿里云'));
+});
 check('没有前缀的名字不动（前缀只在开头剥一次）', () => {
   assert.equal(relayNameKey('阿里云上海'), '阿里云上海');
-  assert.equal(relayNameKey('常山_PublicServer_移动'), '常山_publicserver_移动');
+  assert.equal(relayNameKey('常山_PublicServer_移动'), '常山publicserver移动');
 });
 
 console.log('\n▸ 角色判定（票据 relays[0] = 打洞节点）');
@@ -72,6 +78,20 @@ check('空 hostname / 空票据 → null', () => {
 });
 check('票据里没有 punchLabel 时（老主控只给一台）→ null，不瞎猜', () => {
   assert.equal(relayRoleOf('阿里云上海', { punchLabel: null, allLabels: ['阿里云上海'] }), null);
+});
+
+console.log('\n▸ 名字被截断 / 加了别的前后缀时的兜底（互相包含）');
+check('内核名字多了后缀也能认出', () => {
+  assert.equal(relayRoleOf('PublicServer_阿里云上海_200M', names), 'punch');
+  assert.equal(relayRoleOf('PublicServer_常山移动(联通)', names), 'relay');
+});
+check('长名字优先：同时匹配到短标签时选最像的那个', () => {
+  const two = { punchLabel: '上海', allLabels: ['上海', '阿里云上海'] };
+  // `PublicServer_阿里云上海` 同时包含 `上海` 与 `阿里云上海` → 应选后者（= 中继槽）
+  assert.equal(relayRoleOf('PublicServer_阿里云上海', two), 'relay');
+});
+check('短标签（<3 字符）不参与包含匹配，避免误吞', () => {
+  assert.equal(relayRoleOf('完全无关的一台', { punchLabel: 'a', allLabels: ['a'] }), null);
 });
 
 if (process.exitCode === 1) {

@@ -14,12 +14,25 @@
 /** 内核给公共中继的 hostname 前缀（保持与 upstream 一致） */
 export const PUBLIC_SERVER_PREFIX = 'PublicServer_';
 
-/** 名字归一化：去空白、小写、剥掉公共中继前缀（大小写与分隔符都容错） */
+/**
+ * 名字归一化：去空白、小写、剥掉公共中继前缀，并把"看起来像分隔符"的字符统一掉。
+ *
+ * 为什么要容错这么多：这一条判据是"内核报的 hostname ↔ 票据里的节点名"，
+ * 而两侧的来源不同（内核那份来自节点上运行的配置，票据那份来自主控库）。
+ * 实测踩过的坑：`PublicServer_` 前缀（upstream `PUBLIC_SERVER_HOSTNAME_PREFIX`）一个都没剥，
+ * 于是两行都认不出角色。所以这里把**空白、`_`、`-`、`·`、全角/半角括号**统统归一化 ——
+ * 名字里"阿里云 上海 / 阿里云-上海 / 阿里云（上海）"这类差异不该让界面瞎猜角色。
+ */
 export function relayNameKey(name: string): string {
   return name
     .trim()
     .toLowerCase()
-    .replace(/^public[_-]?server[_-]/, '');
+    // 公共中继前缀（大小写与分隔符都容错）
+    .replace(/^public[_-]?server[_-]/, '')
+    // 空白与常见分隔符
+    .replace(/[\s_\-·•]+/g, '')
+    // 全角括号 → 半角（内容保留：`（上海）` 与 `(上海)` 视为同一个名字）
+    .replace(/[（）]/g, (ch) => (ch === '（' ? '(' : ')'));
 }
 
 export interface RelayTicketNames {
@@ -32,13 +45,34 @@ export interface RelayTicketNames {
 /**
  * 内核 peer 行属于哪个槽位。
  *
+ * 匹配分两趟：
+ *   1. 归一化后**完全相同**（正常情况都走这一趟）；
+ *   2. 归一化后**互相包含**（名字被截断、被加了别的前缀/后缀时的兜底）——
+ *      长名字优先，且只在 label 足够长（≥3 字符）时才认，避免"a"这种短名字误吞。
+ *
  * @returns `'punch'` 打洞节点 / `'relay'` 中继节点 / `null` 认不出来（**不标角色**：
  *          标错比不标更糟，玩家会照着一个错的角色去排障）
  */
 export function relayRoleOf(hostname: string, names: RelayTicketNames): 'punch' | 'relay' | null {
   const key = relayNameKey(hostname ?? '');
   if (!key) return null;
-  const known = names.allLabels.some((label) => relayNameKey(label) === key);
-  if (!known || !names.punchLabel) return null;
-  return relayNameKey(names.punchLabel) === key ? 'punch' : 'relay';
+
+  const entries = names.allLabels
+    .map((label) => ({ label, key: relayNameKey(label) }))
+    .filter((entry) => entry.key.length > 0);
+  if (entries.length === 0) return null;
+
+  let hit = entries.find((entry) => entry.key === key);
+  if (!hit) {
+    hit = entries
+      .filter((entry) => entry.key.length >= 3 && (key.includes(entry.key) || entry.key.includes(key)))
+      // 长名字优先：`阿里云上海` 比 `上海` 更可能是同一台
+      .sort((a, b) => b.key.length - a.key.length)[0];
+  }
+  if (!hit) return null;
+
+  const punchKey = relayNameKey(names.punchLabel ?? '');
+  // 票据里没给打洞槽（老主控只下发一台）时也不瞎猜
+  if (!punchKey) return null;
+  return punchKey === hit.key ? 'punch' : 'relay';
 }
