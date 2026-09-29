@@ -563,6 +563,67 @@ export function pickRoomRelays(
   return relay ? [punch.id, relay.id] : [punch.id];
 }
 
+/**
+ * 把手选节点与自动调度结果**按角色**排进两个槽位：`[槽 1 打洞, 槽 2 中继, ...额外手选]`。
+ *
+ * 为什么需要它（2026-09-29 用户实测报的问题）：建房页那颗按钮写的是
+ * 「中继节点 → 手动选择」，但服务端只是把手选节点**原样塞在数组最前面**，而客户端把
+ * `relayNodeIds[0]` 当「打洞节点」（`client/src/lib/relay-roles.ts`）—— 于是
+ * **玩家挑的中继 100% 被标成打洞节点**，平台再按"延迟优先"补一台当中继。
+ *
+ * 更糟的是补的那台取的是自动调度的**第一顺位**，也就是 `pickRoomRelays` 的**槽 1 候选**
+ * （优先挑「只协助打洞」的节点）—— 而那种节点根本不承载数据（`disable_relay_data`）。
+ * 手选一台 assist 节点时，两个槽位可能都不是数据承载者，**房间等于没有中继**。
+ *
+ * 现在的规则（按能力落槽，槽位顺序固定，`[0]` 永远是打洞）：
+ *   · 手选里**能承载数据**的第一台 → 槽 2（中继节点）—— 玩家在界面上挑的就是它；
+ *   · 手选里**只协助打洞**的第一台 → 槽 1（打洞节点）—— 它本来也当中继用不了；
+ *   · 空出来的槽由自动调度补：`auto[0]` 是槽 1 候选、`auto[1]` 是槽 2 候选
+ *     （两者同出一套规则，见 `pickRoomRelays`）；
+ *   · 多出来的手选节点挂在两个槽位后面当额外入口；**只协助打洞的不许当额外入口**
+ *     （它在界面上会被标成「中继节点」，那是错的），改为记进 rejected 让界面说清楚。
+ *
+ * 纯函数（与 `pickRoomRelays` 一样放模块级），单测直接钉住这套规则。
+ */
+export function assignRelaySlots(
+  picked: ReadonlyArray<{ id: string; assistOnly: boolean }>,
+  auto: readonly string[],
+): {
+  punch: string | null;
+  relay: string | null;
+  extra: string[];
+  rejected: Array<{ id: string; reason: string }>;
+} {
+  const pickedIds = picked.map((p) => p.id);
+  const pickedAssist = picked.filter((p) => p.assistOnly).map((p) => p.id);
+  const pickedData = picked.filter((p) => !p.assistOnly).map((p) => p.id);
+
+  /** 自动调度的槽 2 候选 = 第二顺位（没有第二台时退回第一台：单节点部署） */
+  const autoRelay = auto[1] ?? auto[0] ?? null;
+  /** 槽 2：手选里能承载数据的第一台；否则用自动调度的中继候选（它保证是能承载数据的节点） */
+  const relay = pickedData[0] ?? autoRelay;
+  /** 槽 1：手选里只协助打洞的第一台；否则用自动调度的打洞候选（避开已经占了槽 2 的那台） */
+  const autoPunch = auto[0] ?? null;
+  const punch =
+    pickedAssist[0] ??
+    (autoPunch && autoPunch !== relay ? autoPunch : null) ??
+    pickedIds.find((id) => id !== relay) ??
+    null;
+
+  const used = new Set([punch, relay].filter((x): x is string => Boolean(x)));
+  const extra: string[] = [];
+  const rejected: Array<{ id: string; reason: string }> = [];
+  for (const p of picked) {
+    if (used.has(p.id)) continue;
+    if (p.assistOnly) {
+      rejected.push({ id: p.id, reason: '只协助打洞的节点不能作为中继节点' });
+      continue;
+    }
+    extra.push(p.id);
+  }
+  return { punch, relay, extra, rejected };
+}
+
 export class RoomService {
   private readonly config: ServerConfig;
   private readonly rooms: RoomRepo;
@@ -693,18 +754,20 @@ export class RoomService {
 
     const zone = input.zone && input.zone !== '' ? input.zone : 'auto';
     /**
-     * 中继节点：用户指定优先，**平台再补一个兜底**，且与已选的不重复。
+     * 中继节点：**两个槽位，数组顺序固定 `[槽 1 打洞, 槽 2 中继]`**。
      *
-     * 自动模式（没有手选）固定下发 **2 个不同节点**：`selectRelays` 的**第一顺位 = 主中继**、
-     * **第二顺位 = 兜底中继** —— 两个名次来自**同一套规则**（权重 → 5ms 并列带 → 空余带宽 → 打分，
-     * 见 `selectRelays`），只是一次取两个。所以"兜底"不是另一套降级规则，而是这套规则下的第二名；
-     * 同一个节点在候选池里只出现一次，两名天然不重复。
+     * 自动模式（没有手选）沿用 `pickRoomRelays` 的结论：槽 1 优先「只协助打洞」的节点
+     * （它不承载数据、专职协调打洞），槽 2 从"大带宽档 + 能承载数据"的候选里挑。
      *
-     * 手选模式：手选节点照旧原样优先（`#validatePickedNodes` 只看硬条件、不看延迟），
-     * 兜底从调度结果里挑第一个**没被手选**的，避免重复占名额。
+     * 手动模式：建房页让玩家挑的是**中继节点**，所以手选节点按**能力**落槽
+     * （规则本体在模块级 `assignRelaySlots`，纯函数、有单测）：
+     *   · 能承载数据的手选节点 → 槽 2（玩家挑的就是它，不再被标成「打洞节点」）；
+     *   · 只协助打洞的手选节点 → 槽 1（它当中继也用不了）；
+     *   · 空出来的槽由自动调度补，且补的是**对应槽位**的候选 —— 以前一律取第一顺位，
+     *     会把"不承载数据的打洞节点"补进中继槽，手选一台 assist 节点时房间就没有中继了。
      *
-     * `latencyHints` 只喂给自动调度：自动模式下它就是"在同权重、延迟又要并列的候选里选谁"，
-     * 手动模式下它只决定"先挑哪台当兜底"。
+     * `latencyHints` 只喂给自动调度：自动模式下决定"同权重且延迟并列时选谁"，
+     * 手动模式下决定"补的那台先落在哪台"。
      *
      * ⚠️ **浮动切换是天然的，不需要状态机**：票据每次请求都现算，`utilization` 也是实时采样
      * （见 `scheduleRelays`），所以"这台满了 → 下次先挑另一台"会在**下一张票据**里自动生效。
@@ -713,15 +776,26 @@ export class RoomService {
      */
     const picked = this.#validatePickedNodes(input.nodeIds ?? []);
     const auto = this.scheduleRelays(zone, input.latencyHints ?? [], 2);
-    /** 平台补的那一个兜底：自动模式 = 第二顺位；手动模式 = 调度结果里第一个没被手选的 */
+    const slots = assignRelaySlots(
+      picked.ids
+        .map((id) => this.nodes.findById(id))
+        .filter((row): row is NodeRow => Boolean(row))
+        .map((row) => ({ id: row.id, assistOnly: row.assist_only === 1 })),
+      auto,
+    );
+    /** `[0]` 永远是打洞节点：客户端靠下标判角色（`client/src/lib/relay-roles.ts`） */
+    const relayNodeIds = [slots.punch, slots.relay, ...slots.extra].filter((id): id is string => Boolean(id));
+    /** 平台补的那台（不在手选名单里）—— 界面据此说明"平台补了谁" */
     const fallback =
-      picked.ids.length > 0 ? (auto.find((id) => !picked.ids.includes(id)) ?? null) : (auto[1] ?? null);
-    const relayNodeIds = picked.ids.length > 0 ? [...picked.ids, ...(fallback ? [fallback] : [])] : auto;
+      [slots.punch, slots.relay].filter((id): id is string => Boolean(id)).find((id) => !picked.ids.includes(id)) ??
+      null;
     const nodeSelection = {
       requested: input.nodeIds ?? [],
       accepted: picked.ids,
-      rejected: picked.rejected,
+      rejected: [...picked.rejected, ...slots.rejected],
       fallback,
+      /** 谁落在哪个槽：界面与控制台都读它，别再靠数组下标去猜 */
+      roles: { punch: slots.punch, relay: slots.relay },
     };
     /**
      * 硬守卫：**一个可调度的子节点都没有，就不给建房**。

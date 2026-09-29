@@ -183,6 +183,17 @@ export function registerPublicRoutes(router: Router, app: App): void {
           peers: n.peers,
           capacity: n.capacity_peers,
           status: n.status,
+          /**
+           * 「只协助打洞」：建房页的**手动选择**要用它把话说明白 ——
+           * 这种节点不承载房间数据（生成配置写 `disable_relay_data`），
+           * 玩家挑它时它会落**打洞槽**，中继由平台另补一台
+           * （见 services/rooms.ts 的 `assignRelaySlots`）。
+           *
+           * ⚠️ 这里是 `app.nodes`（**仓储**，NodeRow 行对象，字段是 snake_case），
+           * 不是 `app.nodeService` 的 `RelayNode` —— 所以取 `n.assist_only` 而不是
+           * `n.assistOnly`（同一个 map 里 `n.capacity_peers` / `n.disabled` 也是同理）。
+           */
+          assistOnly: n.assist_only === 1,
         })),
     };
   }, { auth: true });

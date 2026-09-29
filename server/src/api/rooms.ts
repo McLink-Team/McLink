@@ -37,8 +37,9 @@ export function registerRoomRoutes(router: Router, app: App): void {
 
     /**
      * 客户端建房前测到的节点延迟（**可选**，老客户端不发）：
-     * 只用来在合格候选之间排序（自动调度选谁 + 兜底挑哪台），
-     * 不会让不合格节点进入候选池，也不影响手选节点的优先级。
+     * 只用来在合格候选之间排序（自动调度选谁 + 手选模式下"平台补的那台"先落在哪台），
+     * 不会让不合格节点进入候选池，也**不决定手选节点的槽位** —— 手选按能力落槽
+     * （能承载数据的当中继、只协助打洞的当打洞，见 services/rooms.ts 的 assignRelaySlots）。
      * 解析规则见 parseLatencyHints。
      */
     const latencyHints = parseLatencyHints(body);
