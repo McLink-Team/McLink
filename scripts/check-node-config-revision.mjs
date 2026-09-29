@@ -100,6 +100,34 @@ check(
 const assistConfig = await api('/agent/config', { token: nodeToken });
 check('配置里写上了 disable_relay_data', String(assistConfig.configToml ?? '').includes('disable_relay_data = true'));
 
+/* ------------------------------------ 心跳：agent **唯一**会走的配置下发路径 */
+
+/*
+ * 这一段是"开了几小时还没生效"那次事故之后补的。
+ *
+ * agent 只调 `/agent/register`（注册时拿第一份配置）与 `/agent/heartbeat`，
+ * **从不调 `/agent/config`**。上面那些断言全走拉取接口，所以"控制台改了、节点纹丝不动"
+ * 这种 bug 一路绿灯通过 —— 测了一扇没人走的门。配置有没有真的到节点手上，
+ * 只能这么验：拿心跳响应里的 configToml 看。
+ */
+const hb = (body) => api('/agent/heartbeat', { method: 'POST', token: nodeToken, body });
+
+const revNow = await revisionSeenByNode();
+const hbStale = await hb({ peers: 0, rooms: 0, rxBps: 0, txBps: 0, appliedConfigRevision: revNow - 1 });
+check(
+  '**节点版本落后时，心跳响应里带着新配置**（agent 靠它写盘并重启核心）',
+  String(hbStale.configToml ?? '').includes(`hostname = "cfgrev-renamed-${RUN}"`) &&
+    String(hbStale.configToml ?? '').includes('disable_relay_data = true'),
+  `configRevision=${hbStale.configRevision}`,
+);
+const hbFresh = await hb({ peers: 0, rooms: 0, rxBps: 0, txBps: 0, appliedConfigRevision: revNow });
+check('版本已一致时不再重复下发（避免白重启一次核心）', !hbFresh.configToml);
+const hbOldAgent = await hb({ peers: 0, rooms: 0, rxBps: 0, txBps: 0 });
+check(
+  '老 agent（心跳不带 appliedConfigRevision）也能拿到配置 —— 自我疗愈',
+  Boolean(hbOldAgent.configToml),
+);
+
 const beforeNoop = await revisionSeenByNode();
 await api(`/admin/nodes/${id}`, { method: 'PATCH', token: admin.token, body: { name: `cfgrev-renamed-${RUN}` } });
 const afterNoop = await revisionSeenByNode();

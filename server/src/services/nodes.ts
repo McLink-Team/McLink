@@ -371,6 +371,8 @@ export class NodeService {
       txBps: number;
       version?: string | null;
       publicIp?: string | null;
+      /** 节点自报已应用的配置版本；老 agent 不带这个字段时为 null（视为"未知"） */
+      appliedConfigRevision?: number | null;
     },
   ): { disabled: boolean; configToml: string | null; configRevision: number } {
     this.nodes.updateHeartbeat(row.id, {
@@ -432,10 +434,31 @@ export class NodeService {
       }
     }
 
+    /**
+     * 下发配置 —— **这是节点唯一会走的一条路**。
+     *
+     * agent 只调两个接口：`/agent/register`（注册时拿走第一份配置）与 `/agent/heartbeat`。
+     * 所以注册之后的所有改动（改名、打开「只协助打洞」、平台限速）都只能靠心跳捎回去
+     * （`deploy/agent.mjs` 里处理响应 `configToml` → 写盘 + 重启核心的逻辑一直都在）。
+     *
+     * ⚠️ 这里以前写死 `configToml: null`，于是**注册之后任何配置都到不了节点**：
+     * 控制台显示"已保存 +1 配置版本"，节点上 `relay.toml` 几个小时都不变
+     * （用户实测：开了几小时「只协助打洞」，文件里始终没有 `disable_relay_data`）。
+     * `scripts/check-node-config-revision.mjs` 当时没拦住，是因为它走 `/agent/config`
+     * 拉取接口取配置，而 agent **从来不调那个接口** —— 测了一扇没人走的门。
+     *
+     * 判定：节点自报版本与库里不一致就发。老 agent 不带该字段（null）→ 每轮都发，
+     * 但 agent 会先比对文件内容、只有真的不同才写盘并重启（`agent.mjs` 的 configToml 分支），
+     * 所以既不会白重启，也能自我疗愈。
+     */
+    const revision = fresh?.config_revision ?? 0;
+    const applied = typeof input.appliedConfigRevision === 'number' ? input.appliedConfigRevision : null;
+    const needConfig = Boolean(fresh) && (applied === null || applied !== revision);
+
     return {
       disabled: (fresh?.disabled ?? 0) === 1,
-      configToml: null,
-      configRevision: fresh?.config_revision ?? 0,
+      configToml: needConfig && fresh ? this.renderNodeConfig(fresh) : null,
+      configRevision: revision,
     };
   }
 

@@ -63,6 +63,14 @@ export function registerAgentRoutes(router: Router, app: App): void {
       txBps: optInt(body, 'txBps', 0, 1e12) ?? 0,
       version: optStr(body, 'version', 60) ?? null,
       publicIp: optStr(body, 'publicIp', 64) ?? ctx.ip,
+      /**
+       * 节点自报"我已经应用的配置版本"（agent 每轮心跳都带，`deploy/agent.mjs`）。
+       *
+       * 心跳是**唯一的下发通道**：agent 只调 register 与 heartbeat，注册时拿走第一份配置，
+       * 之后新配置只能靠心跳捎回去。这里以前没读这个字段，心跳也就永远不发配置
+       * —— 见 `services/nodes.ts` 的 heartbeat() 注释。
+       */
+      appliedConfigRevision: optInt(body, 'appliedConfigRevision', 0, 1e9) ?? null,
     });
 
     // 逐房间流量落库，用于平台级流量账本
