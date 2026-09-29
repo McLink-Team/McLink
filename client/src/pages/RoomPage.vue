@@ -42,6 +42,8 @@ import {
   shareAddress,
   toggleForceRelay,
   updateRoomPolicy,
+  applyRelayHint,
+  dismissRelayHint,
 } from '../lib/store.ts';
 import type { PeerView } from '../lib/easytier-parse.ts';
 import { linkKind } from '../lib/easytier-parse.ts';
@@ -245,39 +247,39 @@ const relayPeers = computed(() => visiblePeers.value.filter((p) => !isMemberPeer
 /** 走过流量的路径才算"在用"：**只在名字对不上时**当保守回退用，不再是主判据（见下） */
 const carriesTraffic = (p: PeerView): boolean => p.rxBytes + p.txBytes > 0;
 
-/* ------------------------------------------------------------- 主中继判定 */
+/* --------------------------------------------------------- 打洞 / 中继角色 */
 
 /**
- * 一行中继是不是**本房间的主中继**。
+ * 一行中继是不是**打洞节点**（对应票据的 `relays[0]`）。
  *
  * 判据：**票据里的 `label` ↔ 内核 peer 行的 `hostname`**。平台按 `room.relayNodeIds`
- * 的顺序下发中继（现在是 2 个不同子节点：主 + 兜底），票据 `relays` 与它同序，
- * 所以 `relayNodeIds[0]`（也就是 `relays[0]`）那条就是主中继。
+ * 的顺序下发两个槽位：`relays[0]` = 打洞节点（协调 P2P 打洞，**不承载数据**），
+ * `relays[1]` = 中继节点（真正转发房间流量）。
  *
  * 为什么不按 `relayPeers` 的数组下标判定：`relayPeers` 的顺序来自内核
  * `easytier-cli peer list`（清洗后按 P2P 优先 / 延迟排序），跟平台下发顺序无关，
- * 下标 0 不一定是主中继 —— 以顺序下断正是上一版的错误来源。
+ * 下标 0 不一定是打洞节点 —— 以顺序下断正是上一版的错误来源。
  *
- * 为什么不用"有没有字节数"判定：双中继模型下 EasyTier 会**同时**维持到两个中继的连接
- * （保活 + 路由同步），两台都有几 KB 流量，旧判据会把兜底也标成"在用"，
- * 结果每一行都是"承载流量"，玩家以为流量走了两条。
+ * 为什么不用"有没有字节数"判定：两个槽位下 EasyTier 会**同时**维持到两台的连接
+ * （保活 + 路由同步），两台都有几 KB 流量，旧判据会把两台都标成"在用"，
+ * 玩家以为流量走了两条。
  */
 const relayNameKey = (name: string): string => name.trim().toLowerCase();
 
-/** 票据里的中继名字：`primary` 是主中继（无票据时为 null），`all` 用于确认名字认不认得出来 */
+/** 票据里的中继名字：`punch` 是打洞节点（无票据时为 null），`all` 用于确认名字认不认得出来 */
 const relayNames = computed(() => {
   const relays = session.value?.ticket?.relays ?? [];
-  const primaryId = session.value?.room?.relayNodeIds?.[0];
-  const byId = primaryId ? relays.find((r) => r.nodeId === primaryId) : undefined;
-  return { primary: byId?.label ?? relays[0]?.label ?? null, all: relays.map((r) => r.label) };
+  const punchId = session.value?.room?.relayNodeIds?.[0];
+  const byId = punchId ? relays.find((r) => r.nodeId === punchId) : undefined;
+  return { punch: byId?.label ?? relays[0]?.label ?? null, all: relays.map((r) => r.label) };
 });
 
-const isPrimaryRelay = (p: PeerView): boolean => {
+const isPunchRelay = (p: PeerView): boolean => {
   const key = relayNameKey(p.hostname ?? '');
-  const { primary, all } = relayNames.value;
-  // 名字认得出来（内核给的 hostname 就是平台下发的 label）→ 按票据里的主中继判定
-  if (key && primary && all.some((label) => relayNameKey(label) === key)) {
-    return relayNameKey(primary) === key;
+  const { punch, all } = relayNames.value;
+  // 名字认得出来（内核给的 hostname 就是平台下发的 label）→ 按票据里的打洞节点判定
+  if (key && punch && all.some((label) => relayNameKey(label) === key)) {
+    return relayNameKey(punch) === key;
   }
   // 名字对不上时的保守回退：退回旧判据（只有走过字节数的那条当"在用"），不瞎标
   return carriesTraffic(p);
@@ -413,6 +415,27 @@ const relayStateText = computed(() => {
 });
 
 const relayLedClass = computed(() => (relayMode.value === 'switching' ? 'led-warn' : 'led-ok'));
+
+/**
+ * 平台建议切换中继 → 玩家点了「现在切换」。
+ *
+ * 这是一次**真实的中断**（本地核心重启、隧道断几秒），和「强制走中继」同一量级，
+ * 所以走同一套应用内确认弹层 —— 绝对不能在玩家没点确认时自己切（主控也只发建议）。
+ * 注意切换用的是 `reenterRoom()`：它**不调 leave**，所以房主点它也不会关房。
+ */
+async function onApplyRelayHint(): Promise<void> {
+  const ok = await confirmInApp({
+    title: '切换到更空闲的中继',
+    message: '重新取一次票据并重建本地核心。',
+    detail:
+      '连接会中断几秒，房间里其他人不受影响。你正在打的重要进度不会丢（联机本身会短暂卡一下），' +
+      '想等这局结束再切就点「稍后」。',
+    confirmText: '现在切换',
+    danger: false,
+  });
+  if (!ok) return;
+  await applyRelayHint();
+}
 
 /**
  * 切换确认。两个方向都要问：无论开关还是关，本地核心都会重启、连接都会断几秒，
@@ -664,6 +687,16 @@ async function doLeave(): Promise<void> {
       </span>
     </div>
 
+    <!--
+      平台的中继建议：**只是建议**，主控不会替玩家切（切一次隧道要断几秒，
+      玩家可能正在打 BOSS / 比赛最后一把）。横幅给两个按钮，玩家自己决定。
+    -->
+    <div v-if="clientState.relayHint" class="alert alert-hint">
+      <span class="grow">{{ clientState.relayHint.message }}</span>
+      <button class="btn btn-sm btn-primary" type="button" @click="onApplyRelayHint">现在切换</button>
+      <button class="btn btn-sm" type="button" @click="dismissRelayHint()">稍后</button>
+    </div>
+
     <div class="room-columns">
       <!-- ================================================= 左栏：房间里发生了什么 -->
       <div class="room-main">
@@ -794,7 +827,11 @@ async function doLeave(): Promise<void> {
               </div>
             </div>
 
-            <!-- 中继节点：平台给每个房间下发 2 个不同子节点（主 + 兜底）。两个都会维持连接（保活），所以两边都有几 KB 流量，别按字节数判断谁在用 -->
+            <!--
+              两个槽位的角色（主控 `RoomService.pickRoomRelays`）：票据 relays[0] = 打洞节点
+              （协调 P2P 打洞，**不承载数据**），relays[1] = 中继节点（真正转发房间流量）。
+              两台平时都连着（保活），所以不能靠"有没有字节"来判断谁在用 —— 按票据顺序标角色。
+            -->
             <div v-if="relayPeers.length > 0" class="path-group">
               <div class="path-group-head">
                 <span class="path-group-title">中继节点</span>
@@ -806,20 +843,19 @@ async function doLeave(): Promise<void> {
                     <span class="roster-name">{{ p.hostname || '未命名中继' }}</span>
                     <span class="roster-sub">{{ p.ipv4 || '平台下发的中继入口' }}</span>
                   </span>
-                  <!-- 只有一行是主中继（按 label↔hostname 匹配票据里的 relays[0]）；另一行是兜底 —— 它平时也连着，所以不能靠"有没有字节"来分 -->
                   <span
-                    v-if="isPrimaryRelay(p)"
-                    class="badge badge-ok"
-                    title="本房间的主中继：业务流量默认走这条"
+                    v-if="isPunchRelay(p)"
+                    class="badge badge-neutral"
+                    title="打洞节点：协助两端打洞（交换公网地址），不承载房间流量"
                   >
-                    主中继
+                    打洞节点
                   </span>
                   <span
                     v-else
-                    class="badge badge-neutral"
-                    title="兜底中继：主中继不可用时才接管"
+                    class="badge badge-ok"
+                    title="中继节点：打不通 P2P 时，房间流量走这一台"
                   >
-                    兜底
+                    中继节点
                   </span>
                   <span class="mono faint roster-sub roster-num">
                     {{ p.latencyMs === null ? '—' : `${p.latencyMs.toFixed(1)} ms` }}

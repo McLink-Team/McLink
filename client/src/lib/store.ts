@@ -47,7 +47,7 @@ import {
   type RouteSample,
 } from './relay-fallback.ts';
 import { isMac, platform, supportsLanBroadcast, tunName } from './platform.ts';
-import { handleIncomingMessage } from './notify.ts';
+import { handleIncomingMessage, notifyPlatformHint } from './notify.ts';
 
 export type { PeerView } from './easytier-parse.ts';
 export { parsePeers } from './easytier-parse.ts';
@@ -162,6 +162,14 @@ const state = reactive({
   relaySwitching: false,
   /** 给房间卡显示的一行结果（切换完成 / 失败 / 自动回落的结论） */
   relayNotice: null as string | null,
+  /**
+   * 平台的中继建议（主控推 `room.relayHint`）：**只是建议，绝不自动切**。
+   *
+   * 房间中继过载时主控会把中继槽换成更空闲的节点，但已经连上的客户端用的是进房那一刻的
+   * 配置，要生效只能重取票据重建隧道（卡顿几秒）。玩家可能正在关键时刻（打 BOSS、
+   * 比赛最后一把），所以由他自己决定切不切 —— 房间页弹一条带「现在切换 / 稍后」的横幅。
+   */
+  relayHint: null as null | { roomId: string; message: string },
   /** 自动回落开关（默认关，见 lib/relay-fallback.ts） */
   autoFallback: false,
   /** 本机客户端版本（来自 Electron 的 app.getVersion()） */
@@ -1642,9 +1650,44 @@ async function handleServerEvent(raw: string): Promise<void> {
       if (Number.isFinite(messageId)) emitRoomChat({ type: 'deleted', messageId });
       break;
     }
+    /**
+     * 主控建议切换中继：**只提示，绝不自动切**（玩家可能正在关键时刻）。
+     * 横幅由房间页渲染，横幅上的「现在切换」才走 `applyRelayHint()`。
+     */
+    case 'room.relayHint': {
+      const roomId = String(event.roomId ?? '');
+      if (!state.session || roomId !== state.session.room.id) break;
+      const message = String(event.message ?? '这个房间的中继有点挤，可以切换到更空闲的中继。');
+      state.relayHint = { roomId, message };
+      // 复用消息通知那条链路（系统通知）；玩家就在房间里看着时只留横幅、不弹系统通知
+      notifyPlatformHint({ title: '可以切换到更空闲的中继', body: message, roomId });
+      break;
+    }
     default:
       break;
   }
+}
+
+/**
+ * 玩家点了「现在切换」：重新取票据 → 重建本地核心（**不调 leave**，房主也不会关房）。
+ * 代价是隧道断几秒，这也是"为什么不自动切"的原因。
+ */
+export async function applyRelayHint(): Promise<void> {
+  const hint = state.relayHint;
+  if (!hint) return;
+  state.relayHint = null;
+  state.relayNotice = '正在切换到更空闲的中继，几秒内恢复。';
+  try {
+    await reenterRoom(hint.roomId);
+    state.relayNotice = '已切到更空闲的中继。';
+  } catch (err) {
+    state.relayNotice = `切换失败：${friendlyError(err)}`;
+  }
+}
+
+/** 玩家点了「稍后」（或离开房间）：不再提示，但下次过载还会再提醒一次 */
+export function dismissRelayHint(): void {
+  state.relayHint = null;
 }
 
 /* -------------------------------------------------------- 房间聊天事件 */

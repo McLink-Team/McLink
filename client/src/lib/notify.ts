@@ -194,6 +194,26 @@ export function onWindowFocus(): void {
   }
 }
 
+/**
+ * 平台建议（目前只有"可以切换到更空闲的中继"）的系统通知。
+ *
+ * 为什么单独一个入口、不塞进 `handleIncomingMessage`：那条链路的策略里
+ * **系统消息是明确 skip 的**（`decideNotify` 的 `'system'` 分支），而这条恰恰是要弹的 ——
+ * 它不是一个"房间消息"，而是平台在问玩家"要不要切"。
+ *
+ * 复用到的部分：设置页的「有人发消息时提醒我」开关、聚焦/在屏判定、主进程 Notification 桥。
+ * 不做合并窗口（它不是连发消息，一条就是一条）。
+ *
+ * @returns 是否真的发出去了（测试与排查用）
+ */
+export function notifyPlatformHint(payload: { title: string; body: string; roomId: string }): boolean {
+  if (!enabled) return false;
+  // 玩家正看着房间页：横幅已经在眼前，别再弹一个系统通知打扰他
+  if (windowIsFocused() && roomOnScreenProbe() === true) return false;
+  deliver({ title: payload.title, body: payload.body, roomId: payload.roomId });
+  return true;
+}
+
 /* ------------------------------------------------------------ 测试与排查 */
 
 export function notifyHistory(): NotifyPayload[] {
