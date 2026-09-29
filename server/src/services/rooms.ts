@@ -43,12 +43,14 @@ import { AuditRepo } from '../db/traffic.ts';
 import { MessageRepo } from '../db/chat.ts';
 import { assertEmailVerified } from './email-gate.ts';
 import type { SettingsService } from './settings.ts';
-import { NodeUtilization } from './node-utilization.ts';
+import { NodeUtilization, shedUtilFor, UTIL_SHED } from './node-utilization.ts';
 
 const log = logger('rooms');
 
-/** 带宽利用率阈值：与 NodeService 的状态机保持一致（≥90% 不再分配新房间） */
-const UTIL_SHED = 0.9;
+/**
+ * 带宽利用率阈值由 `node-utilization.ts` 统一给出（`UTIL_SHED` = 90%，小带宽节点更低）。
+ * 这里有本地常量会与它分叉 —— 状态机与调度必须用同一条线，所以直接 import。
+ */
 /** 降级节点的罚分：够大，能压过权重差异，但不会把它彻底排除（兜底时仍然可用） */
 const DEGRADED_PENALTY = 100;
 
@@ -239,8 +241,13 @@ export const LATENCY_TIE_BAND_MS = 5;
 /** 调度候选：节点行 + 该节点当前的带宽利用率（由调用方采样传入，好让下面的选择函数保持纯） */
 export interface RelayCandidate {
   row: NodeRow;
-  /** 带宽利用率 0–1；≥ UTIL_SHED 表示这一轮不再接新房间 */
+  /** 带宽利用率 0–1 */
   utilization: number;
+  /**
+   * 这台节点自己的「不再接新房间」阈值（见 `node-utilization.ts` 的 `shedUtilFor`）：
+   * 小带宽节点是 80%（可配），其余是 90%。不传时按 90% 处理（纯函数层向后兼容）。
+   */
+  shedUtil?: number;
 }
 
 /**
@@ -256,7 +263,8 @@ export interface RelayCandidate {
  * 满员/吃紧的节点照旧按 weight → relayScore 兜底，房间拿到的中继数量与形态完全不变。
  */
 function hasHeadroom(candidate: RelayCandidate): boolean {
-  return candidate.row.peers < candidate.row.capacity_peers && candidate.utilization < UTIL_SHED;
+  const shed = candidate.shedUtil ?? UTIL_SHED;
+  return candidate.row.peers < candidate.row.capacity_peers && candidate.utilization < shed;
 }
 
 /** 参与排序的候选：把排序键预先算好，免得比较器里反复查表 */
@@ -1419,10 +1427,15 @@ export class RoomService {
      * 更不容易在以后加入 await 时出现"按 A 判定还有富余、按 B 打分"的错位。
      * 档内决胜（键 ③）用的也是这**同一个**值，不另采一次。
      */
-    const candidates: RelayCandidate[] = all.map((row) => ({ row, utilization: this.utilizationOf(row) }));
+    const candidates: RelayCandidate[] = all.map((row) => ({
+      row,
+      utilization: this.utilizationOf(row),
+      shedUtil: this.shedUtilOf(row),
+    }));
 
     /**
-     * 带宽已吃紧（利用率 ≥90%）的节点**这次不再分配新房间**。
+     * 带宽已吃紧的节点**这次不再分配新房间**：阈值按节点自己的档位算 ——
+     * 小带宽节点 80%（可配，见 `shedUtilFor`），其余 90%。
      *
      * 这是"只影响新票据"的核心：不动已经跑着的房间，也不去改节点配置 ——
      * 改配置要重启该节点的 easytier-core，会把它上面所有房间一起抖断（秒级），
@@ -1579,7 +1592,7 @@ export class RoomService {
         const currentFree = currentRelay ? freeBandwidth(this.utilizationOf(currentRelay)) : -1;
         const candidate = this.nodes
           .listSchedulable()
-          .map((row) => ({ row, utilization: this.utilizationOf(row) }))
+          .map((row) => ({ row, utilization: this.utilizationOf(row), shedUtil: this.shedUtilOf(row) }))
           .filter(
             (c) =>
               c.row.id !== punchId &&
@@ -1650,9 +1663,17 @@ export class RoomService {
     return this.util.utilization(row.id, row.capacity_bps ?? 0);
   }
 
+  /**
+   * 这台节点自己的"不再接新房间"利用率阈值：小带宽节点更早卸荷（默认 80%）。
+   * 口径与判定见 `node-utilization.ts` 的 `shedUtilFor`。
+   */
+  shedUtilOf(row: NodeRow): number {
+    return shedUtilFor(row.capacity_bps, this.bigPipeThresholdBps(), this.settings.current.relaySmallShedPercent);
+  }
+
   /** 带宽是否已到"不再分配新房间"的程度（与 NodeService 的状态机用同一个阈值） */
   isBandwidthBusy(row: NodeRow): boolean {
-    return this.utilizationOf(row) >= UTIL_SHED;
+    return this.utilizationOf(row) >= this.shedUtilOf(row);
   }
 
   /* ------------------------------------------------------------ 内部 */

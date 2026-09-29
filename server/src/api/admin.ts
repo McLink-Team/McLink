@@ -685,6 +685,7 @@ export function registerAdminRoutes(router: Router, app: App): void {
       'relayBandwidthKbps',
       'relayBigPipeBps',
       'relayScaleMbps',
+      'relaySmallShedPercent',
     ] as const) {
       if (key in body) {
         const value = optInt(body, key, 0, 100_000_000);

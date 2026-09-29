@@ -26,6 +26,34 @@ export function ewma(prev: number, sample: number, dtMs: number, tauMs: number):
   return prev + alpha * (sample - prev);
 }
 
+/** 全平台一致的带宽卸荷线：利用率到 90% 就不再把**新房间**分给它 */
+export const UTIL_SHED = 0.9;
+
+/**
+ * 某台节点自己的「不再接新房间」利用率阈值。
+ *
+ * 为什么小管子要更早卸荷（用户 2026-09-28 提的）：90% 这条线对大带宽节点是"还有余量"，
+ * 对小管子却是"已经贴着天花板"—— 5 Mbps 的机器跑到 85% 时，再来一个房间就会把
+ * 已经在玩的房间一起拖慢（中继是单线程转发，丢包会传导到房间里的每个人）。
+ * 所以**带宽小的节点在 80%（可配）就停止新增中继**，但**默认仍然可以中继**：
+ * 这条线只挡"新房间"，已经跑在上面的房间一个都不动。
+ *
+ * 「小管子」的判定与调度里的大带宽档一致：声明了 `capacity_bps` 且小于 `bigPipeBps`。
+ *   · `capacity_bps = 0`（控制台没填 = 不限）→ 不算小管子，用 90%；
+ *   · 管理员把 `smallShedPercent` 调到比 90% 还高时封顶在 90%（永远不比全局线更晚卸荷）。
+ */
+export function shedUtilFor(
+  capacityBps: number | null | undefined,
+  bigPipeBps: number,
+  smallShedPercent: number,
+): number {
+  const capacity = capacityBps ?? 0;
+  const isSmall = capacity > 0 && capacity < bigPipeBps;
+  if (!isSmall) return UTIL_SHED;
+  const percent = Number.isFinite(smallShedPercent) ? smallShedPercent : 80;
+  return Math.min(UTIL_SHED, Math.max(1, percent) / 100);
+}
+
 export class NodeUtilization {
   readonly #samples = new Map<string, Sample>();
   readonly tauMs: number;
