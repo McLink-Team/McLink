@@ -1515,7 +1515,7 @@ describe('房间两个槽位：打洞节点 + 中继节点', () => {
   /** 大带宽档门槛固定 10 Mbps，与默认设置一致 */
   const BIG = 10_000_000;
 
-  test('槽 1 优先挑「只协助打洞」的节点，槽 2 从大带宽档里按延迟挑', () => {
+  test('槽 1 优先挑「只协助打洞」的节点，槽 2 从大带宽档里挑（权重一致时按延迟）', () => {
     const pool = [
       cand('punch', { assist_only: 1, capacity_bps: 5_000_000, weight: 1 }),
       cand('small', { capacity_bps: 5_000_000 }), // 小管子：不该当侦中继
@@ -1553,7 +1553,7 @@ describe('房间两个槽位：打洞节点 + 中继节点', () => {
     assert.deepEqual(picked, ['punch-like', 'plain'], '中继槽只能是能承载数据的那台');
   });
 
-  test('延迟优先是中继槽的主键：权重更高但慢的大管子照样输', () => {
+  test('权重是中继槽的主键：权重更高但慢的那台照样当选（只有权重一致才比延迟）', () => {
     const pool = [cand('punch', { assist_only: 1 }), cand('heavy', { weight: 500 }), cand('light', { weight: 1 })];
     const picked = pickRoomRelays(
       pool,
@@ -1565,7 +1565,21 @@ describe('房间两个槽位：打洞节点 + 中继节点', () => {
       2,
       BIG,
     );
-    assert.deepEqual(picked, ['punch', 'light']);
+    assert.deepEqual(picked, ['punch', 'heavy'], '权重参与：500 那台赢，哪怕慢 78ms');
+
+    // 权重一致时才走后续规则（延迟优先）
+    const sameWeight = [cand('punch', { assist_only: 1 }), cand('slow', { weight: 100 }), cand('fast', { weight: 100 })];
+    const hinted = pickRoomRelays(
+      sameWeight,
+      sameWeight,
+      [
+        { nodeId: 'slow', ms: 60 },
+        { nodeId: 'fast', ms: 5 },
+      ],
+      2,
+      BIG,
+    );
+    assert.deepEqual(hinted, ['punch', 'fast'], '权重一致 → 比延迟');
   });
 
   test('没有标 assist 的节点时，槽 1 退回原规则（与旧行为一致）', () => {
