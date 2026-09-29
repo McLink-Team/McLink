@@ -157,6 +157,16 @@ check('RoomPage：非 Windows 不提交 allowBroadcast 字段（不去替别的�
 check('store：非 Windows 上开广播会明确报错（第二道闸）', /patch\.allowBroadcast === true/.test(storeTs) && /WinDivert 内核驱动/.test(storeTs));
 check('store：建网卡报错文案按平台说 wintun/utun', /tunName/.test(storeTs) && /Operation not permitted/.test(storeTs));
 
+// 更新检查按平台分流：`clientVersion` / `clientDownloadUrl` 那条线指向的是 **Windows 安装包**，
+// 所以安卓与 macOS 必须各走自己的产物 —— 顺序错了（mac 分支落在桌面兜底之后）就等于没改。
+check('store：更新检查的 /meta 类型里有 mac 产物（macos / macosIntel）', /clientDownloads\?: \{[\s\S]{0,240}macos\?: MetaArtifact \| null/.test(storeTs));
+check('store：macOS 更新走 clientDownloads.macos（而不是桌面的 .exe 那条线）', /clientDownloads\?\.macos \?\? m\.clientDownloads\?\.macosIntel/.test(storeTs));
+check('store：macOS 分支排在桌面端兜底之前（顺序错了会退回 .exe）', (() => {
+  const macBranch = storeTs.indexOf('if (isMac) {\n      const mac = m.clientDownloads?.macos');
+  const desktopLine = storeTs.indexOf("const latest = (m.clientVersion ?? '').trim();");
+  return macBranch > 0 && desktopLine > 0 && macBranch < desktopLine;
+})());
+
 /* ---------------------------------------------------- 4. electron-builder */
 
 section('client/electron-builder.yml');
@@ -224,6 +234,41 @@ try {
   console.log('  · 跳过「与 HEAD 比对」：不是 git 工作区或取不到 HEAD（该断言只在改动期间有意义）');
 }
 
+/* ------------------------------------------- 5b. GitHub Actions（备用出包路线） */
+
+/*
+ * GitLab SaaS 的 macOS runner 吃每月共享额度，额度用完这条 job 就起不来；
+ * GitHub 那边公开仓库的标准 runner 免费不限量、私有仓库也有免费额度，
+ * 所以 .github/workflows/build-clients.yml 从"备份路线"变成了**实际出包路线**。
+ * 它的 runner 标签、两个架构、签名与产物上传都必须和 GitLab 那条 job 对齐 ——
+ * 这些断言全是"改坏了不会在 Windows 上被发现"的那一类。
+ */
+section('.github/workflows/build-clients.yml');
+const gh = yaml.load(read('.github/workflows/build-clients.yml'));
+// js-yaml 4 把 `on` 当字符串键，js-yaml 3（或 YAML 1.1 schema）会把它解析成布尔 true —— 两种都接住
+const ghOn = gh.on ?? gh['true'] ?? {};
+const ghJobs = gh.jobs ?? {};
+const stepsOf = (job) => (job?.steps ?? []).map((s) => [s.name ?? '', s.run ?? s.uses ?? ''].join(' ')).join('\n');
+const ghMac = ghJobs.macos;
+const macSteps = stepsOf(ghMac);
+
+check('仍有 macOS job（GitLab 额度用完后这是唯一能出 dmg 的路径）', Boolean(ghMac));
+check('macOS job 的 runner 是 **arm64** 的 macOS 镜像', ['macos-15', 'macos-26', 'macos-latest'].includes(String(ghMac?.['runs-on'] ?? '')), `runs-on = ${ghMac?.['runs-on']}`);
+check('没有 pin 到已废弃的 macos-14 / macos-13（GitHub 已把 14 标为 deprecated）', !/macos-1[34]/.test(String(ghMac?.['runs-on'] ?? '')));
+check('macOS job 跑了 mac 打包 + 产物断言 + 签名脚本（与 GitLab job 一一对应）', (() => {
+  return /dist\.mjs --mac/.test(macSteps) && /assert-artifacts\.mjs --macos/.test(macSteps) && /sign-macos-app\.sh/.test(macSteps);
+})());
+check('两个架构都在（--arm64 --x64）', /--arm64/.test(macSteps) && /--x64/.test(macSteps));
+check('macOS 产物（dmg + zip）作为 artifact 上传，且没产物就失败', (() => {
+  const up = (ghMac?.steps ?? []).find((s) => String(s.uses ?? '').startsWith('actions/upload-artifact'));
+  const p = String(up?.with?.path ?? '');
+  return p.includes('.dmg') && p.includes('.zip') && up?.with?.['if-no-files-found'] === 'error';
+})());
+check('未签名：工作流关掉证书自动发现', gh.env?.CSC_IDENTITY_AUTO_DISCOVERY === 'false');
+check('两种触发方式都在：手动 Run workflow + 推 v* 标签', Boolean(ghOn.workflow_dispatch) && (ghOn.push?.tags ?? []).includes('v*'));
+check('Windows job 仍在（回归），但手动跑时默认跳过（不白花私有仓库额度）', Boolean(ghJobs.windows) && /inputs\.windows/.test(String(ghJobs.windows?.if ?? '')));
+check('pnpm 由 pnpm/action-setup 安装（不依赖 corepack 是否随 Node 分发）', /pnpm\/action-setup/.test(macSteps) && !/corepack/.test(macSteps));
+
 /* ------------------------------------------------------------- 6. 图标产物 */
 
 section('图标产物（macOS 菜单栏用）');
@@ -254,6 +299,9 @@ check('写了 macOS 本地出包步骤', /node scripts\/dist\.mjs --mac/.test(do
 check('写了 GitLab CI 怎么触发', /build:macos/.test(doc) && /Run pipeline/.test(doc));
 check('写了未签名包的后果与绕过方式', /xattr -dr com\.apple\.quarantine/.test(doc) && /Gatekeeper/.test(doc));
 check('写了"CI 只能在推送后验证"这条边界', /推送/.test(doc) && /未验证|无法在本地验证|只能在/.test(doc));
+check('写了 GitHub Actions 这条备用路线（GitLab 配额用完时用）', /build-clients\.yml/.test(doc) && /Run workflow/.test(doc));
+check('写了 runner 不能回退到已废弃的 macos-14', /macos-15/.test(doc) && /deprecated/.test(doc));
+check('写了 Linux 硬出这条应急路线的限制（没 dmg / 没签名）', /build-macos-on-linux\.sh/.test(doc) && /hdiutil/.test(doc) && /hdiutil/.test(read('deploy/build-macos-on-linux.sh')));
 
 /* ------------------------------------------------------------------ 汇总 */
 

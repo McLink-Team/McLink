@@ -10,12 +10,14 @@ $ node scripts/dist.mjs --mac zip          # 在 Windows 上执行
 ```
 
 所以「我没有 Mac」时的正确路线是 **用 CI 的 macOS runner 出包**
-（本仓库已配好 GitLab CI 的 `build:macos`，见下面第二节），而不是想办法在 Windows 上凑。
+（GitLab CI 的 `build:macos` 是主路线；GitLab 额度用完后走 GitHub Actions 的
+`build-clients.yml` —— 两条都在下面第一节），而不是想办法在 Windows 上凑。
 
 | 平台 | 产物 | 出包途径 |
 | --- | --- | --- |
 | Windows | `McLink-Setup-<版本>-x64.exe`（NSIS） | 本地 `pnpm dist:client` 或 GitLab `build:windows` |
-| macOS | `McLink-<版本>-macos-arm64.dmg` / `.zip`（Apple 芯片）<br>`McLink-<版本>-macos-x64.dmg` / `.zip`（Intel） | **只能**在 macOS 上：本地 Mac 或 GitLab `build:macos` |
+| macOS | `McLink-<版本>-macos-arm64.dmg` / `.zip`（Apple 芯片）<br>`McLink-<版本>-macos-x64.dmg` / `.zip`（Intel） | 必须在 macOS 机器上：GitLab `build:macos`、GitHub Actions `build-clients.yml`，或一台真 Mac |
+| macOS（应急、未签名） | `McLink-<版本>-macos-<架构>.zip`（**没有 dmg**） | 在 Linux 服务器上跑 `deploy/build-macos-on-linux.sh` —— 限制见下面路线 C |
 
 > 文件名里那个 `macos` 不是装饰：官网/下载页按**文件名**判断平台与架构
 > （`server/src/api/public.ts` 的 `platformOf` / `archOf`），
@@ -23,11 +25,22 @@ $ node scripts/dist.mjs --mac zip          # 在 Windows 上执行
 
 ---
 
-## 一、GitLab CI（推荐：不需要自己有 Mac）
+## 一、用 CI 出包（不需要自己有 Mac）
+
+三条路，按优先级排 —— A/B 出的包**完全等价**（dmg + zip，两个架构，都补了 ad-hoc 签名），
+C 只是应急：
+
+| 路线 | 什么时候用它 | 配置 | 跑在哪 |
+| --- | --- | --- | --- |
+| **A. GitLab CI**（主路线） | 共享额度还有 | `.gitlab-ci.yml` 的 `build:macos` | GitLab SaaS 的 macOS runner |
+| **B. GitHub Actions** | GitLab 额度用完了（本仓库当前就是这个状态） | `.github/workflows/build-clients.yml` | GitHub 托管的 `macos-15`（arm64） |
+| C. Linux 服务器硬出（应急） | 两边 CI 都用不了，且只要发 Intel Mac | `deploy/build-macos-on-linux.sh` | 主控那台 Linux —— **没 dmg、没签名**，见路线 C |
+
+### 路线 A：GitLab CI（主路线）
 
 `.gitlab-ci.yml` 里的 **`build:macos`** 就是干这个的：跑在 macOS runner 上，产出 dmg + zip。
 
-### 怎么触发
+#### 怎么触发
 
 | 场景 | 操作 | 结果 |
 | --- | --- | --- |
@@ -37,7 +50,7 @@ $ node scripts/dist.mjs --mac zip          # 在 Windows 上执行
 跑完在 pipeline 页面的 **Artifacts** 里下载：`mclink-macos-<短 SHA>`，里面是
 `client/release/*.dmg` 与 `client/release/*.zip`（两个架构 × 两种格式，共 4 个文件）。
 
-### runner
+#### runner
 
 `build:macos` 的 `tags` 写死为 **`saas-macos-medium-m1`**（GitLab.com SaaS 的 Apple 芯片
 macOS runner，用户已确认本项目上可用）。换机器时**直接改这个字面量**：
@@ -45,7 +58,7 @@ macOS runner，用户已确认本项目上可用）。换机器时**直接改这
 不写成 CI 变量是有意的 —— runner tag 写错的表现是 job 永远停在 pending（最难排查的一种失败），
 而 GitLab 对 `tags` 的变量展开依赖实例版本与变量作用域，不值得为可读性冒这个险。
 
-### job 里做了什么（顺序即原因）
+#### job 里做了什么（顺序即原因）
 
 ```bash
 node scripts/fetch-easytier.mjs --macos   # 取两个架构的 EasyTier 核心（arm64 的资产名叫 aarch64）
@@ -63,7 +76,7 @@ Apple 芯片要求 arm64 可执行文件至少有 ad-hoc 签名，否则内核�
 `.app` 生成 dmg。`electron-builder.yml` 里 `mac.target` 仍然写着 dmg + zip
 （本地手动跑 `--mac dmg zip` 时的默认目标），CI 只是覆盖成了上面这条更安全的路径。
 
-### ⚠️ CI 能不能跑起来，只能在推送之后验证
+#### ⚠️ CI 能不能跑起来，只能在推送之后验证
 
 本地没有 GitLab runner，也没有 GitLab 的 `rules` 求值器。本地**能**验的只有：
 
@@ -74,6 +87,44 @@ node client/scripts/verify-platform.mjs    # YAML 语法 + job/tags/artifacts/�
 **不能**验的：runner 是否真的空闲、tags 是否真的匹配、macOS 上 `codesign` / `hdiutil` 是否
 按预期工作、两次 Electron 下载会不会超时。这些都要推上去跑一次才算数 —— 第一次跑
 `build:macos` 时请盯一眼日志里的 `du -sh` 与 `codesign -dv` 输出（job 里已经把这两条打成证据）。
+
+### 路线 B：GitHub Actions（GitLab 额度用完时走这条）
+
+GitLab SaaS 的 macOS runner 吃**每月共享额度**，额度用完之后 `build:macos` 就起不来了
+（pipeline 报配额相关的错误，而不是构建失败）。GitHub 这边宽松得多：**公开仓库的标准
+runner 免费且不限量**，私有仓库也有每月免费额度（macOS 按 10 倍折算）。
+仓库里已经配好 `.github/workflows/build-clients.yml`，步骤与 GitLab 的 `build:macos` 一一对应
+（`--mac zip --arm64 --x64` → `assert-artifacts.mjs --macos` → `sign-macos-app.sh` → 上传 dmg/zip）。
+
+```bash
+# 一次性：加一个 GitHub 远端并推上去（只推分支即可，不必推 tag —— 见下表）
+git remote add github git@github.com:<你的账号>/<仓库>.git
+git push github main
+```
+
+然后 GitHub → **Actions** →「构建客户端（Windows / macOS）」→ **Run workflow**；
+跑完在这次的 **Artifacts → mclink-macos** 里下载（两个架构 × dmg/zip，共 4 个文件，保留 30 天）。
+
+| 事项 | 说明 |
+| --- | --- |
+| 从哪个提交构建 | **从 `main` 跑**：1.0.9 的 mac 包要带上「mac 的更新提示不该指向 Windows 安装包」这处修复，它是打 tag 之后才提交的。版本号取自 `client/package.json`（仍是 1.0.9），文件名不变，主控照旧认。推 `v*` 标签也会触发这个工作流，那种情况下出的是标签当时的代码。 |
+| runner | pin 在 **`macos-15`**（arm64，仍在 GA）。**别改回 `macos-14`**：GitHub 已把它标记为 deprecated；也别用 `macos-latest`（会被自动迁移到新系统）或 `-intel` / `-large`（x64 / 收费的更大规格）。 |
+| Windows job | 手动跑时**默认跳过**（要出就勾上 input `windows`）—— mac 包不需要它，而私有仓库的额度按分钟扣（Windows 还按 2 倍折算）。 |
+| 额度 | 私有仓库：一次 mac 构建十几分钟，按 10 倍折算约 100+ 分钟额度；公开仓库不计量。 |
+| 日志里的校验值 | 最后一步用 `shasum -a 256` 打印 dmg/zip 的校验值 —— 传完可以拿它核对有没有传错文件。 |
+
+### 路线 C：在 Linux 服务器上硬出（应急：没 dmg、没签名）
+
+`deploy/build-macos-on-linux.sh` 能在 Linux 上打出 mac 的 **zip**（electron-builder 那条
+mac 守卫只拦 Windows，见脚本头部注释）。但两条硬限制决定了它只能应急：
+
+- **没有 dmg**：dmg 要 `hdiutil`（macOS 专属命令），Linux 上没有替代实现；
+- **没有签名**：`codesign` 同样只有 macOS 有 → 出来的是未签名包。Intel Mac 右键「打开」
+  还能跑；**Apple 芯片会被内核拒绝执行**（玩家看到的是「已损坏，无法打开」），
+  得让玩家自己执行 `sudo codesign --force --deep --sign - /Applications/McLink.app` 才能开。
+
+这条路**本仓库没有在真机上验过**（手上没有 Linux 机器），第一次跑请盯日志。
+能用 CI 就用 CI（路线 A / B）。
 
 ---
 
@@ -123,6 +174,10 @@ Windows 那边的 `clientDownloadUrl` / `clientSha256` 仍是管理员维护的"
 
 CI 跑完后也可以在主控上一条命令取产物（`deploy/fetch-release-from-gitlab.sh` 会同时取
 `build:windows` 与 `build:macos` 两个 job 的 artifacts）。
+
+走**路线 B（GitHub Actions）**时没有这个脚本：产物是 run 页面上下载的
+`mclink-macos.zip`，解开就是那 4 个文件（`*.dmg` / `*.zip`），
+`scp` 进 `data/downloads/` 后按上一步改权限即可。
 
 ---
 
