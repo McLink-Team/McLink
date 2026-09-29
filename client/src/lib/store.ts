@@ -83,6 +83,12 @@ export interface RelayNodeOption {
   port?: number;
   peers: number;
   capacity: number;
+  /**
+   * 这台被标了「只协助打洞」：不承载房间数据（主控生成配置时写 `disable_relay_data`）。
+   * 建房页**手动选择**时用它提示玩家：挑这种节点只会落"打洞节点"，中继由平台另补一台
+   * （落槽规则见 server/src/services/rooms.ts 的 `assignRelaySlots`）。老主控没有这个字段。
+   */
+  assistOnly?: boolean;
 }
 
 const state = reactive({

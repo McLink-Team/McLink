@@ -86,8 +86,13 @@ const relaySummary = computed(() => {
 
 /**
  * 区域与节点是**两层**：区域是默认/筛选，节点才是真正的选择对象。
- * 「自动」= 平台按区域挑（现状不变）；「手动」= 玩家自己挑，最多 3 个，
- * 并且平台**始终再补一个兜底** —— 玩家选的节点掉线时房间不会断。
+ * 「自动」= 平台按区域挑（槽 1 打洞 + 槽 2 中继）；「手动」= 玩家自己挑，最多 3 个。
+ *
+ * ⚠️ 手选节点的**落槽规则**（2026-09-29 修）：这颗按钮让玩家挑的是**中继节点**，
+ * 所以手选的节点里"能承载数据"的那台会落**槽 2（中继）**，而"只协助打洞"的节点
+ * （不承载流量）落**槽 1（打洞）**，空出来的槽由平台按对应槽位的规则补一台。
+ * 规则本体在 `server/src/services/rooms.ts` 的 `assignRelaySlots`（纯函数、有单测）。
+ * 以前手选节点被塞在数组最前面 → 客户端按下标判定，玩家挑的中继 100% 被标成「打洞节点」。
  *
  * 节点列表与延迟读的是**应用级缓存**（`clientState.relayNodes` / `relayLatency`）：
  * 拉列表 + tcping 已经在初始化时（登录之后）跑过一遍，这里只负责显示、
@@ -227,7 +232,9 @@ async function doCreate(): Promise<void> {
       nodeIds: nodeMode.value === 'manual' ? manualNodes.value : [],
       /**
        * 延迟提示两种模式都带：自动模式下它决定"选谁"，
-       * 手动模式下它只决定"平台补的那个兜底先落在哪台"（手选节点永远优先）。
+       * 手动模式下它只决定"平台补的那台先落在哪台"。
+       * 手选节点的**落槽**由主控按能力决定（能承载数据的当中继，只协助打洞的当打洞），
+       * 见 `server/src/services/rooms.ts` 的 `assignRelaySlots`。
        * 值来自应用级缓存（见 store.ts 的 relayLatencyHints）。
        */
       latencyHints: relayLatencyHints(),
@@ -397,7 +404,11 @@ async function resume(room: Room): Promise<void> {
                 />
                 <span class="grow roster-main">
                   <span class="roster-name">{{ n.name }}</span>
-                  <span class="roster-sub">{{ regionLabel(n.region) }} · 承载 {{ n.peers }}/{{ n.capacity }}</span>
+                  <span class="roster-sub">
+                    {{ regionLabel(n.region) }} · 承载 {{ n.peers }}/{{ n.capacity }}
+                    <!-- 只协助打洞的节点不承载流量：挑它只会落"打洞节点"，中继由平台另补一台 -->
+                    <template v-if="n.assistOnly"> · 只协助打洞（不承载流量）</template>
+                  </span>
                 </span>
                 <!-- 延迟只用来展示与排序：没测到显示 —，但仍然可选（一次握手超时可能只是抖动） -->
                 <span class="badge" :class="latencyOf(n) === null ? 'badge-neutral' : 'badge-ok'">
@@ -406,7 +417,9 @@ async function resume(room: Room): Promise<void> {
               </label>
             </div>
             <div class="hint">
-              最多选 3 个；平台始终再补一个兜底节点（按同一套延迟优先规则挑），所以你选的节点掉线房间也不会断。
+              最多选 3 个。你选的节点会作为「中继节点」（真正转发房间流量）；
+              标着「只协助打洞」的节点不承载流量，只会落「打洞节点」，
+              中继由平台另补一台。平台补的那台也按同一套规则挑，所以你选的节点掉线房间也不会断。
             </div>
           </template>
           <div v-else class="hint">

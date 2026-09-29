@@ -14,7 +14,7 @@ import { test, describe } from 'node:test';
 import { renderAcl, renderEasytierToml, buildLaunchArgs, tomlString, aclToJson, rpcPortalForListenPort, usableRpcPort } from '../src/easytier/config.ts';
 import { buildRoomAcl, isAclEmpty } from '../src/easytier/acl.ts';
 import { parseHumanNumber, parseLatencyMs } from '../src/easytier/manager.ts';
-import { hashRoomPassword, verifyRoomPassword, deriveNetworkName, resolveMemberLink, relayScore, nextRoomExpiry, selectRelays, pickRoomRelays, LATENCY_TIE_BAND_MS, RoomService, type RelayCandidate } from '../src/services/rooms.ts';
+import { hashRoomPassword, verifyRoomPassword, deriveNetworkName, resolveMemberLink, relayScore, nextRoomExpiry, selectRelays, pickRoomRelays, assignRelaySlots, LATENCY_TIE_BAND_MS, RoomService, type RelayCandidate } from '../src/services/rooms.ts';
 import { Db } from '../src/db/index.ts';
 import { NodeRepo } from '../src/db/nodes.ts';
 import { RoomRepo } from '../src/db/rooms.ts';
@@ -1677,6 +1677,58 @@ describe('房间两个槽位：打洞节点 + 中继节点', () => {
  *   · `capacity_bps = 0`（不限）不受影响；
  *   · 状态机（degraded）与调度（不再接新房间）用的是**同一条线**。
  */
+/**
+ * 手选节点落槽：建房页让玩家挑的按钮写的是「中继节点 → 手动选择」，
+ * 所以**手选的节点必须当中继**；数组下标 `[0]` 永远是打洞节点（客户端靠下标判角色）。
+ *
+ * 这一组盯的是用户 2026-09-29 实测报的问题：手选节点被塞在数组最前面 →
+ * 100% 被标成「打洞节点」；而平台补的那台取自自动调度的**第一顺位**
+ * （`pickRoomRelays` 的槽 1 候选，优先"只协助打洞"的节点）—— 那种节点不承载数据，
+ * 于是手选一台 assist 节点时两个槽位都不是承载者，**房间等于没有中继**。
+ */
+describe('手选节点落槽 assignRelaySlots', () => {
+  const pick = (id: string, assistOnly = false) => ({ id, assistOnly });
+
+  test('手选一台能承载数据的节点 → 它是槽 2（中继节点），槽 1 由自动调度补', () => {
+    const slots = assignRelaySlots([pick('chosen')], ['auto-punch', 'auto-relay']);
+    assert.deepEqual(slots, { punch: 'auto-punch', relay: 'chosen', extra: [], rejected: [] });
+  });
+
+  test('手选的是「只协助打洞」的节点 → 它落槽 1，中继槽用自动调度的**中继候选**', () => {
+    const slots = assignRelaySlots([pick('small-assist', true)], ['auto-punch', 'auto-relay']);
+    assert.equal(slots.punch, 'small-assist');
+    assert.equal(slots.relay, 'auto-relay', '不能把 auto[0]（打洞候选）补进中继槽');
+  });
+
+  test('自动调度只给得出一台时，补的那台不会和中继槽撞车', () => {
+    const slots = assignRelaySlots([pick('chosen')], ['only-node']);
+    assert.equal(slots.relay, 'chosen');
+    assert.equal(slots.punch, 'only-node');
+  });
+
+  test('手选的就是自动调度里那台中继：两个槽位不重复占', () => {
+    const slots = assignRelaySlots([pick('auto-relay')], ['auto-punch', 'auto-relay']);
+    assert.deepEqual([slots.punch, slots.relay], ['auto-punch', 'auto-relay']);
+    assert.deepEqual(slots.extra, []);
+  });
+
+  test('没有手选时 = 自动调度的两个槽位原样下发', () => {
+    const slots = assignRelaySlots([], ['p', 'r']);
+    assert.deepEqual([slots.punch, slots.relay, ...slots.extra], ['p', 'r']);
+  });
+
+  test('多选能承载数据的节点：第一台当槽 2，其余挂在后面当额外入口', () => {
+    const slots = assignRelaySlots([pick('a'), pick('b'), pick('c')], ['auto-punch', 'auto-relay']);
+    assert.deepEqual([slots.punch, slots.relay, ...slots.extra], ['auto-punch', 'a', 'b', 'c']);
+  });
+
+  test('多选的「只协助打洞」超出打洞槽那份 → 拒绝并给出理由（不许当额外入口）', () => {
+    const slots = assignRelaySlots([pick('a'), pick('assist-1', true), pick('assist-2', true)], ['p', 'r']);
+    assert.deepEqual([slots.punch, slots.relay, ...slots.extra], ['assist-1', 'a']);
+    assert.deepEqual(slots.rejected, [{ id: 'assist-2', reason: '只协助打洞的节点不能作为中继节点' }]);
+  });
+});
+
 describe('小带宽节点提前卸荷（80% 停止新增中继）', () => {
   const BIG = 10_000_000;
   const SMALL = 5_000_000;
