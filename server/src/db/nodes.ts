@@ -28,6 +28,14 @@ export interface NodeRow {
   created_at: string;
   disabled: number;
   config_revision: number;
+  /**
+   * V23：**只协助打洞**，不替房间转发数据。
+   *
+   * 生成节点配置时写 `disable_relay_data = true`：该节点仍作为 peer 参与路由与打洞协调
+   * （两端通过它交换公网地址），但 OSPF 会给它的中继链路一个极大代价，数据不会落在它身上。
+   * 用途：把带宽很少的机器当"帮打洞的"用，别让它扛房间流量。
+   */
+  assist_only?: number;
 }
 
 /**
@@ -85,6 +93,8 @@ export function toNode(row: NodeRow): RelayNode {
     version: row.version,
     capacityPeers: row.capacity_peers,
     capacityBps: row.capacity_bps ?? 0,
+    /** 只协助打洞（不转发数据）—— 生成节点配置与「打洞节点」槽位都用它 */
+    assistOnly: row.assist_only === 1,
     peers: row.peers,
     rooms: row.rooms,
     rxBps: row.rx_bps,
@@ -209,6 +219,8 @@ export class NodeRepo {
       capacityPeers?: number;
       /** 带宽上限（bit/s），0 = 不限 */
       capacityBps?: number;
+      /** 只协助打洞（不转发房间数据），见 NodeRow.assist_only */
+      assistOnly?: boolean;
       tags?: string[];
     },
   ): void {
@@ -245,6 +257,10 @@ export class NodeRepo {
     if (fields.capacityBps !== undefined) {
       sets.push('capacity_bps = ?');
       params.push(fields.capacityBps);
+    }
+    if (fields.assistOnly !== undefined) {
+      sets.push('assist_only = ?');
+      params.push(fields.assistOnly ? 1 : 0);
     }
     if (fields.tags !== undefined) {
       sets.push('tags = ?');

@@ -296,6 +296,14 @@ export class NodeService {
         relayNetworkWhitelist: et.relayNetworkWhitelist,
         bindDevice: false,
         defaultProtocol: 'tcp',
+        /**
+         * 「只协助打洞」的节点：不转发房间数据。
+         *
+         * `disable_relay_data = true` 让 EasyTier 广播 "avoid relay"，OSPF 会给它的中继链路
+         * 一个极大代价（`peer_ospf_route.rs` 的 AVOID_RELAY_COST）—— 它照样参与路由与打洞协调
+         * （两端通过它交换公网地址），但**数据不落在它身上**。带宽很少的机器就该这么用。
+         */
+        ...(row.assist_only === 1 ? { disableRelayData: true } : {}),
         // 平台设置里的限速是「kbps」，EasyTier 的 foreign_relay_bps_limit 是「字节/秒」
         ...(s.relayBandwidthKbps > 0 ? { foreignRelayBpsLimit: kbpsToBytesPerSecond(s.relayBandwidthKbps) } : {}),
       },
@@ -495,6 +503,8 @@ export class NodeService {
       capacityPeers?: number;
       /** 带宽上限（bit/s），0 = 不限 */
       capacityBps?: number;
+      /** 只协助打洞（不转发房间数据）：生成配置写 `disable_relay_data` */
+      assistOnly?: boolean;
       tags?: string[];
     },
   ): RelayNode {

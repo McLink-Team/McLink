@@ -442,6 +442,121 @@ export function nextRoomExpiry(current: string | null, nowMs: number, ttlMs: num
   return target - currentMs >= minMove ? new Date(target).toISOString() : null;
 }
 
+/**
+ * 房间中继"过载"的判定窗口数（30 秒一轮 → 6 轮 ≈ 3 分钟）。
+ *
+ * 为什么不是一次就动：房间刚建好、玩家在下载资源包、有人刚进服，都会让瞬时速率冲高，
+ * 单窗口触发等于把抖动当成长时间过载。3 分钟也够一个"真的在跑大流量"的房间暴露出来。
+ * 回落用同一个窗口数（防抖，别来回切）。
+ */
+export const RELAY_SCALE_WINDOWS = 6;
+
+/**
+ * 这一台是否属于「大带宽档」。
+ *
+ * 门槛是平台设置里的 `relayBigPipeBps`（默认 10 Mbps）；**`capacity_bps = 0`
+ * （控制台里没填带宽上限）也算大档** —— 那个字段在界面上就是"不限"，
+ * 把它当成小管子会让默认部署（没人填容量）全部落到"没有大档节点"。
+ */
+export function isBigPipeNode(row: NodeRow, thresholdBps: number): boolean {
+  const capacity = row.capacity_bps ?? 0;
+  if (capacity === 0) return true;
+  return thresholdBps <= 0 || capacity >= thresholdBps;
+}
+
+/**
+ * 中继槽（真正承载数据的那台）：**大带宽档 → 客户端实测延迟优先**。
+ *
+ * 与 `selectRelays` 的区别只有一个：主键换成延迟而不是权重（用户要求"兜底（= 中继）节点
+ * 也要按延迟优先"）。其余判据沿用同一套：真有余量的优先 → 延迟升序 → 权重降序 →
+ * 空余带宽 → relayScore → peers。没有延迟提示的节点排在最后（与 `selectRelays` 一致）。
+ *
+ * 延迟用的是**建房那个客户端上报的 tcping**（`latencyHints`）：它测的正是
+ * "这台机器到我这条链路"，而中继槽就是给这个房间的人用的。
+ *
+ * 模块级函数（不是类私有方法）是为了让单测能用假对象直接钉住这套排序
+ * —— 见 `test/unit.test.ts` 的 `schedule()`。
+ */
+export function pickRelayNode(
+  pool: readonly RelayCandidate[],
+  latencyHints: readonly RelayLatencyHint[],
+  excludeId: string,
+  thresholdBps: number,
+  zone = '',
+): NodeRow | null {
+  const rest = pool.filter((c) => c.row.id !== excludeId);
+  if (rest.length === 0) return null;
+  const big = rest.filter((c) => isBigPipeNode(c.row, thresholdBps));
+  if (big.length === 0) {
+    log.warn('没有大带宽档的中继节点，中继槽只能从全部候选里按延迟挑（见设置「大带宽档门槛」）', {
+      zone,
+      candidates: rest.length,
+    });
+  }
+  const candidates = big.length > 0 ? big : rest;
+
+  const hintMs = new Map<string, number>();
+  for (const hint of latencyHints) {
+    if (!hint || typeof hint.nodeId !== 'string') continue;
+    if (typeof hint.ms !== 'number' || !Number.isFinite(hint.ms) || hint.ms < 0) continue;
+    const prev = hintMs.get(hint.nodeId);
+    if (prev === undefined || hint.ms < prev) hintMs.set(hint.nodeId, hint.ms);
+  }
+  const ranked = candidates.map((c) => ({
+    candidate: c,
+    headroom: hasHeadroom(c),
+    ms: (hasHeadroom(c) ? hintMs.get(c.row.id) : undefined) ?? Number.POSITIVE_INFINITY,
+    bwFree: freeBandwidth(c.utilization),
+    score: relayScore(c.row, c.utilization),
+  }));
+  ranked.sort(
+    (a, b) =>
+      Number(b.headroom) - Number(a.headroom) ||
+      (a.ms === b.ms ? 0 : a.ms - b.ms) ||
+      b.candidate.row.weight - a.candidate.row.weight ||
+      b.bwFree - a.bwFree ||
+      b.score - a.score ||
+      a.candidate.row.peers - b.candidate.row.peers,
+  );
+  return ranked[0]?.candidate.row ?? null;
+}
+
+/**
+ * 取中继：**槽 1 = 打洞节点，槽 2 = 中继节点**（用户 2026-09-28 拍板的模型）。
+ *
+ * 为什么要分角色：部分节点的带宽确实少，但它们在网络里并非没用 ——
+ * EasyTier 的 P2P 打洞需要一个双方都能连上的公共 peer 来交换公网地址。
+ * 把这类节点标成「只协助打洞」（`assist_only`，生成配置时写 `disable_relay_data`）后：
+ *   · 槽 1 放它：负责协调打洞，**不承载数据**（OSPF 会给它的中继链路极大代价）；
+ *   · 槽 2 放大管子：因为槽 1 转不了数据，"客户端走中继时用哪台"就由结构决定，
+ *     不需要客户端配合 —— 这正是我们要的确定性。
+ *
+ * 两条硬纪律：
+ *   · 没有标 assist 的节点时，槽 1 退回原规则（等价于旧的"主中继"），行为向后兼容；
+ *   · 没有大带宽档时槽 2 退回全部候选并记 warn，绝不为了满足约束而少给一台中继。
+ */
+export function pickRoomRelays(
+  pool: readonly RelayCandidate[],
+  latencyHints: readonly RelayLatencyHint[],
+  max: number,
+  thresholdBps: number,
+  zone = '',
+): string[] {
+  if (max <= 0 || pool.length === 0) return [];
+  if (max === 1 || pool.length === 1) {
+    return selectRelays(pool, latencyHints, Math.min(max, pool.length)).map((n) => n.id);
+  }
+
+  // 槽 1：优先从「只协助打洞」的节点里挑（同一套排序：权重 → 延迟 → 空余带宽）
+  const assist = pool.filter((c) => c.row.assist_only === 1);
+  const punch = selectRelays(assist.length > 0 ? assist : pool, latencyHints, 1)[0];
+  if (!punch) return [];
+
+  // 槽 2：大带宽档 + 客户端实测延迟优先
+  const relay = pickRelayNode(pool, latencyHints, punch.id, thresholdBps, zone);
+  return relay ? [punch.id, relay.id] : [punch.id];
+}
+
 export class RoomService {
   private readonly config: ServerConfig;
   private readonly rooms: RoomRepo;
@@ -453,6 +568,15 @@ export class RoomService {
   private readonly messages: MessageRepo;
   /** 带宽利用率（与 NodeService 共享同一个实例） */
   private readonly util: NodeUtilization;
+
+  /**
+   * 过载自动提升用的内存状态（见 `promoteOverloadedRooms`）：
+   *   · `#loadWindows`：有符号的连续窗口计数 —— 正数 = 持续超载，负数 = 持续空闲；
+   *   · `#scaled`：已经提升过的房间（存着提升前的顺序与当时的读数，用于回落和界面显示）。
+   * 主控重启即清空（房间短命，代价可忽略）。
+   */
+  readonly #loadWindows = new Map<string, number>();
+  readonly #scaled = new Map<string, { previous: string[]; rxBps: number; txBps: number; at: number }>();
 
   constructor(
     config: ServerConfig,
@@ -1296,14 +1420,37 @@ export class RoomService {
     }
 
     if (zone === 'auto') {
-      return selectRelays(pool, latencyHints, max).map((n) => n.id);
+      return this.pickRelays(pool, latencyHints, max, zone);
     }
     const inZone = pool.filter((c) => c.row.region === zone);
     if (inZone.length === 0) {
       log.warn('指定区域没有可用节点，回退到全局调度', { zone });
-      return selectRelays(pool, latencyHints, max).map((n) => n.id);
+      return this.pickRelays(pool, latencyHints, max, zone);
     }
-    return selectRelays(inZone, latencyHints, Math.min(max, inZone.length)).map((n) => n.id);
+    return this.pickRelays(inZone, latencyHints, Math.min(max, inZone.length), zone);
+  }
+
+  /** 大带宽档门槛（字节/秒），见模块级 `isBigPipeNode` */
+  bigPipeThresholdBps(): number {
+    return Math.max(0, this.settings.current.relayBigPipeBps);
+  }
+
+  /** 见模块级 `isBigPipeNode` */
+  isBigPipe(row: NodeRow): boolean {
+    return isBigPipeNode(row, this.bigPipeThresholdBps());
+  }
+
+  /**
+   * 取中继：转发给模块级 `pickRoomRelays`（那里是纯函数，便于单测钉规则）。
+   * 这里只负责把平台设置里的门槛读出来。
+   */
+  pickRelays(
+    pool: readonly RelayCandidate[],
+    latencyHints: readonly RelayLatencyHint[],
+    max: number,
+    zone: string,
+  ): string[] {
+    return pickRoomRelays(pool, latencyHints, max, this.bigPipeThresholdBps(), zone);
   }
 
   /**
@@ -1339,6 +1486,115 @@ export class RoomService {
       if (!accepted.includes(id)) accepted.push(id);
     }
     return { ids: accepted, rejected };
+  }
+
+  /* ------------------------------------------------------- 过载自动提升 */
+
+  /**
+   * 房间中继过载 → 把**槽 2（中继节点）换成更空的大带宽节点**。
+   *
+   * 触发：房间的中继速率（跨节点 rx+tx 之和）连续 `RELAY_SCALE_WINDOWS` 个窗口超阈值；
+   * 回落：低于阈值同样连续这么多窗口才还原（防抖）。
+   * 作用范围（用户明确接受）：**只影响新票据** —— 后来进房/重进房的人按新名单连，
+   * 已经在房间里的人这一局不变（用户原话："原来的已经到负载边缘了，让后来的人走大宽带负载"）。
+   *
+   * 为什么换的是槽 2：新模型下槽 1 是打洞节点（`assist_only`，不承载数据），换它没有意义；
+   * 而子节点之间没有互相 peer，同一房间的成员必须共享至少一台中继，所以打洞节点也不能动。
+   * 换之前会确认"新那台确实更空"，否则保持不变（不为了动作而动作）。
+   *
+   * 状态全在内存：主控重启后重新开始计数（房间本来就短命，代价可忽略）。
+   */
+  promoteOverloadedRooms(
+    samples: ReadonlyArray<{ networkName: string; rxBps: number; txBps: number }>,
+    now = Date.now(),
+  ): Array<{ roomId: string; code: string; to: string; from: string; rxBps: number; txBps: number }> {
+    const threshold = Math.max(0, this.settings.current.relayScaleMbps) * 1_000_000;
+    if (threshold <= 0) return [];
+
+    /** 房间 → 这一轮的跨节点合计速率 */
+    const rate = new Map<string, { rx: number; tx: number }>();
+    for (const sample of samples) {
+      const row = this.rooms.findByNetworkName(sample.networkName);
+      if (!row) continue;
+      const current = rate.get(row.id) ?? { rx: 0, tx: 0 };
+      current.rx += Math.max(0, sample.rxBps);
+      current.tx += Math.max(0, sample.txBps);
+      rate.set(row.id, current);
+    }
+
+    const promoted: Array<{ roomId: string; code: string; to: string; from: string; rxBps: number; txBps: number }> = [];
+    for (const [roomId, r] of rate) {
+      const total = r.rx + r.tx;
+      const over = total >= threshold;
+      // 有符号窗口计数：正 = 持续超载，负 = 持续空闲
+      const windows = this.#loadWindows.get(roomId) ?? 0;
+      const next = over ? Math.max(windows, 0) + 1 : Math.min(windows, 0) - 1;
+      this.#loadWindows.set(roomId, next);
+
+      const row = this.rooms.findById(roomId);
+      if (!row || row.status !== 'open') continue;
+      const current = toRoom(row).relayNodeIds;
+
+      if (next >= RELAY_SCALE_WINDOWS && !this.#scaled.has(roomId)) {
+        const [punchId, relayId] = current;
+        if (!punchId || !relayId) continue;
+        /**
+         * 换的是**槽 2（中继节点）**，槽 1（打洞节点）不动 —— 这是新模型下的正确动作：
+         * 打洞节点本来就不承载数据，把它换掉没有意义；要缓解过载只能换那台真正在转发的。
+         * 只在"确实存在更空的大管子"时才换，避免为了动作而动作。
+         */
+        const currentRelay = this.nodes.findById(relayId);
+        const currentFree = currentRelay ? freeBandwidth(this.utilizationOf(currentRelay)) : -1;
+        const candidate = this.nodes
+          .listSchedulable()
+          .map((row) => ({ row, utilization: this.utilizationOf(row) }))
+          .filter(
+            (c) =>
+              c.row.id !== punchId &&
+              c.row.id !== relayId &&
+              this.isBigPipe(c.row) &&
+              !this.isBandwidthBusy(c.row),
+          )
+          .sort((a, b) => freeBandwidth(b.utilization) - freeBandwidth(a.utilization) || b.row.weight - a.row.weight)[0];
+        if (!candidate) {
+          log.warn('房间中继过载，但没有更空的大带宽节点可换（见设置「大带宽档门槛」）', { room: roomId, code: row.code });
+          continue;
+        }
+        if (freeBandwidth(candidate.utilization) <= currentFree) {
+          log.warn('房间中继过载，但当前中继已是最空的大带宽节点', { room: roomId, code: row.code });
+          continue;
+        }
+        this.rooms.setRelayNodeIds(roomId, [punchId, candidate.row.id]);
+        this.#scaled.set(roomId, { previous: current, rxBps: r.rx, txBps: r.tx, at: now });
+        this.#loadWindows.set(roomId, 0);
+        promoted.push({
+          roomId,
+          code: row.code,
+          to: candidate.row.id,
+          from: relayId,
+          rxBps: r.rx,
+          txBps: r.tx,
+        });
+        continue;
+      }
+
+      // 回落：降到阈值以下并且之前提升过 → 还原成原来的顺序（只在没人重进时悄悄发生）
+      if (next <= -RELAY_SCALE_WINDOWS && this.#scaled.has(roomId)) {
+        const state = this.#scaled.get(roomId)!;
+        this.rooms.setRelayNodeIds(roomId, state.previous);
+        this.#scaled.delete(roomId);
+        this.#loadWindows.set(roomId, 0);
+        log.info('房间中继已回到原顺序（流量回落）', { room: roomId, code: row.code });
+      }
+    }
+    return promoted;
+  }
+
+  /** 自动提升的状态（控制台房间详情显示"为什么这台排第一"） */
+  relayScaleState(roomId: string): { at: string; rxBps: number; txBps: number } | null {
+    const state = this.#scaled.get(roomId);
+    if (!state) return null;
+    return { at: new Date(state.at).toISOString(), rxBps: state.rxBps, txBps: state.txBps };
   }
 
   /** 这台节点的带宽利用率（0–1）；没配 capacity_bps 时恒为 0（不构成约束） */

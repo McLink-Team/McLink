@@ -127,7 +127,7 @@
 | GET | `/api/v1/admin/nodes/regions` | 各区域可用统计 |
 | POST | `/api/v1/admin/nodes/enroll-key` | 签发一次性注册密钥（并返回一键安装命令文本） |
 | GET | `/api/v1/admin/nodes/enroll-keys` | 密钥列表（含已使用/已吊销） |
-| PATCH | `/api/v1/admin/nodes/:id` | 修改节点 `name`/`region`/`endpoint`/`weight`/`capacityPeers`/`tags` |
+| PATCH | `/api/v1/admin/nodes/:id` | 修改节点 `name`/`region`/`endpoint`/`weight`/`capacityPeers`/`capacityBps`/`assistOnly`/`tags` |
 | POST | `/api/v1/admin/nodes/:id/disable` | 停用/启用节点（`{"disabled": true}`） |
 | DELETE | `/api/v1/admin/nodes/:id` | 删除节点 |
 | GET | `/api/v1/admin/rooms` | 房间列表（含用量） |

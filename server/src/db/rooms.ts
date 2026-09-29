@@ -268,6 +268,22 @@ export class RoomRepo {
     );
   }
 
+  /**
+   * 改写房间的中继名单（含顺序）。
+   *
+   * 用途只有一处：`RoomService.promoteOverloadedRooms()` 在房间中继过载时把**大带宽节点**
+   * 提到第一位，让后来进房/重进房的人走大管子（已在房间里的客户端不受影响 —— 它们的配置
+   * 是进房那一刻拿到的，这也是用户明确接受的取舍）。
+   */
+  setRelayNodeIds(id: string, relayNodeIds: string[]): void {
+    this.db.run(
+      'update rooms set relay_node_ids = ?, last_active_at = ? where id = ?',
+      JSON.stringify(relayNodeIds),
+      nowIso(),
+      id,
+    );
+  }
+
   bumpAclRevision(id: string): number {
     this.db.run('update rooms set acl_revision = acl_revision + 1 where id = ?', id);
     return Number(this.db.scalar<number>('select acl_revision from rooms where id = ?', id) ?? 1);
