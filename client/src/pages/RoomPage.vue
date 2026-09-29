@@ -48,6 +48,7 @@ import {
 import type { PeerView } from '../lib/easytier-parse.ts';
 import { linkKind } from '../lib/easytier-parse.ts';
 import { LOSS_THRESHOLD, formatLoss, hostLinkQuality } from '../lib/relay-fallback.ts';
+import { relayRoleOf, type RelayTicketNames } from '../lib/relay-roles.ts';
 import { friendlyError } from '../lib/api.ts';
 import { copyText } from '../lib/clipboard.ts';
 import { confirmInApp } from '../lib/confirm.ts';
@@ -244,46 +245,23 @@ const memberIps = computed(
 const isMemberPeer = (p: PeerView): boolean => memberIps.value.has((p.ipv4 ?? '').split('/')[0]);
 const memberPeers = computed(() => visiblePeers.value.filter(isMemberPeer));
 const relayPeers = computed(() => visiblePeers.value.filter((p) => !isMemberPeer(p)));
-/** 走过流量的路径才算"在用"：**只在名字对不上时**当保守回退用，不再是主判据（见下） */
-const carriesTraffic = (p: PeerView): boolean => p.rxBytes + p.txBytes > 0;
 
 /* --------------------------------------------------------- 打洞 / 中继角色 */
 
 /**
- * 一行中继是不是**打洞节点**（对应票据的 `relays[0]`）。
- *
- * 判据：**票据里的 `label` ↔ 内核 peer 行的 `hostname`**。平台按 `room.relayNodeIds`
- * 的顺序下发两个槽位：`relays[0]` = 打洞节点（协调 P2P 打洞，**不承载数据**），
- * `relays[1]` = 中继节点（真正转发房间流量）。
- *
- * 为什么不按 `relayPeers` 的数组下标判定：`relayPeers` 的顺序来自内核
- * `easytier-cli peer list`（清洗后按 P2P 优先 / 延迟排序），跟平台下发顺序无关，
- * 下标 0 不一定是打洞节点 —— 以顺序下断正是上一版的错误来源。
- *
- * 为什么不用"有没有字节数"判定：两个槽位下 EasyTier 会**同时**维持到两台的连接
- * （保活 + 路由同步），两台都有几 KB 流量，旧判据会把两台都标成"在用"，
- * 玩家以为流量走了两条。
+ * 两个槽位的角色判定：判据与"为什么要剥 `PublicServer_` 前缀"全部写在
+ * `lib/relay-roles.ts`（纯函数，回归脚本 `scripts/verify-relay-roles.mjs` 钉着它）。
+ * 这里只负责把票据里的 label 取出来喂进去。
  */
-const relayNameKey = (name: string): string => name.trim().toLowerCase();
-
 /** 票据里的中继名字：`punch` 是打洞节点（无票据时为 null），`all` 用于确认名字认不认得出来 */
-const relayNames = computed(() => {
+const relayNames = computed<RelayTicketNames>(() => {
   const relays = session.value?.ticket?.relays ?? [];
   const punchId = session.value?.room?.relayNodeIds?.[0];
   const byId = punchId ? relays.find((r) => r.nodeId === punchId) : undefined;
-  return { punch: byId?.label ?? relays[0]?.label ?? null, all: relays.map((r) => r.label) };
+  return { punchLabel: byId?.label ?? relays[0]?.label ?? null, allLabels: relays.map((r) => r.label) };
 });
 
-const isPunchRelay = (p: PeerView): boolean => {
-  const key = relayNameKey(p.hostname ?? '');
-  const { punch, all } = relayNames.value;
-  // 名字认得出来（内核给的 hostname 就是平台下发的 label）→ 按票据里的打洞节点判定
-  if (key && punch && all.some((label) => relayNameKey(label) === key)) {
-    return relayNameKey(punch) === key;
-  }
-  // 名字对不上时的保守回退：退回旧判据（只有走过字节数的那条当"在用"），不瞎标
-  return carriesTraffic(p);
-};
+const relayRole = (p: PeerView): 'punch' | 'relay' | null => relayRoleOf(p.hostname ?? '', relayNames.value);
 
 /* ------------------------------------------------------- 丢包与回落中继 */
 
@@ -844,18 +822,26 @@ async function doLeave(): Promise<void> {
                     <span class="roster-sub">{{ p.ipv4 || '平台下发的中继入口' }}</span>
                   </span>
                   <span
-                    v-if="isPunchRelay(p)"
+                    v-if="relayRole(p) === 'punch'"
                     class="badge badge-neutral"
                     title="打洞节点：协助两端打洞（交换公网地址），不承载房间流量"
                   >
                     打洞节点
                   </span>
                   <span
-                    v-else
+                    v-else-if="relayRole(p) === 'relay'"
                     class="badge badge-ok"
                     title="中继节点：打不通 P2P 时，房间流量走这一台"
                   >
                     中继节点
+                  </span>
+                  <!-- 名字对不上（例如节点改名/老主控）：宁可不标角色，也不标错 -->
+                  <span
+                    v-else
+                    class="badge badge-neutral"
+                    title="认不出这台是打洞节点还是中继节点：内核报的 hostname 与票据里的节点名对不上"
+                  >
+                    角色未知
                   </span>
                   <span class="mono faint roster-sub roster-num">
                     {{ p.latencyMs === null ? '—' : `${p.latencyMs.toFixed(1)} ms` }}
