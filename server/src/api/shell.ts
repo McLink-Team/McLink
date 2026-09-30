@@ -58,13 +58,66 @@ function buildDescription(siteName: string, tagline: string): string {
   return `${out}。`;
 }
 
+/** 从请求头推站点根地址：反代之后的协议与主机名在 x-forwarded-* 里 */
+function requestOriginOf(headers: IncomingHttpHeaders): string {
+  const proto = String(headers['x-forwarded-proto'] ?? '').split(',')[0]?.trim().toLowerCase() ?? '';
+  const forwardedHost = String(headers['x-forwarded-host'] ?? '').split(',')[0]?.trim() ?? '';
+  const host = String(headers.host ?? '').split(',')[0]?.trim() ?? '';
+  const effectiveHost = forwardedHost || host;
+  if (!effectiveHost) return '';
+  /*
+   * 协议怎么定（三个分支都有实际情形兜着）：
+   *   · `x-forwarded-proto` 有值 → 以它为准（`deploy/nginx.conf.example` 会设 `$scheme`）；
+   *   · 只有 `x-forwarded-host` → 说明前面有反代（多半在它那里终止了 TLS）→ https；
+   *   · 只有 `Host` → 直连主控端口 → **http**。
+   * 最后这条以前是"默认 https"，于是直连时生成出 `https://127.0.0.1:8787` ——
+   * 打不通的地址（用户实测报的就是这一串的 http 版本）。
+   */
+  const scheme = proto === 'http' || proto === 'https' ? proto : forwardedHost ? 'https' : 'http';
+  return `${scheme}://${effectiveHost}`;
+}
+
 /** 站点根地址：优先用反向代理传来的 proto/host，退回到公开地址设置 */
 export function siteOrigin(app: App, headers: IncomingHttpHeaders): string {
-  const proto = String(headers['x-forwarded-proto'] ?? '').split(',')[0]?.trim() ?? '';
-  const host = String(headers['x-forwarded-host'] ?? headers.host ?? '').split(',')[0]?.trim() ?? '';
-  if (host) return `${proto === 'http' ? 'http' : 'https'}://${host}`;
+  const fromRequest = requestOriginOf(headers);
+  if (fromRequest) return fromRequest;
   // 安装脚本的 --public-url 写进 MCLINK_PUBLIC_BASE_URL，服务端读成 config.publicBaseUrl
-  return app.config.publicBaseUrl || 'http://127.0.0.1:8787';
+  return app.config.publicBaseUrl || `http://127.0.0.1:${app.config.port}`;
+}
+
+/**
+ * 主控的**对外**地址 —— 生成"给节点用的命令"时只能用它。
+ *
+ * 优先级与 `siteOrigin` **相反**（配置优先）：`MCLINK_PUBLIC_BASE_URL`（安装脚本的
+ * `--public-url` 会写它）是管理员明确声明过的对外地址，比任何推导都可信；没配时才退回
+ * "请求自带的 proto/host"（管理员是从某个地址打开控制台的，那个地址通常就是对的）；
+ * 两者都没有才用 `http://127.0.0.1:<port>` —— 那个地址**只能在主控本机用**，
+ * 节点上执行必然连不上，所以标成 `source: 'loopback'` 让调用方当异常提示出来。
+ *
+ * 📌 这里踩过一次（用户实测）：兜底曾经写死成 `127.0.0.1:8787`（`relayPublicHost` 随
+ * "主控中继"一起废弃之后就成了唯一去向），于是没配 `MCLINK_PUBLIC_BASE_URL` 的部署里，
+ * 控制台签发的安装命令全是 `curl -fsSL http://127.0.0.1:8787/agent/install.sh` ——
+ * 节点装完指向自己。
+ */
+export function masterOrigin(
+  app: App,
+  headers: IncomingHttpHeaders,
+): { origin: string; source: 'config' | 'request' | 'loopback' } {
+  const configured = (app.config.publicBaseUrl ?? '').trim().replace(/\/+$/, '');
+  if (configured) return { origin: configured, source: 'config' };
+  const fromRequest = requestOriginOf(headers);
+  if (fromRequest) return { origin: fromRequest, source: 'request' };
+  return { origin: `http://127.0.0.1:${app.config.port}`, source: 'loopback' };
+}
+
+/** 这个地址是不是"只能在主控本机用"（loopback / localhost） */
+export function isLoopbackOrigin(origin: string): boolean {
+  try {
+    const host = new URL(origin).hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+  } catch {
+    return false;
+  }
 }
 
 export function renderShell(

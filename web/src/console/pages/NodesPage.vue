@@ -16,7 +16,7 @@ import {
 } from '@mclink/shared';
 import { api, friendlyError } from '../../lib/api.ts';
 import { asArray, asStringList, copyText, formatDateTime, nodeLabel, nodeTone, reportError, toFloat, toInt } from '../../lib/ui.ts';
-import { notifyOk } from '../../lib/toast.ts';
+import { notifyOk, notifyWarn } from '../../lib/toast.ts';
 import Badge from '../../components/Badge.vue';
 
 interface RegionAvailability {
@@ -42,6 +42,11 @@ interface EnrollKeyResult {
   createdAt: string;
   /** 一条可直接粘贴到目标机器执行的安装命令 */
   command: string;
+  /**
+   * 主控没配对外地址时的提示（命令里会是 127.0.0.1，节点上跑不通）——
+   * 非空必须显示，否则要等到节点上才发现连不上主控。
+   */
+  warning?: string | null;
   /** 命令里用到的部署参数，界面上用来提示端口映射关系 */
   params: {
     region: string;
@@ -277,8 +282,13 @@ async function copyInstallCommand(node: RelayNode): Promise<void> {
   if (!ok) return;
   busyId.value = node.id;
   try {
-    const res = await api.post<{ enrollKey: string; command: string }>(`/admin/nodes/${node.id}/reinstall-command`, {});
+    const res = await api.post<{ enrollKey: string; command: string; warning?: string | null }>(
+      `/admin/nodes/${node.id}/reinstall-command`,
+      {},
+    );
     await copyText(res.command, `「${node.name}」安装指令`);
+    // 命令里的地址不可用（主控没配对外地址）—— 必须当场说，否则要到节点上才发现连不上
+    if (res.warning) notifyWarn(res.warning);
   } catch (err) {
     reportError(err);
   } finally {
@@ -293,8 +303,9 @@ async function copyInstallCommand(node: RelayNode): Promise<void> {
 async function copyUpdateCommand(node: RelayNode): Promise<void> {
   busyId.value = node.id;
   try {
-    const res = await api.get<{ command: string }>(`/admin/nodes/${node.id}/update-command`);
+    const res = await api.get<{ command: string; warning?: string | null }>(`/admin/nodes/${node.id}/update-command`);
     await copyText(res.command, `「${node.name}」更新指令`);
+    if (res.warning) notifyWarn(res.warning);
   } catch (err) {
     reportError(err);
   } finally {
@@ -620,6 +631,7 @@ async function removeNode(node: RelayNode): Promise<void> {
             <button class="btn btn-sm" type="button" @click="copyText(enrollCreated.command, '一键安装命令')">复制命令</button>
           </div>
           <pre class="code-block wrap-anywhere">{{ enrollCreated.command }}</pre>
+          <div v-if="enrollCreated.warning" class="notice notice-warn">{{ enrollCreated.warning }}</div>
           <p class="hint">
             脚本由主控托管（<span class="mono">{{ '/agent/install.sh' }}</span>）：目标机器只要能访问主控，
             就会自动下载安装脚本与 agent、注册节点、拉起 systemd 服务。
