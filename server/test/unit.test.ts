@@ -23,6 +23,7 @@ import { TrafficLedgerRepo, localDay } from '../src/db/traffic.ts';
 import { TrafficAccountant } from '../src/services/traffic-ledger.ts';
 import { ewma, NodeUtilization, shedUtilFor, UTIL_SHED } from '../src/services/node-utilization.ts';
 import { parseLatencyHints, parsePolicy } from '../src/api/helpers.ts';
+import { isLoopbackOrigin, masterOrigin } from '../src/api/shell.ts';
 import {
   buildMessage,
   encodeHeader,
@@ -1726,6 +1727,52 @@ describe('手选节点落槽 assignRelaySlots', () => {
     const slots = assignRelaySlots([pick('a'), pick('assist-1', true), pick('assist-2', true)], ['p', 'r']);
     assert.deepEqual([slots.punch, slots.relay, ...slots.extra], ['assist-1', 'a']);
     assert.deepEqual(slots.rejected, [{ id: 'assist-2', reason: '只协助打洞的节点不能作为中继节点' }]);
+  });
+});
+
+/**
+ * 签发节点命令时用的"主控对外地址"。
+ *
+ * 这一组盯的是用户实测踩到的 bug：没配 `MCLINK_PUBLIC_BASE_URL` 的部署里，控制台签发的
+ * 安装命令是 `curl -fsSL http://127.0.0.1:8787/agent/install.sh` —— 节点装完指向自己。
+ * 根因是兜底直接写死了 `127.0.0.1:8787`（`relayPublicHost` 随"主控中继"废弃之后）。
+ */
+describe('主控对外地址 masterOrigin（签发节点命令）', () => {
+  type Ctx = Parameters<typeof masterOrigin>[0];
+  const app = (publicBaseUrl: string): Ctx =>
+    ({ config: { publicBaseUrl, port: 8787 } }) as unknown as Ctx;
+  const h = (headers: Record<string, string>) => headers as never;
+
+  test('配了 MCLINK_PUBLIC_BASE_URL 就以它为准（并去掉尾部斜杠）', () => {
+    assert.deepEqual(masterOrigin(app('https://cnnic.link/'), h({ host: '127.0.0.1:8787' })), {
+      origin: 'https://cnnic.link',
+      source: 'config',
+    });
+  });
+
+  test('没配时退回请求里的 proto/host（反代场景下管理员就是在公网地址上操作）', () => {
+    assert.deepEqual(
+      masterOrigin(
+        app(''),
+        h({ host: '10.0.0.5:8787', 'x-forwarded-host': 'cnnic.link', 'x-forwarded-proto': 'https' }),
+      ),
+      { origin: 'https://cnnic.link', source: 'request' },
+    );
+  });
+
+  test('两者都没有才用本机地址，并标成 loopback（调用方据此报警）', () => {
+    const r = masterOrigin(app(''), h({}));
+    assert.equal(r.origin, 'http://127.0.0.1:8787');
+    assert.equal(r.source, 'loopback');
+    assert.equal(isLoopbackOrigin(r.origin), true);
+  });
+
+  test('isLoopbackOrigin：域名/公网不算，127.0.0.1 / localhost / ::1 算', () => {
+    assert.equal(isLoopbackOrigin('https://cnnic.link'), false);
+    assert.equal(isLoopbackOrigin('http://127.0.0.1:8787'), true);
+    assert.equal(isLoopbackOrigin('http://localhost:8787'), true);
+    assert.equal(isLoopbackOrigin('http://[::1]:8787'), true);
+    assert.equal(isLoopbackOrigin('不是地址'), false);
   });
 });
 

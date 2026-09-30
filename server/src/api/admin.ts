@@ -1,5 +1,6 @@
 /** 管理员接口：仪表盘、节点管理、房间管理、用户管理、流量、审计、平台设置 */
 import { Routes, DEFAULT_GITHUB_PROXY, emailProblem, parseUsernameList, regionLabel, type BroadcastAudience, type PlatformSettings, type SmtpEncryption } from '@mclink/shared';
+import type { IncomingHttpHeaders } from 'node:http';
 import type { App } from '../app.ts';
 import type { Router } from '../http/kit.ts';
 import { optBool, optInt, optStr, paging, req, requireAdmin } from './helpers.ts';
@@ -12,6 +13,7 @@ import { buildOverview } from './public.ts';
 import { DEFAULT_SETTINGS, toPublicSettings } from '../services/settings.ts';
 import { SCHEMA_VERSION } from '../db/schema.ts';
 import { mergeRelayedNetworks } from '../services/nodes.ts';
+import { isLoopbackOrigin, masterOrigin } from './shell.ts';
 import { localBucket, localDay } from '../db/traffic.ts';
 
 const log = logger('api:admin');
@@ -129,12 +131,15 @@ export function registerAdminRoutes(router: Router, app: App): void {
       domestic: optBool(body, 'domestic') === true,
       githubProxy: optStr(body, 'githubProxy', 200),
     };
+    const { origin, warning } = agentCommandOrigin(app, ctx.req.headers);
     return {
       enrollKey: key,
       note: row.note,
       createdAt: row.created_at,
       /** 节点侧一键安装命令：整条命令复制到 Debian 上执行即可 */
-      command: buildAgentCommand(app, key, options),
+      command: buildAgentCommand(app, key, options, origin),
+      /** 非空时界面必须显示 —— 命令里的地址不可用（见 agentCommandOrigin） */
+      warning,
       params: {
         region: options.region ?? 'cn-east',
         name: options.name ?? 'relay-sh',
@@ -175,16 +180,22 @@ export function registerAdminRoutes(router: Router, app: App): void {
     const node = app.nodeService.get(ctx.params.id ?? '');
     const key = makeEnrollKey();
     app.enrollKeys.create(key, `重装节点 ${node.name}`, auth.userId);
-    const command = buildAgentCommand(app, key, {
-      region: node.region,
-      name: node.name,
-      // 节点表里的 endpoint 是 host:port；这里只要 host，端口用节点自己的链接端口
-      host: optStr(body, 'host', 120) ?? endpointHost(node.endpoint),
-      listenPort: node.listenPort ?? undefined,
-      connectPort: node.connectPort ?? undefined,
-      domestic: optBool(body, 'domestic') === true,
-      githubProxy: optStr(body, 'githubProxy', 200),
-    });
+    const { origin, warning } = agentCommandOrigin(app, ctx.req.headers);
+    const command = buildAgentCommand(
+      app,
+      key,
+      {
+        region: node.region,
+        name: node.name,
+        // 节点表里的 endpoint 是 host:port；这里只要 host，端口用节点自己的链接端口
+        host: optStr(body, 'host', 120) ?? endpointHost(node.endpoint),
+        listenPort: node.listenPort ?? undefined,
+        connectPort: node.connectPort ?? undefined,
+        domestic: optBool(body, 'domestic') === true,
+        githubProxy: optStr(body, 'githubProxy', 200),
+      },
+      origin,
+    );
     app.audit.write({
       actorType: 'admin',
       actorId: auth.userId,
@@ -195,7 +206,7 @@ export function registerAdminRoutes(router: Router, app: App): void {
       detail: { enrollKey: key },
       ip: ctx.ip,
     });
-    return { enrollKey: key, command };
+    return { enrollKey: key, command, warning };
   }, { auth: true, admin: true });
 
   /**
@@ -207,7 +218,8 @@ export function registerAdminRoutes(router: Router, app: App): void {
   router.get('/admin/nodes/:id/update-command', (ctx) => {
     requireAdmin(ctx);
     app.nodeService.get(ctx.params.id ?? '');
-    return { command: buildAgentUpdateCommand(app) };
+    const { origin, warning } = agentCommandOrigin(app, ctx.req.headers);
+    return { command: buildAgentUpdateCommand(app, origin), warning };
   }, { auth: true, admin: true });
 
   router.patch('/admin/nodes/:id', async (ctx) => {
@@ -819,8 +831,10 @@ function buildAgentCommand(
     domestic?: boolean;
     githubProxy?: string;
   } = {},
+  /** 主控对外地址（由 `agentCommandOrigin` 解析，**不能**用本机监听地址） */
+  origin: string,
 ): string {
-  const base = app.config.publicBaseUrl || `http://${publicHostOf(app)}`;
+  const base = origin;
   const listen = options.listenPort ?? app.config.easytier.relayPort;
   const connect = options.connectPort ?? listen;
   const region = options.region ?? 'cn-east';
@@ -854,11 +868,28 @@ function normalizeGithubProxy(raw: string | undefined): string {
   return value.endsWith('/') ? value : `${value}/`;
 }
 
-/** 兜底用的"本机地址"：优先公网基础 URL 的主机名，其次回退中继公网主机 */
-function publicHostOf(app: App): string {
-  const fromRelay = app.config.easytier.relayPublicHost;
-  if (fromRelay) return fromRelay;
-  return `127.0.0.1:${app.config.port}`;
+/**
+ * 生成节点命令时的"对外地址 + 该不该报警"。
+ *
+ * 地址落到 loopback（既没配 `MCLINK_PUBLIC_BASE_URL`，请求本身也来自本机）时返回一句提示：
+ * 这条命令在节点上跑必然连不上主控，必须让管理员当场看见 —— 而不是复制走之后在节点上排障。
+ * （用户实测踩过：签发出来的命令是 `curl -fsSL http://127.0.0.1:8787/agent/install.sh`。）
+ */
+function agentCommandOrigin(
+  app: App,
+  headers: IncomingHttpHeaders,
+): { origin: string; warning: string | null } {
+  const { origin, source } = masterOrigin(app, headers);
+  if (source !== 'loopback' && !isLoopbackOrigin(origin)) return { origin, warning: null };
+  log.warn('签发节点命令：主控没有配置对外地址，命令里只能写本机地址', { origin, source });
+  return {
+    origin,
+    warning:
+      `⚠️ 主控没有配置对外地址，这条命令里的地址是 ${origin}，只能在主控本机使用 —— ` +
+      '节点上执行会连不上主控。请在 /etc/mclink/mclink.env 里设置 ' +
+      'MCLINK_PUBLIC_BASE_URL=https://你的域名 后重启主控' +
+      '（或重跑 deploy/install-server.sh --public-url https://你的域名），再签发。',
+  };
 }
 
 /**
@@ -869,7 +900,6 @@ function publicHostOf(app: App): string {
  * 用已有的 /etc/mclink/node-token.json 保持身份，全程不碰注册流程。
  * 所以这条命令对运维是"零参数"的，复制粘贴就能用。
  */
-function buildAgentUpdateCommand(app: App): string {
-  const base = app.config.publicBaseUrl || `http://${publicHostOf(app)}`;
-  return `curl -fsSL ${base}/agent/install.sh | sudo bash -s -- --update`;
+function buildAgentUpdateCommand(app: App, origin: string): string {
+  return `curl -fsSL ${origin}/agent/install.sh | sudo bash -s -- --update`;
 }

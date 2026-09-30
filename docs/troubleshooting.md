@@ -895,3 +895,39 @@ sudo journalctl -u mclink-server --since '15 min ago' | grep -E '慢请求|请�
 | 隐藏房间在大厅看不到 | 这是预期（`visibility=hidden`） | 用加入码进房 |
 | 建房提示「最多同时创建 N 个房间」 | `defaultMaxRooms`（默认 3）或用户 `maxRooms` | 关掉旧房间，或调大平台默认值/用户配额 |
 | 房间过一段时间自己关闭了 | TTL（默认 720 分钟）或空房回收（默认 600 秒无心跳） | 调整 `roomTtlMinutes` / `MCLINK_ROOM_IDLE_TIMEOUT` |
+
+---
+
+## 21. 控制台签发的安装 / 更新命令里是 `127.0.0.1`
+
+**现象**：控制台点「安装指令 / 更新指令」，复制出来的命令是
+
+```
+curl -fsSL http://127.0.0.1:8787/agent/install.sh | sudo bash -s -- …
+```
+
+拿到节点上执行必然失败 —— 它连的是**节点自己**的 8787 端口。
+
+**原因**：主控没配对外地址（`MCLINK_PUBLIC_BASE_URL` 为空）。命令里的地址按
+「配置 → 请求自带的 proto/host → `http://127.0.0.1:<port>`」三级取，而旧版本的后两级都塌了：
+`MCLINK_RELAY_PUBLIC_HOST` 随"主控中继"一起废弃，兜底就只剩写死的本机地址；
+直连主控时协议还被默认成 https（生成 `https://127.0.0.1:8787`，更连不上）。
+
+**处置**（改环境变量最省事，旧版本也认）：
+
+```bash
+sudo grep -q MCLINK_PUBLIC_BASE_URL /etc/mclink/mclink.env \
+  || echo 'MCLINK_PUBLIC_BASE_URL=https://你的域名' | sudo tee -a /etc/mclink/mclink.env
+sudo systemctl restart mclink-server
+# 然后**重新签发一次**命令 —— 已经复制出去的那条不会自己变
+```
+
+或者重跑安装脚本一次写好：`sudo bash deploy/install-server.sh --public-url https://你的域名`。
+
+**新版行为**（本次修复之后）：地址解析是「配置 → 请求头 → 本机兜底」，并且**只要最终地址落在
+本机**，控制台就会在命令下方直接显示警告（`⚠️ … 只能在主控本机使用`），不会再默默给出一条
+打不通的命令。
+
+**回归检查**：`node scripts/check-node-cmd-origin.mjs` —— 对着跑起来的开发主控**打真接口**
+（用 `node:http` 自己造 `Host` / `x-forwarded-*`），验 4 项：直连时是本机地址且带警告、
+反代时用公网地址且无警告。
