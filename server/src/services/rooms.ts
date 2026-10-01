@@ -1266,6 +1266,20 @@ export class RoomService {
         defaultProtocol: 'tcp',
         noTun: false,
         /**
+         * **按代价选路，而不是按跳数**（EasyTier 的两套选路策略开关）。
+         *
+         * 必须打开，否则「只协助打洞」形同虚设：标了 `disable_relay_data` 的节点靠
+         * `AVOID_RELAY_COST`（i32::MAX）被挤出候选，但那个代价**只在 LeastCost 策略下参与比较**；
+         * 默认的 LeastHop（`latency_first = false`，见 `peer_manager.rs:1443-1449`）分支里
+         * 只按跳数筛，`normalize_edge_cost` 那一层把惩罚边折进"最短跳数子图"之后，
+         * "绕过它"和"经过它"同跳数时惩罚就白加了。
+         *
+         * 实测（两台中继：一台标了只协助打洞、一台可承载，两端各自与两台都是 p2p 直连）：
+         * 打开前两端全部走那台**只打洞**的节点（`relay(2)`），数据被它丢掉、房间不通；
+         * 打开后代价按延迟算，那台的 +2147483647 才会真正把它排出候选。
+         */
+        latencyFirst: true,
+        /**
          * 关闭 bind_device。
          *
          * EasyTier 默认 `bind_device = true`，会把隧道的出站套接字绑定到指定网卡；
