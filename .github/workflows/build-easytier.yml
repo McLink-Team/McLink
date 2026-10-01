@@ -78,6 +78,9 @@ jobs:
             done
           fi
           echo "共应用 $applied 个补丁"
+          if [ "$applied" -eq 0 ]; then
+            echo "::warning::没有应用任何补丁，这份产物与上游二进制等价（expected only for a baseline build）"
+          fi
 
       - uses: dtolnay/rust-toolchain@stable
         with:
