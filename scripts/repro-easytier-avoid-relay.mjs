@@ -14,8 +14,11 @@
  *   node scripts/repro-easytier-avoid-relay.mjs                 # 用 vendor/easytier 的二进制
  *   ET_DIR=/path/to/easytier node scripts/repro-easytier-avoid-relay.mjs
  *   node scripts/repro-easytier-avoid-relay.mjs --case=marked-latency-first
+ *   ET_DIR=<补丁构建> node scripts/repro-easytier-avoid-relay.mjs --expect=fixed   # 验收补丁
  *
- * 退出码：0 = 行为符合预期（标记的那台被绕开）；1 = 复现了 bug。
+ * 退出码：
+ *   · 默认（--expect=buggy）：0 = 未复现；1 = 复现了 bug
+ *   · --expect=fixed：0 = 被标记的那台被正确绕开（补丁生效）；1 = 仍然走它
  */
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -24,6 +27,12 @@ import path from 'node:path';
 
 const REPO = path.resolve(import.meta.dirname, '..');
 const ET_DIR = process.env.ET_DIR ?? path.join(REPO, 'vendor', 'easytier');
+/** buggy = 上游行为（复现即"通过"）；fixed = 补丁行为（绕开才算通过） */
+const EXPECT = (process.argv.find((a) => a.startsWith('--expect='))?.slice(9) ?? 'buggy').trim();
+if (!['buggy', 'fixed'].includes(EXPECT)) {
+  console.error(`--expect 只能是 buggy 或 fixed（收到 ${EXPECT}）`);
+  process.exit(2);
+}
 const suffix = process.platform === 'win32' ? '.exe' : '';
 const CORE = path.join(ET_DIR, `easytier-core${suffix}`);
 const CLI = path.join(ET_DIR, `easytier-cli${suffix}`);
@@ -302,12 +311,20 @@ if (KEEP) {
 }
 
 console.log('');
-if (broken.length > 0) {
+if (markedCases.length === 0) {
+  console.log('（只跑了对照用例，不做判定）');
+} else if (EXPECT === 'fixed') {
+  if (broken.length === 0) {
+    console.log('✓ 补丁生效：被标记的那台在所有"有替代路径"的用例里都被绕开了');
+    process.exitCode = 0;
+  } else {
+    console.log(`✗ 补丁无效：${broken.map((r) => r.case).join('、')} 里仍然走被标记的 relayA`);
+    process.exitCode = 1;
+  }
+} else if (broken.length > 0) {
   console.log(`✗ 复现成功：${broken.map((r) => r.case).join('、')} 里 next_hop 仍然是被标记的 relayA`);
   process.exitCode = 1;
-} else if (markedCases.length > 0) {
-  console.log('✓ 未复现：被标记的 relayA 都被绕开了');
-  process.exitCode = 0;
 } else {
-  console.log('（只跑了对照用例，不做判定）');
+  console.log('✓ 未复现：被标记的 relayA 都被绕开了（上游二进制本该复现，检查二进制来源）');
+  process.exitCode = 0;
 }
