@@ -113,6 +113,24 @@ export function parseTrustedProxies(raw: string | string[] | undefined): { nets:
   return { nets, invalid };
 }
 
+/**
+ * 带缓存的解析：真实 IP 判定在**每一个 HTTP / WebSocket 请求**上都会用到，
+ * 而来源（控制台设置或环境变量）在一段时间内是稳定的字面量。
+ * 同一份字面量只解析一次；`parseTrustedProxies` 本身是纯函数，换个值重算即可。
+ *
+ * 注意：这里**不吞错**。设置接口在写入前已经用 `parseTrustedProxies` 校验过；
+ * 环境变量里的非法项由启动日志负责提示（见 index.ts）。
+ */
+let cachedProxiesRaw: string | null = null;
+let cachedProxiesNets: TrustedNet[] = [];
+
+export function trustedProxiesOf(raw: string): TrustedNet[] {
+  if (raw === cachedProxiesRaw) return cachedProxiesNets;
+  cachedProxiesNets = parseTrustedProxies(raw).nets;
+  cachedProxiesRaw = raw;
+  return cachedProxiesNets;
+}
+
 /** 该地址是否落在一个可信代理网段里；`nets` 为空表示兼容模式 */
 export function isTrustedProxy(ip: string, nets: TrustedNet[] | null = null): boolean {
   const rules = nets && nets.length > 0 ? nets : COMPAT_NETS;

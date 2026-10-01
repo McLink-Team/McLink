@@ -40,6 +40,12 @@ export interface WsHubOptions {
    */
   trustProxy?: boolean;
   trustedProxies?: TrustedNet[] | null;
+  /**
+   * 现取真实 IP 策略（优先于上面两个静态值）。
+   * 主控把「控制台设置 → 环境变量」的解析结果包成这个回调传进来，
+   * 这样在控制台改完可信代理，**后续 WS 连接**立刻按新规则判定，不用重启。
+   */
+  realIp?: () => { trustProxy: boolean; trustedProxies: TrustedNet[] | null };
 }
 
 let clientSeq = 0;
@@ -120,12 +126,17 @@ export class WsHub {
   #onConnection(socket: WebSocket, req: IncomingMessage): void {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const token = url.searchParams.get('token');
+    /** 真实 IP 策略：优先现取（控制台可改），否则退回构造时的静态值 */
+    const ipPolicy = this.#options.realIp?.() ?? {
+      trustProxy: this.#options.trustProxy ?? true,
+      trustedProxies: this.#options.trustedProxies ?? null,
+    };
     const client: WsClient = {
       id: `ws_${(clientSeq += 1).toString(36)}`,
       socket,
       auth: null,
       topics: new Set(),
-      ip: clientIp(req, this.#options.trustProxy ?? true, this.#options.trustedProxies ?? null),
+      ip: clientIp(req, ipPolicy.trustProxy, ipPolicy.trustedProxies),
       alive: true,
       connectedAt: Date.now(),
     };

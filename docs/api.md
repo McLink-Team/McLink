@@ -35,6 +35,10 @@
 * `MCLINK_TRUSTED_PROXIES`：可信反代网段（如 `127.0.0.1/8,::1/128`）。没配时按兼容模式
   信任"回环 + 私网"来源的转发头，启动日志会有一条 warn 提示。
 
+> 这两项也可用 `PATCH /api/v1/admin/settings` 的 `trustProxy` / `trustedProxies` 在控制台修改：
+> **设置里的值优先于环境变量**，改动**立即生效**（HTTP 与 WebSocket 每条连接都现取，无需重启）；
+> `trustedProxies` 里的非法项会被 400 拒绝（格式为逗号分隔的 IP / CIDR，空串 = 兼容模式）。
+
 ### 错误码表（`ErrorCodes`，`packages/shared/src/protocol.ts`）
 
 | code | HTTP | 含义 | 当前是否会被抛出 |

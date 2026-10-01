@@ -520,6 +520,31 @@ read_env_value() {
   grep -E "^${key}=" "$file" 2>/dev/null | tail -n1 | cut -d= -f2- || true
 }
 
+# 把已有的 env 文件整份读进 OLD_ENV（键 → 值）。
+#
+# 为什么需要它：升级脚本过去是**整份重写** mclink.env —— 运维手工加过或改过的变量
+# （最典型的是 MCLINK_TRUSTED_PROXIES：反代/CDN 的网段要自己补）会被写回默认值，
+# 于是每次升级都得再 SSH 上去改一遍（用户实测痛点）。下面的 write_env_file 用它做保留。
+declare -A OLD_ENV=()
+read_env_all() {
+  OLD_ENV=()
+  local file="$1" line key value
+  [[ -f "$file" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+    key="${BASH_REMATCH[1]}"
+    value="${BASH_REMATCH[2]}"
+    OLD_ENV["$key"]="$value"
+  done < "$file"
+}
+
+# 脚本自己会写、但**属于运维配置**的键：有旧值就沿用旧值（默认值只在首次安装时生效）
+user_value() {
+  local key="$1" fallback="$2"
+  if [[ -n "${OLD_ENV[$key]:-}" ]]; then printf '%s' "${OLD_ENV[$key]}"; else printf '%s' "$fallback"; fi
+}
+
 random_hex() { openssl rand -hex "$1"; }
 
 write_env_file() {
@@ -582,6 +607,8 @@ write_env_file() {
     backup="${ENV_FILE}.bak.$(date +%Y%m%d%H%M%S)"
     cp -p "$ENV_FILE" "$backup"
     log "已备份旧环境文件到 ${backup}"
+    # 整份读进来：下面既要保留密钥，也要保留运维手工加过/改过的变量
+    read_env_all "$ENV_FILE"
   fi
 
   old_umask="$(umask)"
@@ -599,10 +626,12 @@ write_env_file() {
     echo "MCLINK_PORT=${HTTP_PORT}"
     echo "MCLINK_HOST=0.0.0.0"
     [[ -n "$PUBLIC_BASE_URL" ]] && echo "MCLINK_PUBLIC_BASE_URL=${PUBLIC_BASE_URL}"
-    echo "MCLINK_TRUST_PROXY=true"
+    # 这三个键属于"运维配置"：升级时沿用旧值（改过就不会被写回默认）
+    echo "MCLINK_TRUST_PROXY=$(user_value MCLINK_TRUST_PROXY true)"
     # 只信这台机器上的反代（nginx 与主控同机）。不配的话主控会退回"信任回环 + 私网"的
     # 兼容模式 —— 那种模式下内网客户端也能伪造 X-Forwarded-For 冒充别人。
-    echo "MCLINK_TRUSTED_PROXIES=127.0.0.1/8,::1/128"
+    # 有 CDN / 多层反代时把回源段补在后面；控制台「平台设置」里也能改（那边的值优先）。
+    echo "MCLINK_TRUSTED_PROXIES=$(user_value MCLINK_TRUSTED_PROXIES 127.0.0.1/8,::1/128)"
     echo ""
     echo "# ---- 中继（单端口承载多房间）----"
     echo "# 主控不再运行自带中继：这里的端口/白名单/网络名是**子节点与票据**的默认值与共享密钥。"
@@ -621,10 +650,10 @@ write_env_file() {
     echo "MCLINK_RELAY_SECRET=${relay_secret}"
     echo ""
     echo "# ---- 运行 ----"
-    echo "MCLINK_LOG_LEVEL=info"
+    echo "MCLINK_LOG_LEVEL=$(user_value MCLINK_LOG_LEVEL info)"
     echo ""
     echo "# ---- 邮件（SMTP，主控自己发信）----"
-    echo "MCLINK_REQUIRE_EMAIL_VERIFICATION=${final_verify_email:-true}"
+    echo "MCLINK_REQUIRE_EMAIL_VERIFICATION=${final_verify_email:-$(user_value MCLINK_REQUIRE_EMAIL_VERIFICATION true)}"
     if [[ -n "$final_smtp_host" ]]; then
       echo "MCLINK_SMTP_HOST=${final_smtp_host}"
       echo "MCLINK_SMTP_PORT=${final_smtp_port}"
@@ -636,6 +665,28 @@ write_env_file() {
       echo "# 尚未配置 SMTP：控制台「平台设置 → 邮件服务」里补，或重跑本脚本带 --smtp-host"
       echo "# 注意：REQUIRE_EMAIL_VERIFICATION=true 且没有可用 SMTP 时，新用户注册会被拒绝"
     fi
+
+    # ---- 脚本不管理的变量：原样保留 ----
+    #
+    # "升级不再冲掉自己的配置"的兜底：任何脚本没有主动写出的键（你手工加的
+    # MCLINK_ROOM_IDLE_TIMEOUT、MCLINK_LOGIN_RATE_LIMIT，或以后新增的变量）都搬回来。
+    # 上面那些脚本自己写的键走 user_value（有旧值就沿用旧值）。
+    local kept=0
+    for key in "${!OLD_ENV[@]}"; do
+      case "$key" in
+        MCLINK_DATA_DIR|MCLINK_DOWNLOADS_DIR|MCLINK_PORT|MCLINK_HOST|MCLINK_PUBLIC_BASE_URL) continue ;;
+        MCLINK_TRUST_PROXY|MCLINK_TRUSTED_PROXIES|MCLINK_LOG_LEVEL|MCLINK_REQUIRE_EMAIL_VERIFICATION) continue ;;
+        MCLINK_RELAY_PORT|MCLINK_RELAY_WHITELIST|MCLINK_RELAY_NETWORK|MCLINK_RELAY_PUBLIC_HOST) continue ;;
+        MCLINK_ET_CORE|MCLINK_ET_CLI|MCLINK_JWT_SECRET|MCLINK_ADMIN_PASSWORD|MCLINK_RELAY_SECRET) continue ;;
+        MCLINK_SMTP_*) continue ;;
+      esac
+      if (( kept == 0 )); then
+        echo ""
+        echo "# ---- 其它变量（升级时原样保留，脚本不管理）----"
+      fi
+      printf '%s=%s\n' "$key" "${OLD_ENV[$key]}"
+      kept=$((kept + 1))
+    done
   } > "$ENV_FILE"
   umask "$old_umask"
 
