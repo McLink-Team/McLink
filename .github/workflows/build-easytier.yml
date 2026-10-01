@@ -1,0 +1,126 @@
+# 构建**打过补丁**的 EasyTier（节点与客户端都用它）
+#
+# 为什么要自己编译：上游 2.6.4 的 release 二进制里，「只协助打洞」的 avoid-relay 在
+# 「public server 代转外来网络」这条链上失效（本地复现见 docs/development.md §10.5）。
+# 补丁放在 deploy/easytier-patches/，验收脚本是 scripts/repro-easytier-avoid-relay.mjs。
+#
+# 产物：easytier-linux-x86_64 / easytier-windows-x86_64
+#       （各含 easytier-core + easytier-cli + BUILD-INFO.txt，保留 7 天）
+# macOS / Android 等客户端侧真的需要补丁时再加进 matrix。
+name: build-easytier
+
+on:
+  workflow_dispatch:
+    inputs:
+      easytier_ref:
+        description: EasyTier 的 tag 或 commit（基准 v2.6.4 = 8428a89d）
+        required: false
+        default: v2.6.4
+      debug_probe:
+        description: 附加 debug 探针补丁（deploy/easytier-patches/debug/，仅用于定位）
+        type: boolean
+        default: false
+  push:
+    paths:
+      - 'deploy/easytier-patches/**'
+      - '.github/workflows/build-easytier.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.artifact }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: easytier-linux-x86_64
+            exe: ''
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: easytier-windows-x86_64
+            exe: '.exe'
+    steps:
+      - name: 取本仓库（补丁在这里）
+        uses: actions/checkout@v4
+        with:
+          path: mclink
+
+      - name: 取 EasyTier 源码
+        uses: actions/checkout@v4
+        with:
+          repository: EasyTier/EasyTier
+          # 显式 pin：补丁是按这个版本的源码写的，换版本要重跑复现脚本
+          ref: ${{ inputs.easytier_ref || 'v2.6.4' }}
+          path: EasyTier
+
+      - name: 应用补丁
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd EasyTier
+          shopt -s nullglob
+          applied=0
+          for p in ../mclink/deploy/easytier-patches/*.patch; do
+            echo "== apply $p"
+            git apply --verbose "$p"
+            applied=$((applied + 1))
+          done
+          if [ "${{ inputs.debug_probe }}" = "true" ]; then
+            for p in ../mclink/deploy/easytier-patches/debug/*.patch; do
+              echo "== apply(debug) $p"
+              git apply --verbose "$p"
+              applied=$((applied + 1))
+            done
+          fi
+          echo "共应用 $applied 个补丁"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: EasyTier
+
+      # prost-build 需要 protoc；上游 CI 依赖镜像里自带，这里显式装一下
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: cargo build（easytier-core + easytier-cli）
+        working-directory: EasyTier
+        run: cargo build --release --target ${{ matrix.target }} -p easytier
+
+      - name: 打包产物 + 记录来源
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          src="EasyTier/target/${{ matrix.target }}/release"
+          cp "$src/easytier-core${{ matrix.exe }}" out/
+          cp "$src/easytier-cli${{ matrix.exe }}" out/
+          {
+            echo "upstream: EasyTier/EasyTier@${{ inputs.easytier_ref || 'v2.6.4' }}"
+            echo "upstream_commit: $(git -C EasyTier rev-parse HEAD)"
+            echo "target: ${{ matrix.target }}"
+            echo "debug_probe: ${{ inputs.debug_probe || 'false' }}"
+            echo "mclink_commit: ${{ github.sha }}"
+            echo "patches:"
+            ls -1 mclink/deploy/easytier-patches/*.patch 2>/dev/null || echo "  (无)"
+            if [ "${{ inputs.debug_probe }}" = "true" ]; then
+              ls -1 mclink/deploy/easytier-patches/debug/*.patch 2>/dev/null || true
+            fi
+          } > out/BUILD-INFO.txt
+          ls -l out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: out/*
+          retention-days: 7
+          if-no-files-found: error
