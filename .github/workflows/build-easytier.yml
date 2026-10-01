@@ -104,7 +104,15 @@ jobs:
 
       - name: cargo build（easytier-core + easytier-cli）
         working-directory: EasyTier
-        run: cargo build --release --target ${{ matrix.target }} -p easytier
+        run: |
+          set -euo pipefail
+          # 上游的 release profile 是 `lto = true` + `codegen-units = 1`（Cargo.lock 里 1122 个包）：
+          # 冷构建在 2 核 runner 上要 30–50 分钟，其中 fat LTO 占很大一块。
+          # 我们只拿它当转发/打洞的网络程序（瓶颈是网络 IO，不是 CPU 热点），
+          # LTO 的收益远小于 CI 时间成本 → 关掉，构建时间大约砍到 1/3。
+          cargo build --release --target ${{ matrix.target }} -p easytier \
+            --config 'profile.release.lto=false' \
+            --config 'profile.release.codegen-units=16'
 
       - name: 打包产物 + 记录来源
         shell: bash
