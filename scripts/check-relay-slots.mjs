@@ -121,6 +121,20 @@ try {
   const ids2 = r2.room.relayNodeIds ?? [];
   check('② 手选"只协助打洞"的节点落 relayNodeIds[0]（打洞槽）', ids2[0] === b.id, JSON.stringify(ids2));
   check('② 中继槽仍是能承载数据的节点（不会把 assist 补进中继槽）', Boolean(ids2[1]) && ids2[1] !== b.id, String(ids2[1]));
+
+  /*
+   * ③ 票据里必须带 `latency_first = true`。
+   *
+   * 这是个**看起来无关、实际决定生死**的开关：标了「只协助打洞」的节点靠 AVOID_RELAY_COST
+   * 被挤出候选，而那个代价只在 LeastCost 策略下参与比较；缺失时 EasyTier 走默认的
+   * LeastHop（按跳数筛），惩罚被绕过 —— 实测两端全部走了那台只打洞的节点、房间不通。
+   */
+  const ticket = await api(`/rooms/${r1.room.id}/ticket`, { token: admin.token });
+  check(
+    '③ 客户端票据里带 latency_first（否则"只协助打洞"会被选路绕过）',
+    String(ticket.configToml ?? '').includes('latency_first = true'),
+    `ticket 字段：${Object.keys(ticket ?? {}).join(',')}`,
+  );
 } catch (err) {
   fail += 1;
   console.log(`  [FAIL] 运行中断：${err?.message ?? err}`);

@@ -233,6 +233,9 @@ sudo node /opt/mclink/app/deploy/register-self-node.mjs --region oversea --liste
 
 * 生成配置会写 `disable_relay_data = true`，EasyTier 广播 avoid-relay、OSPF 给它的中继链路
   一个极大代价 → 它**只作为双方都能连上的公共 peer 协调 P2P 打洞，不承载房间流量**；
+  ⚠️ 这个代价只在 `latency_first = true`（LeastCost 策略）下参与比较 —— 票据与节点配置里
+  都已经默认打开（2026-09-29 修）；少了它，惩罚会被"按跳数"的默认策略绕过，
+  "只协助打洞"就等于没标（实测：两端全部走那台只打洞的节点、房间不通）；
 * 房间的两个槽位随即有了分工：**槽 1 = 打洞节点**（优先挑这类节点），
   **槽 2 = 中继节点**（从「大带宽档」里挑，**权重优先、权重一致才比延迟** ——
   真正转发数据的就是它；`带宽上限` 没填 = 不限也算大档）；

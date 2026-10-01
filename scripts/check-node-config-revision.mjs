@@ -99,6 +99,12 @@ check(
 );
 const assistConfig = await api('/agent/config', { token: nodeToken });
 check('配置里写上了 disable_relay_data', String(assistConfig.configToml ?? '').includes('disable_relay_data = true'));
+/*
+ * `latency_first = true`：「只协助打洞」的 AVOID_RELAY_COST 惩罚**只在 LeastCost 策略下参与比较**，
+ * 默认的 LeastHop（按跳数）会绕过它 —— 实测两端都走了那台标了只打洞的节点、数据被丢掉。
+ * 这一行没了，"只协助打洞"就只是一个装饰。
+ */
+check('配置里写上了 latency_first（否则 avoid-relay 惩罚会被按跳数的策略绕过）', String(assistConfig.configToml ?? '').includes('latency_first = true'));
 
 /* ------------------------------------ 心跳：agent **唯一**会走的配置下发路径 */
 

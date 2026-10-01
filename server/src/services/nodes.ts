@@ -302,11 +302,19 @@ export class NodeService {
         bindDevice: false,
         defaultProtocol: 'tcp',
         /**
+         * 按代价选路（LeastCost），而不是按跳数（LeastHop）。
+         *
+         * 与客户端票据里的同名项保持一致：`AVOID_RELAY_COST` 那个惩罚**只在 LeastCost 下
+         * 参与比较**，默认的 LeastHop 会绕过它 —— 少了这一行，「只协助打洞」标了也没用。
+         */
+        latencyFirst: true,
+        /**
          * 「只协助打洞」的节点：不转发房间数据。
          *
          * `disable_relay_data = true` 让 EasyTier 广播 "avoid relay"，OSPF 会给它的中继链路
          * 一个极大代价（`peer_ospf_route.rs` 的 AVOID_RELAY_COST）—— 它照样参与路由与打洞协调
          * （两端通过它交换公网地址），但**数据不落在它身上**。带宽很少的机器就该这么用。
+         * ⚠️ 前提是上面那行 `latencyFirst`（否则惩罚会被"最少跳数"策略绕过）。
          */
         ...(row.assist_only === 1 ? { disableRelayData: true } : {}),
         // 平台设置里的限速是「kbps」，EasyTier 的 foreign_relay_bps_limit 是「字节/秒」

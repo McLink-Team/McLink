@@ -465,8 +465,8 @@ sudo bash "$PWD/deploy/install-server.sh" --skip-install --skip-web   # 无新�
 ```bash
 pnpm dev:server                                # 另开一个终端保持运行（默认 8787）
 
-node scripts/check-node-config-revision.mjs    # 配置版本 +1 / 心跳下发配置（10 项）
-node scripts/check-relay-slots.mjs             # 手选节点落槽顺序（6 项；自造节点、跑完清理）
+node scripts/check-node-config-revision.mjs    # 配置版本 +1 / 心跳下发配置（11 项）
+node scripts/check-relay-slots.mjs             # 手选节点落槽顺序 + 票据 latency_first（7 项；自造节点、跑完清理）
 node scripts/check-node-cmd-origin.mjs         # 签发节点命令里的主控地址（4 项；自造请求头）
 node scripts/check-trusted-proxies.mjs         # 控制台里的可信代理真的生效（7 项；看审计行 ip）
 node client/scripts/verify-platform.mjs        # 平台分支 + CI/文档静态断言（85 项）
