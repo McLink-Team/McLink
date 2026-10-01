@@ -255,7 +255,8 @@ GET /api/v1/rooms/public          （匿名）
 1. **不要直接把 8787 暴露到公网**：用 nginx/Caddy 做 TLS 终结，只让反代访问本机 8787。
 2. **中继端口 11010 必须开放 TCP+UDP**（它是裸 TCP/UDP，不能走 http 反代）；不要给它加任何
    7 层解析或限速设备，否则会破坏长连接。
-3. **`MCLINK_TRUST_PROXY` / `MCLINK_TRUSTED_PROXIES` 要与实际拓扑一致**：
+3. **`MCLINK_TRUST_PROXY` / `MCLINK_TRUSTED_PROXIES` 要与实际拓扑一致**（控制台
+   「平台设置 → 真实 IP 判定」里可改，**那里的值优先**；环境变量只是首次安装的初值）：
    * 在反代后面 → `MCLINK_TRUST_PROXY=true`（默认），并把**反代自己的地址**写进
      `MCLINK_TRUSTED_PROXIES`（同机 nginx 写 `127.0.0.1/8,::1/128`，安装脚本已默认写入）。
      主控只信这些来源发来的 `X-Forwarded-For` / `X-Real-IP`；

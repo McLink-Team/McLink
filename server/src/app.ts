@@ -19,13 +19,14 @@ import { AuthService } from './services/auth.ts';
 import { NodeService } from './services/nodes.ts';
 import { NodeUtilization } from './services/node-utilization.ts';
 import { RoomService } from './services/rooms.ts';
-import { SettingsService } from './services/settings.ts';
+import { effectiveTrustedProxies, SettingsService } from './services/settings.ts';
 import { MailerService } from './services/mailer.ts';
 import { BroadcastService } from './services/broadcast.ts';
 import { unsubscribeUrl } from './api/unsubscribe.ts';
 import { RelayManager } from './easytier/manager.ts';
 import { TrafficAccountant } from './services/traffic-ledger.ts';
 import { hashPassword } from './util/id.ts';
+import { trustedProxiesOf, type TrustedNet } from './util/net.ts';
 
 /**
  * 主控自身的版本。
@@ -123,6 +124,12 @@ export interface App {
   web: WebAssets;
   /** 客户端安装包目录 */
   downloads: DownloadsDir;
+  /**
+   * 真实 IP 判定的**生效**策略：控制台「平台设置」优先，其次环境变量
+   * （`MCLINK_TRUSTED_PROXIES` / `MCLINK_TRUST_PROXY` 只在首次安装时作初值）。
+   * HTTP 上下文与 WebSocket 握手都读它，保证两侧口径一致。
+   */
+  realIpPolicy(): { trustProxy: boolean; trustedProxies: TrustedNet[] };
   startedAt: number;
 }
 
@@ -217,6 +224,18 @@ export function createApp(options: CreateAppOptions = {}): App {
     relay,
     web: { root: webRoot, available: fs.existsSync(path.join(webRoot, 'index.html')) },
     downloads: { root: downloadsRoot, available: fs.existsSync(downloadsRoot) },
+    /*
+     * 真实 IP 判定：控制台设置优先，为空才退回环境变量。
+     * 这样"CDN 回源段"这类运维配置既能在控制台改（存库、升级不丢），
+     * 也兼容安装脚本写进 mclink.env 的初值。
+     */
+    realIpPolicy: () => {
+      const { trustProxy, raw } = effectiveTrustedProxies(settings.current, {
+        trustProxy: config.trustProxy,
+        trustedProxiesRaw: config.trustedProxiesRaw,
+      });
+      return { trustProxy, trustedProxies: trustedProxiesOf(raw) };
+    },
     startedAt: Date.now(),
   };
 }

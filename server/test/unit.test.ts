@@ -24,6 +24,7 @@ import { TrafficAccountant } from '../src/services/traffic-ledger.ts';
 import { ewma, NodeUtilization, shedUtilFor, UTIL_SHED } from '../src/services/node-utilization.ts';
 import { parseLatencyHints, parsePolicy } from '../src/api/helpers.ts';
 import { isLoopbackOrigin, masterOrigin } from '../src/api/shell.ts';
+import { effectiveTrustedProxies } from '../src/services/settings.ts';
 import {
   buildMessage,
   encodeHeader,
@@ -1773,6 +1774,39 @@ describe('主控对外地址 masterOrigin（签发节点命令）', () => {
     assert.equal(isLoopbackOrigin('http://localhost:8787'), true);
     assert.equal(isLoopbackOrigin('http://[::1]:8787'), true);
     assert.equal(isLoopbackOrigin('不是地址'), false);
+  });
+});
+
+/**
+ * 「可信反向代理」的生效优先级。
+ *
+ * 用户实测痛点：这两个值以前只能改 `/etc/mclink/mclink.env`，而升级脚本会重写那个文件，
+ * 于是每升一次级都要 SSH 上去再改一遍。现在控制台里存的值优先，环境变量只作初值。
+ */
+describe('可信反向代理 effectiveTrustedProxies（控制台优先于环境变量）', () => {
+  const env = { trustProxy: true, trustedProxiesRaw: '127.0.0.1/8,::1/128' };
+
+  test('控制台里填了就用它（环境变量被盖住）', () => {
+    assert.deepEqual(effectiveTrustedProxies({ trustProxy: true, trustedProxies: '10.0.0.0/8' }, env), {
+      trustProxy: true,
+      raw: '10.0.0.0/8',
+    });
+  });
+
+  test('控制台留空才退回环境变量的初值', () => {
+    assert.equal(
+      effectiveTrustedProxies({ trustProxy: true, trustedProxies: '  ' }, env).raw,
+      env.trustedProxiesRaw,
+    );
+  });
+
+  test('只有明确 false 才不采信转发头（缺字段按 true 处理，兼容老库）', () => {
+    assert.equal(effectiveTrustedProxies({ trustProxy: false, trustedProxies: '' }, env).trustProxy, false);
+    assert.equal(
+      effectiveTrustedProxies({ trustedProxies: '' } as never, env).trustProxy,
+      true,
+      '老库里没有 trustProxy 这个键时应当保持历史行为（采信）',
+    );
   });
 });
 

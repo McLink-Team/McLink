@@ -47,6 +47,14 @@ export const DEFAULT_SETTINGS: PlatformSettings = {
   smtpPassword: null,
   smtpFrom: '',
   emailCodeTtlMinutes: 15,
+
+  /*
+   * 真实 IP 判定（安全参数，只在控制台与内部使用，不进公开设置）。
+   * 默认 `true` + 空串 = 兼容模式（信任回环 + 私网来源），与历史行为一致；
+   * 生产部署应当把反代地址显式填进 `trustedProxies`（安装脚本会写 `127.0.0.1/8,::1/128`）。
+   */
+  trustProxy: true,
+  trustedProxies: '',
 };
 
 /**
@@ -56,6 +64,26 @@ export const DEFAULT_SETTINGS: PlatformSettings = {
 export function toPublicSettings(settings: PlatformSettings): PublicPlatformSettings {
   const { smtpPassword, ...rest } = settings;
   return { ...rest, smtpPasswordSet: typeof smtpPassword === 'string' && smtpPassword.length > 0 };
+}
+
+/**
+ * 生效的「可信反向代理」配置：**控制台设置优先，为空才退回环境变量**。
+ *
+ * 为什么要有这个函数（用户实测痛点）：这两个值以前只能改 `/etc/mclink/mclink.env`，
+ * 而升级脚本会重写那个文件 —— 于是每升一次级都要 SSH 上去再改一遍。
+ * 现在：环境变量只作**首次安装的初值**，控制台里改的值存在库里、升级不受影响。
+ *
+ * 纯函数，单测直接钉住优先级（见 `unit.test.ts` 的 `effectiveTrustedProxies`）。
+ */
+export function effectiveTrustedProxies(
+  settings: Pick<PlatformSettings, 'trustProxy' | 'trustedProxies'>,
+  env: { trustProxy: boolean; trustedProxiesRaw: string },
+): { trustProxy: boolean; raw: string } {
+  return {
+    // 只有明确关掉（false）才不采信转发头 —— 缺字段按 true 处理（老库没有这个键）
+    trustProxy: settings.trustProxy !== false,
+    raw: (settings.trustedProxies ?? '').trim() || env.trustedProxiesRaw,
+  };
 }
 
 export class SettingsService {
@@ -82,6 +110,13 @@ export class SettingsService {
       // 端口与加密方式只认"环境变量是否显式给过"：否则会盖掉管理台里的选择
       ...(process.env.MCLINK_SMTP_PORT ? { smtpPort: smtp.port } : {}),
       ...(process.env.MCLINK_SMTP_SECURE ? { smtpSecure: smtp.secure } : {}),
+      /*
+       * 真实 IP 判定：同样只在环境变量**显式给过**时作为初值。
+       * 生产部署里运维常常手工改 `MCLINK_TRUSTED_PROXIES`（加 CDN 回源段），
+       * 那份值在这里被读成初值；之后在控制台改过的值存在库里、优先级更高（见下方 merged）。
+       */
+      ...(this.config.trustedProxiesRaw ? { trustedProxies: this.config.trustedProxiesRaw } : {}),
+      ...(process.env.MCLINK_TRUST_PROXY ? { trustProxy: this.config.trustProxy } : {}),
     };
     const merged: PlatformSettings = {
       ...DEFAULT_SETTINGS,

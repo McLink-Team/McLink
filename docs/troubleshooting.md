@@ -890,7 +890,7 @@ sudo journalctl -u mclink-server --since '15 min ago' | grep -E '慢请求|请�
 | 主控页面显示「检测到前端尚未构建」 | `server/public/index.html` 不存在 | `pnpm build:web` |
 | 登录提示「登录尝试过于频繁」 | 触发了 `MCLINK_LOGIN_RATE_LIMIT`（默认 20 次/分钟/IP） | 等待 1 分钟；或排查是否有人在撞库（看审计日志 `auth.login_failed`） |
 | 反向代理后所有请求 IP 都是 127.0.0.1 | 反代没传 `X-Forwarded-For`，或 `MCLINK_TRUST_PROXY=false` | 配好 `proxy_set_header X-Forwarded-For` 并保持 `TRUST_PROXY=true` |
-| 反代换了拓扑后 IP 变成网关/容器地址（如 172.17.0.1） | 转发头来源不在可信代理白名单里，被整条忽略 | 把反代地址加进 `MCLINK_TRUSTED_PROXIES`（同机 nginx：`127.0.0.1/8,::1/128`）；启动日志里有一条「真实 IP：…」会写明当前判定依据 |
+| 反代换了拓扑后 IP 变成网关/容器地址（如 172.17.0.1） | 转发头来源不在可信代理白名单里，被整条忽略 | 控制台「平台设置 → 真实 IP 判定」里把反代地址加进「可信反向代理网段」（同机 nginx：`127.0.0.1/8,::1/128`，改完**立即生效**，不用重启）；等价的旧办法是改 `/etc/mclink/mclink.env` 里的 `MCLINK_TRUSTED_PROXIES` 后 `systemctl restart mclink-server`。启动日志里有一条「真实 IP：…」会写明当前判定依据 |
 | 有人伪造 `X-Forwarded-For` 刷接口 / 审计日志里出现奇怪 IP | 兼容模式（未配 `MCLINK_TRUSTED_PROXIES`）会信任私网来源的转发头 | 显式配 `MCLINK_TRUSTED_PROXIES`；确认主控没有直连暴露（或设 `MCLINK_TRUST_PROXY=false`）。危害验证见 `.cache/check-real-ip.mjs` 的限流场景 |
 | 隐藏房间在大厅看不到 | 这是预期（`visibility=hidden`） | 用加入码进房 |
 | 建房提示「最多同时创建 N 个房间」 | `defaultMaxRooms`（默认 3）或用户 `maxRooms` | 关掉旧房间，或调大平台默认值/用户配额 |

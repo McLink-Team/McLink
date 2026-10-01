@@ -114,7 +114,9 @@ export function createServer(app: App): RunningServer {
   async function handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const started = Date.now();
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
-    const ctx = makeCtx(req, res, url, app.config.trustProxy, app.config.trustedProxies);
+    // 真实 IP 策略每次请求现取：控制台里改完「可信代理」立刻生效（无需重启）
+    const ipPolicy = app.realIpPolicy();
+    const ctx = makeCtx(req, res, url, ipPolicy.trustProxy, ipPolicy.trustedProxies);
 
     applySecurityHeaders(res);
 
@@ -372,6 +374,8 @@ export function createServer(app: App): RunningServer {
     path: WS_PATH,
     trustProxy: app.config.trustProxy,
     trustedProxies: app.config.trustedProxies,
+    /** 每次握手现取：控制台改完「可信代理」对后续连接立即生效 */
+    realIp: () => app.realIpPolicy(),
     resolveToken: (token) => {
       const session = app.auth.resolveSession(token);
       if (!session) return null;

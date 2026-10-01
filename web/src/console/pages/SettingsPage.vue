@@ -22,6 +22,9 @@ interface EnvSettings {
   smtpSecure: string;
   smtpFrom: string;
   requireEmailVerification: boolean | null;
+  /** 环境变量里的"真实 IP 判定"初值：界面上用来提示"设置里保存的值优先于它" */
+  trustProxy: boolean;
+  trustedProxies: string;
 }
 
 /** 控制台看到的设置：没有 SMTP 明文密码，只有"是否已设置" */
@@ -130,6 +133,9 @@ const form = reactive({
   smtpUser: '',
   smtpFrom: '',
   emailCodeTtlMinutes: '15',
+  /* 真实 IP 判定（安全）：可信代理网段与是否采信转发头 */
+  trustProxy: true,
+  trustedProxies: '',
   /**
    * 密码是三态：留空 = 不改（保留已存的），填了 = 改成这个。
    * 不做回显是因为设置接口从不返回明文，界面也无从显示。
@@ -164,6 +170,12 @@ function fillFrom(value: SettingsView): void {
   form.smtpUser = value.smtpUser;
   form.smtpFrom = value.smtpFrom;
   form.emailCodeTtlMinutes = String(value.emailCodeTtlMinutes);
+  /*
+   * 真实 IP 判定：这两个字段以前只能改 /etc/mclink/mclink.env（升级脚本会重写它，
+   * 于是每次升级都要 SSH 上去再改一遍）。现在存在设置里，重装不受影响。
+   */
+  form.trustProxy = value.trustProxy !== false;
+  form.trustedProxies = value.trustedProxies ?? '';
   form.smtpPassword = '';
   form.clearSmtpPassword = false;
 }
@@ -220,6 +232,8 @@ async function save(): Promise<void> {
       smtpUser: form.smtpUser.trim(),
       smtpFrom: form.smtpFrom.trim(),
       emailCodeTtlMinutes: Math.min(1440, Math.max(1, toInt(form.emailCodeTtlMinutes, 15))),
+      trustProxy: form.trustProxy,
+      trustedProxies: form.trustedProxies.trim(),
     };
     // 只有真的动了密码才提交这个字段：不传字段 = 服务端保留原密码
     if (form.clearSmtpPassword) payload.smtpPassword = null;
@@ -609,6 +623,57 @@ const envWhitelist = computed(() => asPatternList(env.value?.relayNetworkWhiteli
               大带宽节点跑到 90% 才不再接新房间；**小管子**（填了带宽上限、但不到「大带宽档门槛」的节点）
               到这个百分比就停止**新增中继** —— 默认 80%，封顶 90%。
               ⚠️ 只挡新房间：已经在上面跑的房间一个都不动，节点默认仍然正常中继。
+            </span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 真实 IP 判定（反向代理） -->
+      <section class="console-section">
+        <div class="console-section-head">
+          <div class="console-section-text">
+            <h2 class="console-section-title">真实 IP 判定（反向代理）</h2>
+            <p class="console-section-note">
+              审计日志、限流、封禁都依赖这里认对客户端 IP；配错等于把"谁在刷接口"记成网关自己。
+              改动**立即生效**（每个请求现取），不用重启。
+            </p>
+          </div>
+          <div class="console-section-actions">
+            <Badge :tone="form.trustProxy ? 'ok' : 'warn'">
+              {{ form.trustProxy ? '采信转发头' : '只认直连地址' }}
+            </Badge>
+          </div>
+        </div>
+
+        <label class="switch switch-row">
+          <input v-model="form.trustProxy" type="checkbox" />
+          <span>采信反向代理的转发头（X-Forwarded-For / X-Real-IP）</span>
+        </label>
+        <p class="hint hint-measure">
+          主控直接暴露在公网、或前面那层代理不可信时**关掉**：一律使用直连对端地址，
+          谁也伪造不了。
+        </p>
+
+        <div class="form-grid">
+          <div class="field">
+            <label class="label" for="s-proxies">可信反向代理网段</label>
+            <input
+              id="s-proxies"
+              v-model="form.trustedProxies"
+              class="input mono"
+              placeholder="127.0.0.1/8,::1/128"
+            />
+            <span class="hint">
+              逗号分隔的 IP / CIDR。只有来自这些网段的请求，转发头才会被采信
+              （并取最右侧非可信跳作为客户端 IP）。同机 nginx 填
+              <span class="mono">127.0.0.1/8,::1/128</span>；有 CDN 就把回源段一起补上。
+            </span>
+            <span v-if="!form.trustedProxies.trim()" class="hint">
+              ⚠️ 留空 = 兼容模式（信任"回环 + 私网"来源）：内网客户端可以伪造
+              <span class="mono">X-Forwarded-For</span> 冒充别人，生产部署请显式填写。
+            </span>
+            <span v-else-if="env?.trustedProxies" class="hint">
+              环境变量里的初值：<span class="mono">{{ env.trustedProxies }}</span>（这里保存的值优先）
             </span>
           </div>
         </div>

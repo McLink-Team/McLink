@@ -530,6 +530,25 @@ export interface PlatformSettings {
   smtpFrom: string;
   /** 验证码有效期（分钟） */
   emailCodeTtlMinutes: number;
+
+  /* ------------------------------------------------- 安全：真实 IP 判定 */
+
+  /**
+   * 是否采信反向代理的转发头（`X-Forwarded-For` / `X-Real-IP`）。
+   *
+   * 关掉（`false`）= 一律使用直连对端地址 —— 主控直接暴露在公网、或前面那层不可信时这样配。
+   * 环境变量 `MCLINK_TRUST_PROXY` 只在**首次安装**时作为初值，之后以这里的值为准。
+   */
+  trustProxy: boolean;
+  /**
+   * 可信反向代理网段（逗号分隔的 IP / CIDR，如 `127.0.0.1/8,::1/128,10.0.0.0/8`）。
+   *
+   * 只有来自这些网段的请求，转发头才会被采信（并取**最右侧非可信跳**作为客户端 IP）。
+   * **留空 = 兼容模式**：信任"回环 + 私网"来源 —— 内网客户端因此可以伪造
+   * `X-Forwarded-For` 冒充别人，生产部署请显式填上反代地址。
+   * 环境变量 `MCLINK_TRUSTED_PROXIES` 同样只在首次安装时作初值。
+   */
+  trustedProxies: string;
 }
 
 /**

@@ -171,6 +171,8 @@ sudo nginx -t && sudo systemctl reload nginx
 * `/ws` 必须带 `proxy_http_version 1.1` + `Upgrade`/`Connection` + `proxy_read_timeout 3600s`。
 * 反代后 `MCLINK_TRUST_PROXY=true`（默认）以便按真实 IP 限流与审计；同时把反代地址写进
   `MCLINK_TRUSTED_PROXIES`（同机 nginx 即 `127.0.0.1/8,::1/128`，安装脚本已默认写入）。
+  这两个值也可以在控制台「平台设置 → 真实 IP 判定（反向代理）」里改 —— **存在库里，升级不受影响**；
+  环境变量只作首次安装的初值（升级脚本也不再覆盖你手工改过的那一行）。
   主控只信这些来源发来的 `X-Forwarded-For` / `X-Real-IP`，并取转发链里**最右侧的非可信跳**
   —— 也就是反代亲手写上的那个地址，客户端伪造不了。
 * 只在反代后面时，不要对公网放行 8787。
@@ -465,8 +467,8 @@ curl -s http://127.0.0.1:8787/api/v1/regions   # 各区域中继可用性
 | `MCLINK_HOST` | `0.0.0.0` | HTTP 监听地址 |
 | `MCLINK_PORT` | `8787` | HTTP 端口 |
 | `MCLINK_PUBLIC_BASE_URL` | 空 | **对外**基础 URL（如 `https://cnnic.link`）。用于邮件退订链接、页面 canonical，以及**控制台签发的节点安装/更新命令里的主控地址**。为空时命令会退回"请求自带的 proto/host"，再退回 `http://127.0.0.1:<port>`（**那个地址只能在主控本机用**，界面上会给出警告）—— 生产部署建议用 `install-server.sh --public-url https://你的域名` 一次写进 `/etc/mclink/mclink.env` |
-| `MCLINK_TRUST_PROXY` | `true` | 是否采信反向代理的转发头（直连暴露时必须设 `false`） |
-| `MCLINK_TRUSTED_PROXIES` | 空（兼容模式：回环 + 私网） | 可信反代网段，逗号分隔的 IP/CIDR，支持 IPv6；推荐 `127.0.0.1/8,::1/128`。只信这些来源的 `X-Forwarded-For`/`X-Real-IP`，并取最右侧非可信跳 |
+| `MCLINK_TRUST_PROXY` | `true` | 是否采信反向代理的转发头（直连暴露时必须设 `false`）。**只作首次安装的初值**：之后在控制台「平台设置 → 真实 IP 判定」里改，那里的值优先 |
+| `MCLINK_TRUSTED_PROXIES` | 空（兼容模式：回环 + 私网） | 可信反代网段，逗号分隔的 IP/CIDR，支持 IPv6；推荐 `127.0.0.1/8,::1/128`。只信这些来源的 `X-Forwarded-For`/`X-Real-IP`，并取最右侧非可信跳。**同样只作初值**，控制台里的值优先；升级脚本会保留你手工改过的这一行 |
 | `MCLINK_DATA_DIR` | `<repo>/server/data` | 数据目录 |
 | `MCLINK_DB_FILE` | `<data>/mclink.sqlite` | 数据库文件 |
 | `MCLINK_DOWNLOADS_DIR` | `<data>/downloads` | 客户端安装包目录 |

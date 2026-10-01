@@ -14,6 +14,7 @@ import { DEFAULT_SETTINGS, toPublicSettings } from '../services/settings.ts';
 import { SCHEMA_VERSION } from '../db/schema.ts';
 import { mergeRelayedNetworks } from '../services/nodes.ts';
 import { isLoopbackOrigin, masterOrigin } from './shell.ts';
+import { parseTrustedProxies } from '../util/net.ts';
 import { localBucket, localDay } from '../db/traffic.ts';
 
 const log = logger('api:admin');
@@ -667,6 +668,9 @@ export function registerAdminRoutes(router: Router, app: App): void {
         smtpSecure: app.config.smtp.secure,
         smtpFrom: app.config.smtp.from,
         requireEmailVerification: app.config.smtp.requireVerification,
+        /** 环境变量里的初值：界面上用来提示"这里保存的值优先于它" */
+        trustProxy: app.config.trustProxy,
+        trustedProxies: app.config.trustedProxiesRaw,
       },
     };
   }, { auth: true, admin: true });
@@ -740,6 +744,26 @@ export function registerAdminRoutes(router: Router, app: App): void {
     if (patch.smtpFrom !== undefined && patch.smtpFrom.length > 0) {
       const problem = emailProblem(patch.smtpFrom.replace(/^.*<([^>]+)>.*$/, '$1'));
       if (problem) throw HttpError.badRequest(`发件人不是合法邮箱：${problem}`, { smtpFrom: problem });
+    }
+
+    /* ------------------------------------------------ 真实 IP 判定（安全） */
+    /*
+     * 这两个字段以前只能改 /etc/mclink/mclink.env —— 而升级脚本会重写那个文件，
+     * 于是运维每升一次级就要 SSH 上去再改一遍（用户实测痛点）。放进设置后：
+     * 存库、控制台可改、升级不受影响；环境变量降级为"首次安装的初值"。
+     */
+    if ('trustProxy' in body) patch.trustProxy = body.trustProxy !== false;
+    if ('trustedProxies' in body) {
+      // 空字符串是合法值（= 兼容模式），所以不能用 optStr
+      const raw = stringField(body, 'trustedProxies', 500) ?? '';
+      const { invalid } = parseTrustedProxies(raw);
+      if (invalid.length > 0) {
+        throw HttpError.badRequest(
+          `可信代理里有无法解析的项：${invalid.join('、')}（要写 IP 或 CIDR，逗号分隔）`,
+          { trustedProxies: '格式不对' },
+        );
+      }
+      patch.trustedProxies = raw.trim();
     }
 
     const settings = app.settings.update(patch);
