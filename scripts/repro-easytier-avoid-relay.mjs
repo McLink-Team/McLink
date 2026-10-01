@@ -60,6 +60,10 @@ const CASES = [
 ];
 
 const wanted = process.argv.find((a) => a.startsWith('--case='))?.slice(7);
+/** --keep：保留临时目录（里面每个实例一份 .log，含打补丁构建的 [mclink-probe] 探针） */
+const KEEP = process.argv.includes('--keep');
+/** --keep 时也顺带打印探针汇总 */
+for (const c of CASES) if (KEEP) c.keepLogs = true;
 const cases = wanted ? CASES.filter((c) => c.name === wanted) : CASES;
 if (cases.length === 0) {
   console.error(`没有匹配的用例：${wanted}（可选：${CASES.map((c) => c.name).join(', ')}）`);
@@ -146,14 +150,40 @@ function clientToml(name, ipv4, port, peers, latencyFirst) {
   ].join('\n');
 }
 
-function start(name, configPath, rpcPort) {
+function start(name, configPath, rpcPort, logPath) {
   const child = spawn(CORE, ['-c', configPath, '-r', `127.0.0.1:${rpcPort}`, '--rpc-portal-whitelist', '127.0.0.1/32'], {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  child.stdout.on('data', () => {});
-  child.stderr.on('data', () => {});
+  // 打补丁的构建（deploy/easytier-patches/debug）会往 stderr 打 [mclink-probe] 探针
+  const log = fs.createWriteStream(logPath, { flags: 'a' });
+  child.stdout.pipe(log);
+  child.stderr.pipe(log);
   child.on('error', (err) => console.error(`  [${name}] 启动失败：${err.message}`));
   return child;
+}
+
+/** 从日志里汇总 [mclink-probe] 探针（打过 debug 补丁的构建才有） */
+function summarizeProbe(logPath, kind) {
+  let text = '';
+  try {
+    text = fs.readFileSync(logPath, 'utf8');
+  } catch {
+    return null;
+  }
+  const lines = text.split('\n').filter((l) => l.includes('[mclink-probe]'));
+  if (lines.length === 0) return null;
+  const seen = new Set();
+  for (const l of lines) {
+    if (kind === 'publish') {
+      const m = /publish self: (.*)$/.exec(l);
+      if (m) seen.add(m[1].trim());
+    } else {
+      const m = /route read avoid_relay: (.*)$/.exec(l);
+      if (m) seen.add(m[1].trim());
+    }
+  }
+  const head = kind === 'publish' ? '发布' : '选路读到';
+  return `${head}: ${[...seen].slice(0, 6).join(' | ')}${seen.size > 6 ? ` …(+${seen.size - 6})` : ''}`;
 }
 
 function cli(rpcPort, args) {
@@ -193,10 +223,10 @@ for (const c of cases) {
   fs.writeFileSync(files.client2, clientToml('client2', '10.199.0.2/24', P.client2, peersOfClient, c.latencyFirst));
 
   const procs = [
-    start('relayA', files.relayA, P.relayA.rpc),
-    start('relayB', files.relayB, P.relayB.rpc),
-    start('client1', files.client1, P.client1.rpc),
-    start('client2', files.client2, P.client2.rpc),
+    start('relayA', files.relayA, P.relayA.rpc, path.join(dir, 'relayA.log')),
+    start('relayB', files.relayB, P.relayB.rpc, path.join(dir, 'relayB.log')),
+    start('client1', files.client1, P.client1.rpc, path.join(dir, 'client1.log')),
+    start('client2', files.client2, P.client2.rpc, path.join(dir, 'client2.log')),
   ];
 
   let row = null;
@@ -228,6 +258,9 @@ for (const c of cases) {
       pathLatency: found?.path_latency ?? '-',
       relayA: relayA ? `${relayA.cost}/${relayA.lat_ms}ms` : '(未连上)',
       relayB: relayB ? `${relayB.cost}/${relayB.lat_ms}ms` : '(未连上)',
+      probePublish: c.keepLogs ? summarizeProbe(path.join(dir, 'relayA.log'), 'publish') : null,
+      probeRead: c.keepLogs ? summarizeProbe(path.join(dir, 'client1.log'), 'read') : null,
+      dir,
     });
   } finally {
     for (const p of procs) {
@@ -238,7 +271,7 @@ for (const c of cases) {
       }
     }
     await sleep(500);
-    fs.rmSync(dir, { recursive: true, force: true });
+    if (!KEEP) fs.rmSync(dir, { recursive: true, force: true });
   }
 }
 
@@ -252,6 +285,22 @@ for (const r of results) {
 
 const markedCases = results.filter((r) => r.case.startsWith('marked-') && r.expect === 'relayB');
 const broken = markedCases.filter((r) => String(r.nextHop).includes('relayA'));
+
+// 探针汇总（只有打过 debug 补丁的构建才有输出）
+const probed = results.filter((r) => r.probePublish || r.probeRead);
+if (probed.length > 0) {
+  console.log('探针（[mclink-probe]，来自打过 debug 补丁的构建）：');
+  for (const r of probed) {
+    console.log(`  · ${r.case}`);
+    if (r.probePublish) console.log(`      relayA ${r.probePublish}`);
+    if (r.probeRead) console.log(`      client1 ${r.probeRead}`);
+  }
+}
+if (KEEP) {
+  console.log('\n日志目录（--keep）：');
+  for (const r of results) console.log(`  · ${r.case}: ${r.dir}`);
+}
+
 console.log('');
 if (broken.length > 0) {
   console.log(`✗ 复现成功：${broken.map((r) => r.case).join('、')} 里 next_hop 仍然是被标记的 relayA`);
