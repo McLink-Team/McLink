@@ -469,8 +469,43 @@ node scripts/check-node-config-revision.mjs    # 配置版本 +1 / 心跳下发�
 node scripts/check-relay-slots.mjs             # 手选节点落槽顺序 + 票据 latency_first（7 项；自造节点、跑完清理）
 node scripts/check-node-cmd-origin.mjs         # 签发节点命令里的主控地址（4 项；自造请求头）
 node scripts/check-trusted-proxies.mjs         # 控制台里的可信代理真的生效（7 项；看审计行 ip）
+node scripts/repro-easytier-avoid-relay.mjs    # 复现 EasyTier 的 avoid-relay 失效（四实例本地拓扑，见 §10.5）
 node client/scripts/verify-platform.mjs        # 平台分支 + CI/文档静态断言（85 项）
 ```
 
 五个脚本的默认管理员密码都是 `dev-only-passw0rd`，可用 `MCLINK_ADMIN_PASSWORD` /
 `MCLINK_MASTER`（或 `MCLINK_PORT`）覆盖；它们会在开发库里留下一次性注册密钥（未使用）。
+
+---
+
+## 10.5 复现 EasyTier 的 avoid-relay 失效（打补丁前的现场）
+
+**症状**（线上实测）：两台中继各与房间两端 **p2p 直连**、路径同为 2 跳，其中一台标了
+「只协助打洞」（配置写 `disable_relay_data = true`，EasyTier 广播 `avoid_relay_data`），
+但两端到对方的 `route` **仍然选那台被标记的** —— 数据被它的 data plane 丢掉、房间不通。
+`latency_first = true`（LeastCost）也救不回来。
+
+```bash
+node scripts/repro-easytier-avoid-relay.mjs                # 用 vendor/easytier 的二进制
+ET_DIR=/path/to/easytier node scripts/repro-easytier-avoid-relay.mjs
+node scripts/repro-easytier-avoid-relay.mjs --case=marked-latency-first
+```
+
+它在一台机器上摆出四实例拓扑（两台"服务器" + 两个客户端，客户端用 `disable_p2p = true`
+强制走中继），跑四档对照。**二分结果**（2026-09-29，EasyTier 2.6.4 / 8428a89d）：
+
+| 拓扑 | 被标记的那台 | client1 → client2 的 next_hop |
+| --- | --- | --- |
+| 两台"服务器"作为**外来网络的 public server**（＝线上形态） | ✗ 仍被选中 | `PublicServer_relayA` ← **复现** |
+| 两台作为**房间网络里的普通成员** | ✓ 被绕开 | `relayB` ✓ |
+
+**结论**：标志在同网 peer 之间传播正常（惩罚生效），缺口在
+「**public server 代转外来网络**」这条链 —— 客户端为这台中继建立的路由信息里没有带上
+`avoid_relay_data`，于是 `get_avoid_relay_data()`（`peer_ospf_route.rs:789-797`）返回 false，
+`AVOID_RELAY_COST` 那一步（`:1405-1418`）根本没执行。
+
+**补丁方向**（待定位到具体同步点后落地）：让外来网络实例的 `avoid_relay_data`
+随它对外发布的路由信息一起同步；或在 `get_avoid_relay_data()` 里增加一条回退 ——
+从该 peer **握手时**交换的 `PeerFeatureFlag` 读取（同网 peer 走的正是这条路，已被证明有效）。
+补丁用 `deploy/easytier-patches/*.patch` 管理，由 CI 构建三平台二进制后随节点/客户端分发 ——
+在那之前，**别把「只协助打洞」当成可靠的"不承载"保证**（见 `troubleshooting.md` §6.6）。
