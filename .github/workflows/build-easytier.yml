@@ -20,10 +20,8 @@ on:
         description: 附加 debug 探针补丁（deploy/easytier-patches/debug/，仅用于定位）
         type: boolean
         default: false
-  push:
-    paths:
-      - 'deploy/easytier-patches/**'
-      - '.github/workflows/build-easytier.yml'
+  # 注意：这里**故意不挂 push 触发**。补丁改动经常要连跑好几次（含/不含探针），
+  # 自动触发会同时堆出"没有探针"的构建，白烧 runner 分钟数。要跑就手动 dispatch。
 
 permissions:
   contents: read
@@ -94,6 +92,15 @@ jobs:
       - uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # EasyTier 仓库自带的 .cargo/config.toml 在 Linux 上指定 `-fuse-ld=mold`，
+      # 而 runner 上没有 mold/lld → 链接期报 `collect2: fatal error: cannot find 'ld'`。
+      # 装齐这两个（+clang，ring 等 crate 会用到）比删掉上游的构建配置更保守。
+      - name: 装 Linux 链接器（mold / lld）
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mold lld clang
 
       - name: cargo build（easytier-core + easytier-cli）
         working-directory: EasyTier
