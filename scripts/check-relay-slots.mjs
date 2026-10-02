@@ -313,6 +313,32 @@ try {
       nearIds[0] === b.id,
       `房间中继=${JSON.stringify(nearIds)}（提示：b=5ms / a=200ms）`,
     );
+
+    /*
+     * ⑧ 延迟差 ≤10ms 时**大管子优先**（用户 2026-10-03 补的口径）：
+     *   同一对节点，把提示改成"b 只快 7ms"，房间就该让给不限容量的 a ——
+     *   既然差不到 10ms，就不该让 2 Mbps 的小管子去扛整个房间（它很快会到卸荷线）。
+     */
+    await api(`/rooms/${r3.room.id}/close`, { method: 'POST', token: admin.token }).catch(() => {});
+    const r5 = await api('/rooms', {
+      method: 'POST',
+      token: admin.token,
+      body: {
+        name: `slot-band ${RUN}`,
+        zone: 'cn-east',
+        latencyHints: [
+          { nodeId: b.id, ms: 5 },
+          { nodeId: a.id, ms: 12 },
+        ],
+      },
+    });
+    createdRooms.push(r5.room.id);
+    const bandIds = r5.room.relayNodeIds ?? [];
+    check(
+      '⑧ 延迟差 ≤10ms → 大管子优先（2 Mbps 的小管子让位）',
+      bandIds[0] === a.id,
+      `房间中继=${JSON.stringify(bandIds)}（提示：b=5ms 但只有 2Mbps / a=12ms 不限容量）`,
+    );
   }
 }
  catch (err) {
