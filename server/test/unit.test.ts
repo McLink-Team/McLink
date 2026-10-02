@@ -14,7 +14,7 @@ import { test, describe } from 'node:test';
 import { renderAcl, renderEasytierToml, buildLaunchArgs, tomlString, aclToJson, rpcPortalForListenPort, usableRpcPort } from '../src/easytier/config.ts';
 import { buildRoomAcl, isAclEmpty } from '../src/easytier/acl.ts';
 import { parseHumanNumber, parseLatencyMs } from '../src/easytier/manager.ts';
-import { hashRoomPassword, verifyRoomPassword, deriveNetworkName, resolveMemberLink, relayScore, nextRoomExpiry, selectRelays, pickRoomRelays, pickRoomRelay, pickMemberRelay, relayLoadAction, memberRelayStale, roomUsesRelay, advanceLoadWindows, nodeAtShedLine, roomTrafficThreshold, domesticRelayPool, pickSwitchTarget, RELAY_NOTICE_COOLDOWN_MS, RELAY_SCALE_WINDOWS, RELAY_NODE_BUSY_WINDOWS, LATENCY_TIE_BAND_MS, MEMBER_RELAY_TIE_BAND_MS, RoomService, type RelayCandidate } from '../src/services/rooms.ts';
+import { hashRoomPassword, verifyRoomPassword, deriveNetworkName, resolveMemberLink, relayScore, nextRoomExpiry, selectRelays, pickRoomRelays, pickRoomRelay, pickMemberRelay, relayLoadAction, memberRelayStale, roomUsesRelay, advanceLoadWindows, nodeAtShedLine, roomTrafficThreshold, domesticRelayPool, pickSwitchTarget, pickSwitchTargetForRoom, RELAY_NOTICE_COOLDOWN_MS, RELAY_SCALE_WINDOWS, RELAY_NODE_BUSY_WINDOWS, LATENCY_TIE_BAND_MS, MEMBER_RELAY_TIE_BAND_MS, RoomService, type RelayCandidate } from '../src/services/rooms.ts';
 import { Db } from '../src/db/index.ts';
 import { NodeRepo } from '../src/db/nodes.ts';
 import { RoomRepo } from '../src/db/rooms.ts';
@@ -1998,17 +1998,17 @@ describe('单节点换中继：到线动作与"该重连了"的判定', () => {
      * 旧实现按"空余带宽 → 权重"排，全同分 → 保持数据库行序（`order by weight desc`）
      * → 德国排第一 → 玩家看到"点一下切换到德国 9929"。
      */
-    const rows: Array<[string, string, number, number]> = [
-      // 名字, 区域, 容量 bps, 列表里的顺序（0 = 数据库第一行）
-      ['德国9929 500Mbps', 'oversea', 500_000_000, 0],
-      ['香港阿里云 200Mbps', 'hk', 200_000_000, 1],
-      ['AWS日本 1Gbps', 'oversea', 1_000_000_000, 2],
-      ['甲骨文韩国 50Mbps', 'oversea', 50_000_000, 3],
-      ['广州腾讯云 5Mbps', 'cn-south', 5_000_000, 4],
-      ['英国 1Gbps', 'oversea', 1_000_000_000, 5],
-      ['河北阿里云 200Mbps', 'cn-north', 200_000_000, 6],
+    const rows: Array<[string, string, number]> = [
+      // 名字, 区域, 容量 bps（顺序就是数据库行序：德国在第一行）
+      ['德国9929 500Mbps', 'oversea', 500_000_000],
+      ['香港阿里云 200Mbps', 'hk', 200_000_000],
+      ['AWS日本 1Gbps', 'oversea', 1_000_000_000],
+      ['甲骨文韩国 50Mbps', 'oversea', 50_000_000],
+      ['广州腾讯云 5Mbps', 'cn-south', 5_000_000],
+      ['英国 1Gbps', 'oversea', 1_000_000_000],
+      ['河北阿里云 200Mbps', 'cn-north', 200_000_000],
     ];
-    const pool: RelayCandidate[] = rows.map(([name, region, capacity_bps]) => ({
+    const cand = (name: string, region: string, capacity_bps: number, utilization = 0): RelayCandidate => ({
       row: {
         id: `n_${name}`,
         name,
@@ -2019,26 +2019,67 @@ describe('单节点换中继：到线动作与"该重连了"的判定', () => {
         weight: 100,
         status: 'online',
       } as NodeRow,
-      utilization: 0,
+      utilization,
       shedUtil: 0.9,
-    }));
+    });
+    const pool = rows.map(([name, region, capacity]) => cand(name, region, capacity));
     // 当前中继是上海阿里云（cn-east），已从候选里排除
-    const picked = pickSwitchTarget('cn-east', pool, 10_000_000);
+    const picked = pickSwitchTarget('cn-east', pool);
     assert.equal(picked?.region.startsWith('cn-'), true, `换台目标必须在国内，实际 ${picked?.name}`);
-    assert.equal(picked?.name, '河北阿里云 200Mbps', '同为大管子时按"更空→权重"，河北与其它并列时取稳定序 → 国内那一档里排第一');
-    // 同区域优先：如果有一台 cn-east 的大管子，它优先于其它国内节点
-    const withEast = [
-      ...pool,
-      {
-        row: { id: 'n_east', name: '上海阿里云 200Mbps', region: 'cn-east', capacity_bps: 200_000_000, capacity_peers: 500, peers: 0, weight: 100, status: 'online' } as NodeRow,
-        utilization: 0,
-        shedUtil: 0.9,
-      },
-    ];
-    assert.equal(pickSwitchTarget('cn-east', withEast, 10_000_000)?.name, '上海阿里云 200Mbps', '同区域优先');
-    // 全是大管子时小管子不进池：只剩广州（5M 小管子）+ 海外大管子 → 仍然不选海外
-    const noDomesticBig = pool.filter((c) => !(c.row.region.startsWith('cn-') && (c.row.capacity_bps ?? 0) >= 10_000_000));
-    assert.equal(pickSwitchTarget('cn-east', noDomesticBig, 10_000_000)?.name, '香港阿里云 200Mbps', '没有国内大管子时，先把国内小管子排除，再退到最近的一档（hk）');
+    assert.equal(picked?.name, '河北阿里云 200Mbps', '国内档里它余量最大（200M vs 广州 5M）');
+    // **同区域的近小管子优先**（用户 2026-10-03："近的小管子也允许当换台目标"）：
+    // 上海本地一台 5 Mbps 空着，压过所有远节点（含 500M/1G 的海外）
+    const withLocalSmall = [...pool, cand('上海阿里云 5Mbps', 'cn-east', 5_000_000)];
+    assert.equal(pickSwitchTarget('cn-east', withLocalSmall)?.name, '上海阿里云 5Mbps', '同区域优先，小管子也允许当选');
+    // 没有国内节点时退到香港档（hk 比其它海外更近，哪怕 AWS 的管子更大）
+    const onlyOversea = pool.filter((c) => !c.row.region.startsWith('cn-'));
+    assert.equal(pickSwitchTarget('cn-east', onlyOversea)?.name, '香港阿里云 200Mbps', '海外档里先取香港（regionTier 2 < 3）');
+    // 绝对余量口径：200M 用了 50%（余 100M）胜过 5M 空着（余 5M）
+    assert.equal(
+      pickSwitchTarget('cn-east', [cand('广州腾讯云 5Mbps', 'cn-south', 5_000_000), cand('河北阿里云 200Mbps', 'cn-north', 200_000_000, 0.5)])?.name,
+      '河北阿里云 200Mbps',
+    );
+    // 但 5M 空着（余 5M）胜过 200M 用了 99%（余 2M）——小管子只要真更空就能赢
+    assert.equal(
+      pickSwitchTarget('cn-east', [cand('广州腾讯云 5Mbps', 'cn-south', 5_000_000), cand('河北阿里云 200Mbps', 'cn-north', 200_000_000, 0.99)])?.name,
+      '广州腾讯云 5Mbps',
+    );
+  });
+
+  test('pickSwitchTargetForRoom：有建房的测速就走建房那套（延迟优先，10ms 内优先大管子）', () => {
+    const cand = (name: string, capacity_bps: number, utilization = 0): RelayCandidate => ({
+      row: {
+        id: `n_${name}`,
+        name,
+        region: name.startsWith('广州') || name.startsWith('河北') ? 'cn-south' : 'oversea',
+        capacity_bps,
+        capacity_peers: 500,
+        peers: 0,
+        weight: 100,
+        status: 'online',
+      } as NodeRow,
+      utilization,
+      shedUtil: 0.9,
+    });
+    const nearSmall = cand('广州腾讯云 5Mbps', 5_000_000);
+    const farBig = cand('河北阿里云 200Mbps', 200_000_000);
+    // 差 29ms（> 10ms 档）→ 以近的为准，小管子也当选（"近的小管子也允许当换台目标"）
+    assert.equal(
+      pickSwitchTargetForRoom('cn-east', [nearSmall, farBig], [{ nodeId: nearSmall.row.id, ms: 21 }, { nodeId: farBig.row.id, ms: 50 }], 10_000_000)?.name,
+      '广州腾讯云 5Mbps',
+    );
+    // 差 4ms（≤ 10ms 档）→ 档内大管子优先 → 河北
+    assert.equal(
+      pickSwitchTargetForRoom('cn-east', [nearSmall, farBig], [{ nodeId: nearSmall.row.id, ms: 21 }, { nodeId: farBig.row.id, ms: 25 }], 10_000_000)?.name,
+      '河北阿里云 200Mbps',
+    );
+    // **没有测速**（老房间）→ 退回区域分档：国内优先于海外，绝不再是"数据库行序"
+    const de = { ...cand('德国9929 500Mbps', 500_000_000), row: { ...cand('德国9929 500Mbps', 500_000_000).row, region: 'oversea' } };
+    assert.equal(
+      pickSwitchTargetForRoom('cn-east', [de, farBig], [], 10_000_000)?.name,
+      '河北阿里云 200Mbps',
+      '没有提示时不能退化成行序（德国在第一行也不选它）',
+    );
   });
 
   test('nodeAtShedLine：EWMA 或**最近一次原始采样**越线都算（用户要的"超线就弹"）', () => {

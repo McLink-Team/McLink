@@ -33,6 +33,7 @@ import type { AppEventBus } from '../app.ts';
 import { HttpError } from '../util/errors.ts';
 import { logger } from '../logger.ts';
 import { randomBytesBuf, shortId } from '../util/id.ts';
+import { parseJson } from '../db/index.ts';
 import { buildLaunchArgs, renderAcl, renderEasytierToml, rpcPortalForListenPort, usableRpcPort, CONFIG_PLACEHOLDER, type AclSpec } from '../easytier/config.ts';
 import { buildRoomAcl } from '../easytier/acl.ts';
 import { RoomRepo, toMember, toRoom, toRoomForUser, type JoinedRoomRow, type MemberRow } from '../db/rooms.ts';
@@ -509,34 +510,65 @@ export function regionTier(region: string, currentRegion: string): number {
 }
 
 /**
- * 换台目标的排序（纯函数，单测直接钉住）。
+ * 这台节点还剩多少**绝对**带宽（bit/s）：`capacity × (1 − 利用率)`；
+ * 没填容量（`capacity_bps = 0` = 不限）时返回 `+∞`（它不构成约束）。
+ *
+ * 为什么换台要比**绝对**余量而不是"空余比例"（用户 2026-10-03 拍板"近的小管子也允许当换台目标"）：
+ * 比例口径下"5 Mbps 空着"和"500 Mbps 空着"都是 1.0，会平手；而换台本来就是**因为当前那台扛不住**，
+ * 把整房搬到一台余量更小的管子上没有意义。用绝对余量：同档内谁还剩得多谁赢，
+ * 小管子只要真的更空（或就在同一区域）照样能当选。
+ */
+export function freeHeadroomBps(candidate: RelayCandidate): number {
+  const capacity = candidate.row.capacity_bps ?? 0;
+  if (capacity <= 0) return Number.POSITIVE_INFINITY;
+  return capacity * freeBandwidth(candidate.utilization);
+}
+
+/**
+ * 选换台目标：**有建房的测速就用建房那套规则**，没有才退回区域分档兜底。
+ *
+ * 用户 2026-10-03 拍板："换台还是建房那套逻辑，10ms 内就优先大管子" ——
+ * 于是这里把房间存下的 `relay_latency_hints`（V27）喂给**同一个** `selectRelays`：
+ * 延迟升序（主键）→ 差 ≤10ms 同一档 → 档内大管子优先 → 空余带宽 → 权重。
+ * 没有提示（老房间 / 老客户端建的房）时退回 `pickSwitchTarget` 的区域分档：
+ * 同区域 → 国内 → 香港 → 海外 → 绝对余量 → 权重。
+ */
+export function pickSwitchTargetForRoom(
+  currentRegion: string,
+  candidates: readonly RelayCandidate[],
+  hints: readonly RelayLatencyHint[],
+  bigPipeThresholdBps = 0,
+): NodeRow | null {
+  if (candidates.length === 0) return null;
+  if (hints.length > 0) return selectRelays(candidates, hints, 1, bigPipeThresholdBps)[0] ?? null;
+  return pickSwitchTarget(currentRegion, candidates);
+}
+
+/**
+ * 换台目标的排序（纯函数，单测直接钉住）——**没有测速数据时的兜底**。
  *
  * 用户实测踩到的坑：房间用的上海阿里云 2 Mbps 到线了，平台**准备的新中继是德国 9929** ——
  * 因为这里原来是"空余带宽 → 权重"排序，而所有节点都空着、权重都是 100 时，
  * 结果退化成**数据库行序**（`listSchedulable()` 是 `order by weight desc`），德国恰好排第一。
  * 玩家看到的就是"点一下切换到德国"。选路规则和建房那条一样，不能退化成行序。
  *
- * 现在的顺序：
- *   ① **大管子优先**（换台的意义就是换到扛得住的管子；`capacity_bps = 0` 也算大管子）
- *      —— 一台都没有时才放开给小管子；
- *   ② 再按 `regionTier`：同区域 → 国内 → 香港 → 海外（同档内才比下面的数字）；
- *   ③ 同档内：空余带宽降序 → 权重降序 → peers 升序 → id（保证稳定、可复现）。
+ * 顺序（**不再按"是不是大管子"硬过滤** —— 用户要求近的小管子也能当目标）：
+ *   ① `regionTier`：与当前中继同区域 → 国内其它区域 → 香港 → 其它海外（**先看远近**）；
+ *   ② 同档内：`freeHeadroomBps` 降序（谁剩得多谁赢，5 Mbps 空着不会赢过 200 Mbps 空着）；
+ *   ③ 权重降序 → peers 升序 → id（稳定、可复现）。
  *
  * 调用方负责先过滤掉"当前那台"和"已经过了卸荷线的"，并自行判断结果是否真的更空。
  */
 export function pickSwitchTarget(
   currentRegion: string,
   candidates: readonly RelayCandidate[],
-  bigPipeThresholdBps = 0,
 ): NodeRow | null {
   if (candidates.length === 0) return null;
-  const big = candidates.filter((c) => isBigPipeNode(c.row, bigPipeThresholdBps));
-  const pool = big.length > 0 ? big : candidates;
-  const best = Math.min(...pool.map((c) => regionTier(c.row.region, currentRegion)));
-  const tier = pool.filter((c) => regionTier(c.row.region, currentRegion) === best);
+  const best = Math.min(...candidates.map((c) => regionTier(c.row.region, currentRegion)));
+  const tier = candidates.filter((c) => regionTier(c.row.region, currentRegion) === best);
   const ranked = [...tier].sort(
     (a, b) =>
-      freeBandwidth(b.utilization) - freeBandwidth(a.utilization) ||
+      freeHeadroomBps(b) - freeHeadroomBps(a) ||
       b.row.weight - a.row.weight ||
       a.row.peers - b.row.peers ||
       (a.row.id < b.row.id ? -1 : a.row.id > b.row.id ? 1 : 0),
@@ -1208,6 +1240,12 @@ export class RoomService {
       expiresAt,
       // 存下房间自己的 TTL：到期时间会随活跃顺延，之后推不出该顺延多久（见 V14 迁移）
       ttlMinutes: ttlMinutes && ttlMinutes > 0 ? ttlMinutes : null,
+      /**
+       * V27：把建房这轮上报的测速**存进房间**（原来用完即弃）。
+       * 换台时要用它跑**同一套**排序规则（延迟优先 + 差 ≤10ms 优先大管子），
+       * 否则换台只能看"空余带宽 → 权重"，同分时退化成数据库行序 —— 用户就被推到了德国 9929。
+       */
+      relayLatencyHints: (input.latencyHints?.length ?? 0) > 0 ? JSON.stringify(input.latencyHints) : null,
     });
 
     // 房主占 seat 0 → 网段 .1
@@ -2283,20 +2321,29 @@ export class RoomService {
         const [relayId] = current;
         if (!relayId) continue;
         const currentRelay = this.nodes.findById(relayId);
-        const currentFree = currentRelay ? freeBandwidth(this.utilizationOf(currentRelay)) : -1;
         /**
-         * 目标由纯函数挑（见 `pickSwitchTarget`）：大管子优先 → 同区域 → 国内 → 更空 → 权重。
+         * 目标由纯函数挑（见 `pickSwitchTargetForRoom`）：**有建房的测速就用建房那套规则**
+         * （延迟优先 → 差 ≤10ms 优先大管子），没有才退回区域分档 —— 用户 2026-10-03 拍板。
          * ⚠️ 这里以前是"空余带宽 → 权重"，同分时退化成数据库行序，用户就被推到了德国 9929。
          */
-        const candidate = pickSwitchTarget(
+        const currentUtil = currentRelay ? this.utilizationOf(currentRelay) : 1;
+        const currentFree = currentRelay
+          ? freeHeadroomBps({ row: currentRelay, utilization: currentUtil })
+          : Number.NEGATIVE_INFINITY;
+        const switchCandidates = this.nodes
+          .listSchedulable()
+          .map((row) => ({ row, utilization: this.utilizationOf(row), shedUtil: this.shedUtilOf(row) }))
+          .filter((c) => c.row.id !== relayId && !this.isBandwidthBusy(c.row));
+        const candidate = pickSwitchTargetForRoom(
           currentRelay?.region ?? '',
-          this.nodes
-            .listSchedulable()
-            .map((row) => ({ row, utilization: this.utilizationOf(row), shedUtil: this.shedUtilOf(row) }))
-            .filter((c) => c.row.id !== relayId && !this.isBandwidthBusy(c.row)),
+          switchCandidates,
+          parseJson<RelayLatencyHint[]>(row.relay_latency_hints ?? null, []),
           this.smallPipeThresholdBps(),
         );
-        const candidateFree = candidate ? freeBandwidth(this.utilizationOf(candidate)) : -1;
+        /** "更空"也按**绝对**余量比：换台是因为当前那台扛不住，搬到余量更小的管子没有意义 */
+        const candidateFree = candidate
+          ? freeHeadroomBps({ row: candidate, utilization: this.utilizationOf(candidate) })
+          : Number.NEGATIVE_INFINITY;
         const better = candidate !== null && candidateFree > currentFree;
         /** 该做什么由纯函数决定（准备好过 / 冷却中都短路，见那里的注释） */
         const action = relayLoadAction({

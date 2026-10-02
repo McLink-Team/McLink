@@ -28,6 +28,14 @@ export interface RoomRow {
   last_active_at: string;
   /** V14：房间自己的存活时长（分钟）；null = 不自动过期 */
   ttl_minutes?: number | null;
+  /**
+   * V27：建房那一刻房主机器上报的节点延迟（JSON 数组 `[{nodeId, ms}]`）。
+   *
+   * 换台（`promoteOverloadedRooms`）拿它喂给**同一个** `selectRelays`，
+   * 于是"换台目标"和"建房选中继"是同一套规则（延迟优先、差 ≤10ms 优先大管子）。
+   * 老房间是 NULL → 退回"同区域 → 国内 → 香港 → 海外"的分档兜底。
+   */
+  relay_latency_hints?: string | null;
 }
 
 export interface MemberRow {
@@ -178,14 +186,17 @@ export class RoomRepo {
     expiresAt: string | null;
     /** 房间自己的存活时长（分钟）；null = 不自动过期。心跳续期按它算 */
     ttlMinutes?: number | null;
+    /** 建房那一刻房主机器测到的各节点延迟（JSON 字符串，V27）；换台时复用同一套排序 */
+    relayLatencyHints?: string | null;
   }): JoinedRoomRow {
     const id = input.id;
     const ts = nowIso();
     this.db.run(
       `insert into rooms (id, code, name, host_user_id, status, access, visibility, zone,
         relay_node_ids, policy, network_name, network_secret, subnet, subnet_slot, password_hash,
-        online_members, member_count, acl_revision, created_at, expires_at, closed_at, last_active_at, ttl_minutes)
-       values (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, ?, ?, null, ?, ?)`,
+        online_members, member_count, acl_revision, created_at, expires_at, closed_at, last_active_at, ttl_minutes,
+        relay_latency_hints)
+       values (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, ?, ?, null, ?, ?, ?)`,
       id,
       input.code,
       input.name,
@@ -204,6 +215,7 @@ export class RoomRepo {
       input.expiresAt,
       ts,
       input.ttlMinutes ?? null,
+      input.relayLatencyHints ?? null,
     );
     const row = this.findById(id);
     if (!row) throw new Error('创建房间后无法读回记录');

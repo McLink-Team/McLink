@@ -691,6 +691,20 @@ update settings
  where key = 'platform'
    and json_extract(value, '$.clientDownloadUrl') = '/downloads/McLink-Setup-1.0.8-x64.exe';
 `;
+/**
+ * V27：房间记下**建房那一刻的测速**（`rooms.relay_latency_hints`，JSON 数组）。
+ *
+ * 为什么要存（用户 2026-10-03 拍板"换台还是建房那套逻辑，10ms 内就优先大管子"）：
+ * 换台目标原来只看"空余带宽 → 权重"，同分时退化成数据库行序 —— 他线上房间被建议切到**德国 9929**。
+ * 要让换台和建房用**同一套**规则（延迟优先 + 10ms 档内大管子优先），就得有延迟数据；
+ * 而建房时的 `latencyHints` 以前用完即弃。现在存下来（房主那台机器的 tcping，
+ * 也正是"整个房间离哪台近"最合适的代表），换台时直接喂给同一个 `selectRelays`。
+ * 老房间这一列是 NULL → 换台退回"同区域 → 国内 → 香港 → 海外"的分档兜底。
+ */
+const V27_ROOM_RELAY_HINTS = `
+alter table rooms add column relay_latency_hints text;
+`;
+
 export const MIGRATIONS: readonly string[] = [
   V1_INITIAL,
   V2_RELAY_ROOM_MAP,
@@ -728,6 +742,7 @@ export const MIGRATIONS: readonly string[] = [
    */
   V25_MEMBER_RELAY_NODE,
   V26_CLIENT_1_1_0,
+  V27_ROOM_RELAY_HINTS,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
