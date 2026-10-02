@@ -473,9 +473,15 @@ node scripts/check-node-cmd-origin.mjs         # 签发节点命令里的主控�
 node scripts/check-trusted-proxies.mjs         # 控制台里的可信代理真的生效（7 项；看审计行 ip）
 node scripts/repro-easytier-avoid-relay.mjs    # 复现 EasyTier 的 avoid-relay 失效（四实例本地拓扑，见 §10.5）
 node client/scripts/verify-platform.mjs        # 平台分支 + CI/文档静态断言（85 项）
-node client/scripts/verify-relay-roles.mjs     # 中继角色判定（18 项；纯函数，不用主控）
+node client/scripts/verify-relay-roles.mjs     # 中继角色判定 + 中继横幅文案（24 项；纯函数，不用主控）
+node scripts/check-versions.mjs                # 6 个 package.json + Android versionName/Code + 发版说明（5 项）
 node scripts/fetch-client-artifacts.mjs --help # 一键收产物：改名 + 算 sha256 + 打印要填的三个设置
 ```
+
+`check-versions.mjs` 是 1.1.0 发版踩坑后加的：改版本号时漏了 `android/package.json`
+（还是 1.0.5），于是玩家装的明明是最新 APK、设置页却显示 `McLink 1.0.5` 还被提示"有新版本"。
+它把"一个发行版本只有一个号"钉死：各 package.json → `build.gradle` 的 `versionName`/`versionCode`
+→ `docs/releases/<版本>.md` 四处必须一致，毫秒级、不需要主控。
 
 七个脚本的默认管理员密码都是 `dev-only-passw0rd`，可用 `MCLINK_ADMIN_PASSWORD` /
 `MCLINK_MASTER`（或 `MCLINK_PORT`）覆盖；它们会在开发库里留下一次性注册密钥（未使用），

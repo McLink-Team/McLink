@@ -7,17 +7,23 @@ android {
         applicationId "link.cnnic.mclink"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 105
+        versionCode 110
         /*
-         * 版本号与 android/package.json 的 version **必须一致**。
+         * 版本号与 android/package.json 的 version **必须一致**（那里是 App 内显示、
+         * 也是主控比对"你有没有新版本"用的；这里是 Android 系统与升级用的）。
+         *
+         * ⚠️ 1.1.0 这次踩过一次：改版本号时漏了 android/package.json（还是 1.0.5），
+         * 于是装的是最新包、设置页却显示 McLink 1.0.5、还被提示"有新版本"。
+         * 现在有 `pnpm check:versions` 把这几处钉在一起（见 scripts/check-versions.mjs）。
          *
          * 之前这里写死 "1.0" 而 package.json 是 0.1.0、APK 文件名又是 0.1.0 ——
          * 同一个包在三个地方有三个版本号，玩家报问题时说不清装的是哪个。
          * 0.2.0 = 第一条能真正联机的安卓版本线（里程碑 2）。
          * 1.0.4 → 1.0.5 = 跟桌面端 1.0.9 同一批：房间页「打洞节点 / 中继节点」徽标、
          * 中继建议提醒（玩家自己点切换）、名字匹配的宽容化。
+         * 1.1.0 = 与桌面端同一批：单节点中继 + 到线提示（横幅/系统通知/提示音）+ 延迟优先。
          */
-        versionName "1.0.5"
+        versionName "1.1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         /*
          * 默认只打 arm64-v8a（真机都是它），但**可以用属性覆盖** —— 因为 PC 上的 Android 模拟器是 x86_64：

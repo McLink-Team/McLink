@@ -23,6 +23,7 @@
     "typecheck": "pnpm -r typecheck",
     "verify:platform": "node client/scripts/verify-platform.mjs",
     "verify:lockfile": "pnpm install --frozen-lockfile --lockfile-only",
+    "check:versions": "node scripts/check-versions.mjs",
     "check:contrast": "node scripts/check-contrast.mjs",
     "check:sh": "node scripts/check-shell-vars.mjs",
     "pack:server": "node scripts/pack-server-source.mjs",
