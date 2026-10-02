@@ -14,7 +14,7 @@ import { test, describe } from 'node:test';
 import { renderAcl, renderEasytierToml, buildLaunchArgs, tomlString, aclToJson, rpcPortalForListenPort, usableRpcPort } from '../src/easytier/config.ts';
 import { buildRoomAcl, isAclEmpty } from '../src/easytier/acl.ts';
 import { parseHumanNumber, parseLatencyMs } from '../src/easytier/manager.ts';
-import { hashRoomPassword, verifyRoomPassword, deriveNetworkName, resolveMemberLink, relayScore, nextRoomExpiry, selectRelays, pickRoomRelays, pickRoomRelay, pickMemberRelay, relayLoadAction, memberRelayStale, roomUsesRelay, RELAY_NOTICE_COOLDOWN_MS, LATENCY_TIE_BAND_MS, MEMBER_RELAY_TIE_BAND_MS, RoomService, type RelayCandidate } from '../src/services/rooms.ts';
+import { hashRoomPassword, verifyRoomPassword, deriveNetworkName, resolveMemberLink, relayScore, nextRoomExpiry, selectRelays, pickRoomRelays, pickRoomRelay, pickMemberRelay, relayLoadAction, memberRelayStale, roomUsesRelay, advanceLoadWindows, RELAY_NOTICE_COOLDOWN_MS, RELAY_SCALE_WINDOWS, RELAY_NODE_BUSY_WINDOWS, LATENCY_TIE_BAND_MS, MEMBER_RELAY_TIE_BAND_MS, RoomService, type RelayCandidate } from '../src/services/rooms.ts';
 import { Db } from '../src/db/index.ts';
 import { NodeRepo } from '../src/db/nodes.ts';
 import { RoomRepo } from '../src/db/rooms.ts';
@@ -1875,6 +1875,18 @@ describe('单节点换中继：到线动作与"该重连了"的判定', () => {
     assert.equal(roomUsesRelay([host]), false, '房间里没有别的成员 → 没人需要被通知');
     assert.equal(roomUsesRelay([host, member(0, 'pending')]), false);
     assert.equal(roomUsesRelay([host, member(0, 'kicked')]), false);
+  });
+
+  test('advanceLoadWindows：到线 +1；掉一轮就**清零重数**（负数侧表示连续空闲多久）', () => {
+    assert.equal(advanceLoadWindows(0, true), 1);
+    assert.equal(advanceLoadWindows(1, true), 2);
+    assert.equal(advanceLoadWindows(2, false), -1, '掉一轮就重新数（不是 +2 → +1）');
+    assert.equal(advanceLoadWindows(0, false), -1);
+    assert.equal(advanceLoadWindows(-3, false), -4, '连续空闲会一直往负数累加（回落分支用它）');
+    assert.equal(advanceLoadWindows(-3, true), 1, '空闲一段时间后再到线，从 1 重新数');
+    // 两条判据的门槛：房间流量 6 轮（≈3 分钟）、节点整体到线 2 轮（≈1 分钟）
+    assert.equal(RELAY_SCALE_WINDOWS, 6);
+    assert.equal(RELAY_NODE_BUSY_WINDOWS, 2);
   });
 });
 

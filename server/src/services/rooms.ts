@@ -451,13 +451,36 @@ export function nextRoomExpiry(current: string | null, nowMs: number, ttlMs: num
 }
 
 /**
- * 房间中继"过载"的判定窗口数（30 秒一轮 → 6 轮 ≈ 3 分钟）。
+ * 「房间自己跑出来的量」到线要连续多少轮（30 秒一轮 → 6 轮 ≈ 3 分钟）。
  *
  * 为什么不是一次就动：房间刚建好、玩家在下载资源包、有人刚进服，都会让瞬时速率冲高，
  * 单窗口触发等于把抖动当成长时间过载。3 分钟也够一个"真的在跑大流量"的房间暴露出来。
  * 回落用同一个窗口数（防抖，别来回切）。
  */
 export const RELAY_SCALE_WINDOWS = 6;
+
+/**
+ * 「**节点整体**利用率到线」要连续多少轮（30 秒一轮 → 2 轮 ≈ 1 分钟）。
+ *
+ * 为什么比上一条短得多（用户 2026-10-03 问"要持续卡三分钟才收到通知吗"）：
+ * 节点利用率是**已经平滑过**的信号（`NodeUtilization` 的 EWMA，时间常数 3 分钟），
+ * 它不可能瞬时冲高；再叠 6 轮窗口等于双重平滑，等到通知发出去房间已经卡了好几分钟。
+ * 1 分钟足够滤掉单次采样的毛刺（心跳 20 秒一次，两轮 = 至少 2 个采样点都在线上）。
+ */
+export const RELAY_NODE_BUSY_WINDOWS = 2;
+
+/**
+ * 有符号的窗口计数：到线 +1；**没到线则清零到 −1**（不是慢慢往回扣）。
+ *
+ * 语义是"**连续**到线了多少轮"：中途掉一轮就重新数（`+5 → −1`）——
+ * 真实负载本来就有起伏，但"抖一下"不该被当成"已经持续超载 5 轮"。
+ * 负数那一侧表示"已经连续空闲这么多轮"，回落分支（`<= -RELAY_SCALE_WINDOWS`）用它。
+ * 抽成纯函数是为了把这条"清零"的行为写死：改成 `prev - 1` 会让"每 3 分钟超一次"
+ * 的房间在几小时后突然被判定过载。
+ */
+export function advanceLoadWindows(prev: number, over: boolean): number {
+  return over ? Math.max(prev, 0) + 1 : Math.min(prev, 0) - 1;
+}
 
 /**
  * 「节点负载到线、但暂时没得换」这条通知的**冷却时间**。
@@ -849,6 +872,15 @@ export class RoomService {
    * 主控重启即清空（房间短命，代价可忽略）。
    */
   readonly #loadWindows = new Map<string, number>();
+
+  /**
+   * 「那台节点**整体**到线」的窗口计数（与 `#loadWindows` 同样的有符号语义）。
+   *
+   * 单独一份的原因见 `RELAY_NODE_BUSY_WINDOWS`：节点利用率已经是平滑过的信号，
+   * 判定它只需要 2 轮；而房间自己的瞬时吞吐要 6 轮。两个判据混用一个计数会让
+   * "节点明明早就满了、却因为房间流量不高而一直不提醒"。
+   */
+  readonly #nodeWindows = new Map<string, number>();
   readonly #scaled = new Map<string, { previous: string[]; rxBps: number; txBps: number; at: number }>();
 
   /**
@@ -2030,18 +2062,21 @@ export class RoomService {
        *   ② 那台节点**整体**的利用率 ≥ 它自己的卸荷线 —— 上面还跑着别的房间，
        *      节点快满了，这个房间也该准备搬（单节点模型里"搬"＝整房换台）。
        * ② 用的就是调度、卸荷线共用的那个 EWMA 利用率（节点心跳算出来），不是这个房间的读数。
+       *
+       * 两条**各有各的窗口数**（阈值与理由见那两个常量）：
+       *   ① 是本房间的瞬时吞吐，容易因为下载资源包冲高 → 要 6 轮（≈3 分钟）才算数；
+       *   ② 是已经平滑过的节点利用率 → 2 轮（≈1 分钟）就够，否则"卡了三分钟才提醒"。
        */
       const nodeUtil = relayRow ? this.utilizationOf(relayRow) : 0;
       const nodeShed = relayRow ? this.shedUtilOf(relayRow) : UTIL_SHED;
       const nodeBusy = relayRow !== null && nodeUtil >= nodeShed;
-      const over = total >= roomThreshold || nodeBusy;
 
-      // 有符号窗口计数：正 = 持续超载，负 = 持续空闲
-      const windows = this.#loadWindows.get(roomId) ?? 0;
-      const next = over ? Math.max(windows, 0) + 1 : Math.min(windows, 0) - 1;
+      const next = advanceLoadWindows(this.#loadWindows.get(roomId) ?? 0, total >= roomThreshold);
       this.#loadWindows.set(roomId, next);
+      const busyNext = advanceLoadWindows(this.#nodeWindows.get(roomId) ?? 0, nodeBusy);
+      this.#nodeWindows.set(roomId, busyNext);
 
-      if (next >= RELAY_SCALE_WINDOWS) {
+      if (next >= RELAY_SCALE_WINDOWS || busyNext >= RELAY_NODE_BUSY_WINDOWS) {
         /*
          * 单节点模型：房间只有一台中继，过载时**整房搬到更空的大管子**。
          * 注意这里只"准备"目标（`#pendingRelay`），真正的落库发生在房主下一次拉票据 ——
@@ -2149,8 +2184,8 @@ export class RoomService {
         continue;
       }
 
-      // 回落：降到阈值以下并且之前提升过 → 还原成原来的顺序（只在没人重进时悄悄发生）
-      if (next <= -RELAY_SCALE_WINDOWS && this.#scaled.has(roomId)) {
+      // 回落：两条都降到阈值以下并且之前提升过 → 还原成原来的顺序（只在没人重进时悄悄发生）
+      if (next <= -RELAY_SCALE_WINDOWS && busyNext <= -RELAY_NODE_BUSY_WINDOWS && this.#scaled.has(roomId)) {
         const state = this.#scaled.get(roomId)!;
         // 还没来得及搬（房主还没拉票据）就直接取消这次准备，别把房间搬走
         if (this.#pendingRelay.has(roomId)) {
@@ -2162,6 +2197,7 @@ export class RoomService {
         }
         this.#scaled.delete(roomId);
         this.#loadWindows.set(roomId, 0);
+        this.#nodeWindows.set(roomId, 0);
       }
     }
     return promoted;
