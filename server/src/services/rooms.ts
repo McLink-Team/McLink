@@ -611,6 +611,103 @@ export function pickRoomRelay(
   return { relay: auto[0] ?? null, rejected: [] };
 }
 
+/**
+ * 成员分中继时「延迟算同一档」的带宽（ms）—— 用户 2026-10-02 定的口径：
+ * **延迟优先，相差 10ms 以内视为同一档，档内取空余带宽最大的那台**。
+ *
+ * 为什么和 `LATENCY_TIE_BAND_MS`（5ms，用于**房间**选中继）不是一个数：
+ *   · 房间选中继用的是**房主**测的延迟，那是"这个房间走哪台"的长期决定，宁可挑更近的；
+ *   · 成员分中继是给**每个成员**各挑一台，候选只有房间那 ≤3 台，选错了后果也只是一次两跳路径，
+ *     而且成员多、并发高，10ms 的带子能让负载更均匀地摊开（同城几台常有 5–15ms 的抖动，
+ *     5ms 的带子会把它们硬分出高下，10ms 则允许"谁空谁接"）。
+ * 两者的共同点：都是**区间极差**（一段连续区间内最大减最小 ≤ 带子），不是两两比较 ——
+ * 后者不满足传递性，会让结果依赖比较顺序（理由见 `LATENCY_TIE_BAND_MS` 的注释）。
+ */
+export const MEMBER_RELAY_TIE_BAND_MS = 10;
+
+/** `pickMemberRelay` 的结果：选中的那台 + 两个"解释性"标志（调用方据此记日志） */
+export interface MemberRelayPick {
+  /** 选中的中继 id；候选为空时为 null */
+  id: string | null;
+  /** 候选**全部**过了卸荷线，这次是兜底（"不能没人可分"，调用方记一条 warn） */
+  allShed: boolean;
+  /** 这次真的用上了这名成员上报的延迟；false = 只按"最空的"选（没有提示 / 提示全是池外节点） */
+  usedHints: boolean;
+}
+
+/**
+ * 给**成员**挑一台中继（纯函数，单测直接钉住）。口径见 `docs/relay-assignment.md`：
+ *
+ *   ① **硬过滤**：利用率已经**到达卸荷线**（`utilization >= shedUtil`，小管子 80%、其余 90%）
+ *      的中继直接排除 —— "到卸载线的就排出去"。这是硬条件，延迟再好也不破例；
+ *   ② **延迟优先**：剩下的按**这名成员自己上报的 tcping**（加入请求里的 `latencyHints`）排队；
+ *   ③ **10ms 以内算同一档**（`MEMBER_RELAY_TIE_BAND_MS`）→ 档内取**空余带宽最大**的那台；
+ *   ④ **没有延迟数据的中继排在最后**：只要有候选带提示，就在带提示的那批里选
+ *      （"没测到"不是"延迟 0" —— 与 `selectRelays` 的语义一致）。
+ *
+ * 全过线时的兜底：**只有**这时才把过了线的候选放回来，按"最空的"选并置 `allShed` ——
+ * 屋里一台都没得选时，给一个刚过线的中继，也比让成员没有票据、直接进不去房间好。
+ *
+ * 与 `selectRelays`（房间选中继）的区别只有一个：那一套是**权重优先**（运营方的意图优先，
+ * 延迟只在同权重内比较），这里是**延迟优先**（成员体感优先，空余带宽只在同档内决胜）。
+ * 之所以能这么分：房间选中继决定了整个房间走哪台，值得听运营方的；成员分中继只是
+ * "在房间里已经定好的那几台之间摊开"，成员自己的体感才是唯一该优化的东西。
+ */
+export function pickMemberRelay(
+  candidates: readonly RelayCandidate[],
+  hints: readonly RelayLatencyHint[] | null | undefined,
+): MemberRelayPick {
+  if (candidates.length === 0) return { id: null, allShed: false, usedHints: false };
+
+  // 同一个 nodeId 取最小值：与客户端「连打 3 次取最快」一致（口径与 selectRelays 相同）
+  const hintMs = new Map<string, number>();
+  for (const hint of hints ?? []) {
+    if (!hint || typeof hint.nodeId !== 'string' || hint.nodeId.length === 0) continue;
+    if (typeof hint.ms !== 'number' || !Number.isFinite(hint.ms) || hint.ms < 0) continue;
+    const prev = hintMs.get(hint.nodeId);
+    if (prev === undefined || hint.ms < prev) hintMs.set(hint.nodeId, hint.ms);
+  }
+
+  /* ① 卸荷线：`>=` 是"到达即不再接新负载"，与 NodeService 的状态判定同一条线 */
+  const below = candidates.filter((c) => c.utilization < (c.shedUtil ?? UTIL_SHED));
+  const allShed = below.length === 0;
+
+  /**
+   * ②④ 延迟优先：只在"带提示"的那批里挑；一台都没提示时才整池参与。
+   *
+   * ⚠️ 全过线（`allShed`）时**不看延迟** —— 那时已经没有"没到线的"可选，延迟不再是判据，
+   * 只看谁还剩一点（延迟好的那台恰好也最满，正是最不该再塞人的情况）。这也让
+   * `usedHints` 的语义保持诚实：它只在真的用延迟做过决定时为 true。
+   */
+  let pool: readonly RelayCandidate[] = below;
+  let usedHints = false;
+  if (allShed) {
+    pool = candidates;
+  } else {
+    const hinted = pool.filter((c) => hintMs.has(c.row.id));
+    usedHints = hinted.length > 0;
+    if (usedHints) {
+      let best = Number.POSITIVE_INFINITY;
+      for (const c of hinted) best = Math.min(best, hintMs.get(c.row.id)!);
+      /* ③ 区间极差 ≤ 10ms 的连续一段 = 同一档 */
+      pool = hinted.filter((c) => hintMs.get(c.row.id)! - best <= MEMBER_RELAY_TIE_BAND_MS);
+    }
+  }
+
+  /*
+   * ④ 档内决胜：空余带宽最大者胜；完全并列时依次看 relayScore（含权重与降级罚分）、
+   * peers、id —— 后面几个键只为**结果稳定可复现**（同样的输入永远选出同一台），
+   * 尤其是"同一个房间的成员拿到的分配不该随候选顺序抖动"。
+   */
+  const order = (a: RelayCandidate, b: RelayCandidate): number =>
+    freeBandwidth(b.utilization) - freeBandwidth(a.utilization) ||
+    relayScore(b.row, b.utilization) - relayScore(a.row, a.utilization) ||
+    a.row.peers - b.row.peers ||
+    (a.row.id < b.row.id ? -1 : a.row.id > b.row.id ? 1 : 0);
+  const chosen = [...pool].sort(order)[0];
+  return { id: chosen?.row.id ?? null, allShed, usedHints };
+}
+
 
 export class RoomService {
   private readonly config: ServerConfig;
@@ -632,6 +729,19 @@ export class RoomService {
    */
   readonly #loadWindows = new Map<string, number>();
   readonly #scaled = new Map<string, { previous: string[]; rxBps: number; txBps: number; at: number }>();
+
+  /**
+   * 「谁进房时上报了哪些节点延迟」的短命暂存（`roomId:userId` → hints）。
+   *
+   * 为什么需要暂存：分配发生在**第一次拉票据**时，而审批制房间的第一次拉票据发生在 join
+   * **之后**（房主批准了才给票据），那一刻请求里已经没有 hints 了 —— 不暂存就等于
+   * "审批过的房间永远按负载分配"，与"延迟优先"的口径不一致。
+   *
+   * 只放在内存里：它不是用户资料，丢了最多退回"按最空的选"（不影响可用性）；
+   * 30 分钟过期、分配时取走即删，长跑进程里不会攒下无主记录。
+   */
+  readonly #joinHints = new Map<string, { hints: RelayLatencyHint[]; at: number }>();
+  static readonly #HINTS_TTL_MS = 30 * 60_000;
 
   constructor(
     config: ServerConfig,
@@ -878,6 +988,13 @@ export class RoomService {
     listenPort?: number;
     /** 见 CreateRoomInput.rpcPort */
     rpcPort?: number;
+    /**
+     * 这名玩家进房前测到的各节点延迟（**可选**，老客户端不发）—— 见 `CreateRoomInput.latencyHints`。
+     *
+     * 建房时它只用来排序；进房时它决定**这名成员被分到哪台中继**
+     * （延迟优先，见 `pickMemberRelay`）。测不到就不发：主控会退回"在房间那几台里挑最空的"。
+     */
+    latencyHints?: readonly RelayLatencyHint[] | null;
   }): JoinResult {
     const row = this.rooms.findByCode(input.code.toUpperCase());
     if (!row) throw HttpError.notFound('加入码无效');
@@ -913,7 +1030,7 @@ export class RoomService {
           row.id,
           input.userId,
           input.listenPort ?? this.settings.current.relayPort,
-        input.rpcPort,
+          input.rpcPort,
         ),
         pending: false,
       };
@@ -948,6 +1065,12 @@ export class RoomService {
       seat,
       deviceName: input.deviceName ?? null,
     });
+    /*
+     * 先记住这轮上报的延迟，再拉票据 —— 分配发生在票据里（见 `ticket`）。
+     * 审批制房间的票据要等房主批准之后才拉，那时请求里已经没有提示了，所以必须暂存
+     * （内存、30 分钟过期、分好即删，见 `#rememberHints` / `#takeHints`）。
+     */
+    this.#rememberHints(row.id, input.userId, input.latencyHints);
     this.rooms.recalcCounts(row.id);
     this.rooms.touch(row.id);
     this.rooms.logAccess(row.id, input.userId, pending ? 'join_pending' : 'join', null, null);
@@ -971,18 +1094,26 @@ export class RoomService {
     log.info('成员加入房间', { room: row.id, user: user.username, seat, pending });
 
     const fresh = this.rooms.findById(row.id)!;
+    const ticket = pending
+      ? null
+      : this.ticket(
+          row.id,
+          input.userId,
+          input.listenPort ?? this.settings.current.relayPort,
+          input.rpcPort,
+          // 进房这轮上报的延迟：决定这名成员被分到哪台中继（见 pickMemberRelay）
+          input.latencyHints,
+        );
     return {
       // 待审批时连房间对象也不能带网络名，否则「审批」这道门形同虚设
       room: toRoomForUser(fresh, input.userId),
-      member: toMember(member),
-      ticket: pending
-        ? null
-        : this.ticket(
-            row.id,
-            input.userId,
-            input.listenPort ?? this.settings.current.relayPort,
-        input.rpcPort,
-          ),
+      /*
+       * ⚠️ 必须**重新读一次**成员行：分配就是在上面那次 `ticket()` 里写进
+       * `room_members.relay_node_id` 的，用 `addMember` 返回的那一行会让响应里
+       * `relayNodeId` 永远是 null（票据里已经有中继了，接口却说"没分"）。
+       */
+      member: toMember(this.rooms.findMember(row.id, input.userId) ?? member),
+      ticket,
       pending,
     };
   }
@@ -1166,6 +1297,11 @@ export class RoomService {
      * 没给或明显不可用时按 listenPort 推算，保证老客户端与脚本调用照常工作。
      */
     rpcPort?: number | null,
+    /**
+     * 这名成员上报的节点延迟（可选）—— 只在**首次分配**时用得上，见 `pickMemberRelay`。
+     * 传空/不传时回退到 join 时暂存的那一份（`#takeHints`），两者都没有就按"最空的"选。
+     */
+    latencyHints?: readonly RelayLatencyHint[] | null,
   ): RoomTicket {
     const row = this.getRow(roomId);
     const member = this.rooms.findMember(roomId, userId);
@@ -1191,17 +1327,42 @@ export class RoomService {
     let assignedRelayId = member.relay_node_id ?? null;
     if (!isHost) {
       /*
-       * 成员：在房间的中继集合（最多 3 台，见 `RELAY_SET_SIZE`）里**按负载抽一台** ✓ ——
-       * 空余带宽最大的那台优先；分好之后写回 `relay_node_id` 固定下来（除非它已不在集合里）。
+       * 成员：在房间的中继集合（最多 3 台，见 `RELAY_SET_SIZE`）里挑一台并**固定**下来。
+       * 口径（用户 2026-10-02 定，`docs/relay-assignment.md`）：
+       *   ① 已经**到达卸荷线**的中继直接排除（小管子 80%、其余 90%）；
+       *   ② 剩下的**按这名成员自己上报的 tcping 延迟优先**（join 请求里的 `latencyHints`）；
+       *   ③ 延迟相差 ≤ 10ms 视为同一档，档内取空余带宽最大的那台；
+       *   ④ 没有延迟数据的中继排在最后。规则本体在纯函数 `pickMemberRelay` 里（有单测）。
+       *
+       * 已经在房的成员**不再改分配**：换中继要断一次线，而卸荷线约束的是"接新负载"，
+       * 已经在上面跑的成员不该被赶走（与节点侧"这条线只挡新房间"的口径一致）。
+       * 只有"分到的那台已经不在房间集合里了"（节点被停用/换槽）才会重新分。
        */
       const pool = room.relayNodeIds.filter((id) => this.nodes.findById(id));
       if (pool.length > 0 && (!assignedRelayId || !pool.includes(assignedRelayId))) {
-        const best = pool
-          .map((id) => ({ id, row: this.nodes.findById(id) }))
-          .map((x) => ({ id: x.id, free: x.row ? freeBandwidth(this.utilizationOf(x.row)) : -1 }))
-          .sort((a, b) => b.free - a.free)[0];
-        assignedRelayId = best?.id ?? pool[0] ?? null;
+        const candidates: RelayCandidate[] = pool.map((id) => {
+          const row = this.nodes.findById(id)!;
+          return { row, utilization: this.utilizationOf(row), shedUtil: this.shedUtilOf(row) };
+        });
+        // 显式的提示优先；没有就用 join 时暂存的那一份（取走即删）
+        const remembered = this.#takeHints(roomId, userId);
+        const hints = latencyHints && latencyHints.length > 0 ? latencyHints : remembered;
+        const pick = pickMemberRelay(candidates, hints);
+        assignedRelayId = pick.id ?? pool[0] ?? null;
+        if (pick.allShed) {
+          log.warn('房间的中继都过了卸荷线，这名成员只能分到最空的那台', {
+            room: roomId,
+            user: userId,
+            candidates: pool.length,
+          });
+        }
         if (assignedRelayId) this.rooms.setMemberRelay(roomId, userId, assignedRelayId);
+        log.info('成员分配中继', {
+          room: roomId,
+          user: userId,
+          relay: assignedRelayId,
+          byLatency: pick.usedHints,
+        });
       }
     }
     /** 房主连**整组**（每台都有一条直达房主的链路）；成员只连分到的那一台 */
@@ -1757,6 +1918,28 @@ export class RoomService {
   }
 
   /* ------------------------------------------------------------ 内部 */
+
+  /**
+   * 暂存这轮 join 上报的延迟提示（空/缺失就不存）。顺手清掉过期的记录 ——
+   * 只在 join 这条已经"要写库"的路径上做，成本可忽略，也不需要定时器。
+   */
+  #rememberHints(roomId: string, userId: string, hints: readonly RelayLatencyHint[] | null | undefined): void {
+    if (!hints || hints.length === 0) return;
+    const now = Date.now();
+    for (const [key, value] of this.#joinHints) {
+      if (now - value.at > RoomService.#HINTS_TTL_MS) this.#joinHints.delete(key);
+    }
+    this.#joinHints.set(`${roomId}:${userId}`, { hints: [...hints], at: now });
+  }
+
+  /** 取走暂存的提示（**取走即删**，只给首次分配用一次）；过期或没有则返回空数组 */
+  #takeHints(roomId: string, userId: string): RelayLatencyHint[] {
+    const key = `${roomId}:${userId}`;
+    const found = this.#joinHints.get(key);
+    if (!found) return [];
+    this.#joinHints.delete(key);
+    return Date.now() - found.at > RoomService.#HINTS_TTL_MS ? [] : found.hints;
+  }
 
   #uniqueCode(): string {
     for (let i = 0; i < 32; i += 1) {

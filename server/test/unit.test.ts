@@ -14,7 +14,7 @@ import { test, describe } from 'node:test';
 import { renderAcl, renderEasytierToml, buildLaunchArgs, tomlString, aclToJson, rpcPortalForListenPort, usableRpcPort } from '../src/easytier/config.ts';
 import { buildRoomAcl, isAclEmpty } from '../src/easytier/acl.ts';
 import { parseHumanNumber, parseLatencyMs } from '../src/easytier/manager.ts';
-import { hashRoomPassword, verifyRoomPassword, deriveNetworkName, resolveMemberLink, relayScore, nextRoomExpiry, selectRelays, pickRoomRelays, pickRoomRelay, LATENCY_TIE_BAND_MS, RoomService, type RelayCandidate } from '../src/services/rooms.ts';
+import { hashRoomPassword, verifyRoomPassword, deriveNetworkName, resolveMemberLink, relayScore, nextRoomExpiry, selectRelays, pickRoomRelays, pickRoomRelay, pickMemberRelay, LATENCY_TIE_BAND_MS, MEMBER_RELAY_TIE_BAND_MS, RoomService, type RelayCandidate } from '../src/services/rooms.ts';
 import { Db } from '../src/db/index.ts';
 import { NodeRepo } from '../src/db/nodes.ts';
 import { RoomRepo } from '../src/db/rooms.ts';
@@ -1610,6 +1610,167 @@ describe('中继选取 pickRoomRelay（单节点模型）', () => {
     assert.equal(r.relay, 'a');
     assert.deepEqual(r.rejected.map((x) => x.id), ['b', 'c']);
     assert.match(r.rejected[0]?.reason ?? '', /只下发一台中继/);
+  });
+});
+
+/**
+ * **成员分中继**的口径（用户 2026-10-02 定，见 `docs/relay-assignment.md`）：
+ *
+ *   「没到卸荷线就全部按照延迟优先，到卸荷线的就排出去」
+ *
+ * 这一组盯的就是这两句话 + 一个档内决胜：
+ *   · ① 过了卸荷线（`utilization >= shedUtil`）的中继**硬排除**，延迟再好也没用；
+ *   · ② 剩下的**延迟优先**（用成员自己上报的 `latencyHints`），不是按负载；
+ *   · ③ 延迟相差 ≤ 10ms 视为同一档 → 档内取**空余带宽最大**的那台；
+ *   · ④ 没上报延迟的中继排在最后；全过线时才退回"最空的"并置 `allShed`（不能没人可分）。
+ *
+ * 与「房间选中继」(`selectRelays`) 的分工：那一套是**权重优先**（运营方意图），
+ * 这一套是**延迟优先**（成员体感）—— 两条规则都各有单测钉住，别混。
+ */
+describe('成员分中继 pickMemberRelay（延迟优先 + 卸荷线）', () => {
+  const cand = (id: string, utilization = 0, shedUtil = 0.9, over: Partial<NodeRow> = {}): RelayCandidate => ({
+    row: {
+      id,
+      name: id,
+      region: 'cn-east',
+      status: 'online',
+      weight: 100,
+      peers: 0,
+      capacity_peers: 500,
+      capacity_bps: 100_000_000,
+      assist_only: 0,
+      disabled: 0,
+      ...over,
+    } as NodeRow,
+    utilization,
+    shedUtil,
+  });
+
+  test('① 过了卸荷线的中继被硬排除 —— 哪怕它延迟最低、余量最大', () => {
+    const hot = cand('hot', 0.95, 0.8); // 小管子：80% 就卸荷，它已经 95%
+    const ok = cand('ok', 0.5, 0.8);
+    const hints = [
+      { nodeId: 'hot', ms: 1 },
+      { nodeId: 'ok', ms: 80 },
+    ];
+    const picked = pickMemberRelay([hot, ok], hints);
+    assert.equal(picked.id, 'ok', '过线的排出去是第一句硬规则');
+    assert.equal(picked.allShed, false);
+    // 刚好到线（=）也算过线：与 NodeService「到达即不再接新房间」同一条线
+    assert.equal(pickMemberRelay([cand('edge', 0.8, 0.8), ok], [{ nodeId: 'edge', ms: 1 }, { nodeId: 'ok', ms: 80 }]).id, 'ok');
+    // 差一点点没过线 → 它仍然在池子里，且按延迟优先赢过更空的 ok
+    assert.equal(
+      pickMemberRelay([cand('edge', 0.79, 0.8), cand('ok', 0.85, 0.9)], [{ nodeId: 'edge', ms: 1 }, { nodeId: 'ok', ms: 2 }]).id,
+      'edge',
+    );
+  });
+
+  test('② 延迟优先：差得远时选最近的那台，而不是最空的那台', () => {
+    const near = cand('near', 0.7); // 很挤
+    const far = cand('far', 0.0); // 全空
+    const picked = pickMemberRelay([near, far], [
+      { nodeId: 'near', ms: 12 },
+      { nodeId: 'far', ms: 60 },
+    ]);
+    assert.equal(picked.id, 'near', '48ms 的差距不该被"它更空"翻盘');
+    assert.equal(picked.usedHints, true);
+    // 与房间侧的"权重优先"确实不同：这里权重完全不参与（权重 1 的近节点照样赢权重 1000 的远节点）
+    assert.equal(
+      pickMemberRelay([cand('near', 0, 0.9, { weight: 1 }), cand('far', 0, 0.9, { weight: 1000 })], [
+        { nodeId: 'near', ms: 12 },
+        { nodeId: 'far', ms: 60 },
+      ]).id,
+      'near',
+    );
+  });
+
+  test('③ 延迟相差在 10ms 档内 → 取空余带宽最大的那台', () => {
+    const tight = cand('tight', 0.8); // 空余 0.2
+    const roomy = cand('roomy', 0.1); // 空余 0.9
+    const picked = pickMemberRelay([tight, roomy], [
+      { nodeId: 'tight', ms: 10 },
+      { nodeId: 'roomy', ms: 10 + MEMBER_RELAY_TIE_BAND_MS },
+    ]);
+    assert.equal(picked.id, 'roomy', '刚好 10ms 算同一档 → 谁空谁接');
+    // 只超出带子 1ms → 回到延迟优先
+    assert.equal(
+      pickMemberRelay([tight, roomy], [
+        { nodeId: 'tight', ms: 10 },
+        { nodeId: 'roomy', ms: 11 + MEMBER_RELAY_TIE_BAND_MS },
+      ]).id,
+      'tight',
+    );
+  });
+
+  test('③ 档按"最快的那台 + 10ms"切（区间极差），不做不满足传递性的两两比较', () => {
+    /*
+     * 0 / 6 / 11ms 这组就是分水岭：
+     *   · 6 与 11 只差 5ms（两两比较会说"它俩同档"）；
+     *   · 但 11 与最快的 0 差 11ms > 带子 → 按区间极差，11 出档。
+     * c 是全池最空的那台，如果实现写成两两比较，它就会被选走 —— 所以这条能钉住实现口径。
+     */
+    const a = cand('a', 0.85); // 空余 0.15，最快
+    const b = cand('b', 0.5); // 空余 0.5
+    const c = cand('c', 0.0); // 空余 1.0，但比最快的慢 11ms
+    const hints = [
+      { nodeId: 'a', ms: 0 },
+      { nodeId: 'b', ms: 6 },
+      { nodeId: 'c', ms: 11 },
+    ];
+    assert.equal(pickMemberRelay([a, b, c], hints).id, 'b', '档内 {a, b} 取最空的 b；c 差 11ms 出档');
+    // 慢得再多一点（12ms）结论不变 —— 出档与否只看与最快那台的差
+    assert.equal(pickMemberRelay([a, b, cand('c', 0)], [...hints.slice(0, 2), { nodeId: 'c', ms: 12 }]).id, 'b');
+  });
+
+  test('④ 没有延迟数据的中继排在最后：只要有带提示的候选，就先在带提示的那批里选', () => {
+    const known = cand('known', 0.6);
+    const unknown = cand('unknown', 0.0);
+    const picked = pickMemberRelay([known, unknown], [{ nodeId: 'known', ms: 300 }]);
+    assert.equal(picked.id, 'known', '"没测到"不是"延迟 0"——但也不该被排到带提示的前面');
+    assert.equal(picked.usedHints, true);
+    // 一台都没提示 → 整池按"最空的"选（老客户端 / 探测失败的路径）
+    const noHints = pickMemberRelay([known, unknown], []);
+    assert.equal(noHints.id, 'unknown');
+    assert.equal(noHints.usedHints, false);
+    // 提示全是池外节点（节点被停用/已不在房间集合里）→ 同样退回"最空的"
+    assert.equal(pickMemberRelay([known, unknown], [{ nodeId: 'ghost', ms: 1 }]).id, 'unknown');
+    assert.equal(pickMemberRelay([known, unknown], undefined).id, 'unknown');
+  });
+
+  test('④ 同一个 nodeId 报多次取最小值（与客户端"连打 3 次取最快"一致）', () => {
+    const a = cand('a', 0.5);
+    const b = cand('b', 0.1);
+    // a 的三次采样：90 / 8 / 40 → 取 8，比 b 的 20 更近 → a 赢（即便 b 更空）
+    const picked = pickMemberRelay([a, b], [
+      { nodeId: 'a', ms: 90 },
+      { nodeId: 'a', ms: 8 },
+      { nodeId: 'a', ms: 40 },
+      { nodeId: 'b', ms: 20 },
+    ]);
+    assert.equal(picked.id, 'a');
+  });
+
+  test('全过线 → 退回"最空的那台"并置 allShed（不能没人可分）', () => {
+    const full = cand('full', 1);
+    const half = cand('half', 0.92);
+    const picked = pickMemberRelay([full, half], [{ nodeId: 'full', ms: 1 }, { nodeId: 'half', ms: 500 }]);
+    assert.equal(picked.id, 'half', '都过线时延迟不再是判据，只看谁还剩一点');
+    assert.equal(picked.allShed, true);
+    assert.equal(pickMemberRelay([full, half], []).id, 'half');
+  });
+
+  test('一台候选都没有 → id = null（调用方退回房间默认中继）', () => {
+    assert.deepEqual(pickMemberRelay([], [{ nodeId: 'a', ms: 1 }]), { id: null, allShed: false, usedHints: false });
+  });
+
+  test('结果与候选顺序无关（同分时也有确定的赢家）', () => {
+    const x = cand('x', 0.3);
+    const y = cand('y', 0.3);
+    const hints = [
+      { nodeId: 'x', ms: 20 },
+      { nodeId: 'y', ms: 25 },
+    ];
+    assert.equal(pickMemberRelay([x, y], hints).id, pickMemberRelay([y, x], hints).id);
   });
 });
 
