@@ -14,7 +14,7 @@ import { test, describe } from 'node:test';
 import { renderAcl, renderEasytierToml, buildLaunchArgs, tomlString, aclToJson, rpcPortalForListenPort, usableRpcPort } from '../src/easytier/config.ts';
 import { buildRoomAcl, isAclEmpty } from '../src/easytier/acl.ts';
 import { parseHumanNumber, parseLatencyMs } from '../src/easytier/manager.ts';
-import { hashRoomPassword, verifyRoomPassword, deriveNetworkName, resolveMemberLink, relayScore, nextRoomExpiry, selectRelays, pickRoomRelays, assignRelaySlots, LATENCY_TIE_BAND_MS, RoomService, type RelayCandidate } from '../src/services/rooms.ts';
+import { hashRoomPassword, verifyRoomPassword, deriveNetworkName, resolveMemberLink, relayScore, nextRoomExpiry, selectRelays, pickRoomRelays, pickRoomRelay, LATENCY_TIE_BAND_MS, RoomService, type RelayCandidate } from '../src/services/rooms.ts';
 import { Db } from '../src/db/index.ts';
 import { NodeRepo } from '../src/db/nodes.ts';
 import { RoomRepo } from '../src/db/rooms.ts';
@@ -1504,169 +1504,71 @@ describe('流量账本与会计', () => {
 });
 
 /**
- * 两个槽位：槽 1 = 打洞节点（`assist_only`，不承载数据），槽 2 = 中继节点。
+ * 房间中继：**单节点模型**（2026-09-30 起）。
  *
- * 这一组盯的是用户 2026-09-28 拍板的模型：把带宽少的机器标成"只协助打洞"，
- * 让它们只协调 P2P 打洞；真正承载数据的中继槽从**大带宽档**里按**客户端实测延迟**挑。
+ * 旧的"两个槽位（槽 1 打洞 / 槽 2 中继）"依赖 EasyTier 的 avoid-relay 惩罚把数据从槽 1
+ * 挤到槽 2；实测（`scripts/repro-easytier-avoid-relay.mjs`）这个惩罚对"代转外来网络的
+ * public server"约一半的运行失效且**不自愈**，于是房间整片走那台不承载的节点、数据被丢。
+ * 现在一个房间只下发**一台**中继，房间里没有第二条可被误选的路。
  */
-describe('房间两个槽位：打洞节点 + 中继节点', () => {
-  const cand = (id: string, over: Partial<NodeRow> = {}, utilization = 0): RelayCandidate => ({
-    row: { id, capacity_peers: 500, peers: 0, weight: 100, status: 'online', ...over } as NodeRow,
-    utilization,
-  });
-  /** 大带宽档门槛固定 10 Mbps，与默认设置一致 */
-  const BIG = 10_000_000;
-
-  test('槽 1 优先挑「只协助打洞」的节点，槽 2 从大带宽档里挑（权重一致时按延迟）', () => {
-    const pool = [
-      cand('punch', { assist_only: 1, capacity_bps: 5_000_000, weight: 1 }),
-      cand('small', { capacity_bps: 5_000_000 }), // 小管子：不该当侦中继
-      cand('big-slow', { capacity_bps: 100_000_000 }),
-      cand('big-fast', { capacity_bps: 200_000_000 }),
-    ];
-    const picked = pickRoomRelays(
-      pool,
-      pool,
-      [
-        { nodeId: 'small', ms: 5 },
-        { nodeId: 'big-slow', ms: 40 },
-        { nodeId: 'big-fast', ms: 20 },
-      ],
-      2,
-      BIG,
-    );
-    assert.deepEqual(picked, ['punch', 'big-fast'], '槽 1 = 打洞节点；槽 2 = 大管子里延迟最低的那台');
+describe('房间中继：单节点模型', () => {
+  const cand = (id: string, over: Partial<RelayCandidate['row']> = {}): RelayCandidate => ({
+    row: {
+      id,
+      name: id,
+      region: 'cn-east',
+      endpoint: '',
+      status: 'online',
+      weight: 100,
+      capacity_bps: 100_000_000,
+      assist_only: 0,
+      disabled: 0,
+      ...over,
+    } as RelayCandidate['row'],
+    utilization: 0, shedUtil: 0.9,
   });
 
-  test('打洞节点永远不会进中继槽（它不承载数据，进去等于这个房间没有中继）', () => {
-    // 打洞节点延迟最低、带宽最大、权重最高 —— 任何一条"看着该选它"的理由都给它了
-    const punchLike = cand('punch-like', { assist_only: 1, capacity_bps: 1_000_000_000, weight: 999 });
-    const plain = cand('plain', { capacity_bps: 20_000_000 });
-    const picked = pickRoomRelays(
-      [punchLike, plain],
-      [punchLike, plain],
-      [
-        { nodeId: 'punch-like', ms: 1 },
-        { nodeId: 'plain', ms: 300 },
-      ],
-      2,
-      BIG,
-    );
-    assert.deepEqual(picked, ['punch-like', 'plain'], '中继槽只能是能承载数据的那台');
+  test('只给一台：无论候选多少，结果长度恒为 1', () => {
+    const ids = pickRoomRelays([cand('a'), cand('b')], [cand('a'), cand('b')], [], 1, 10_000_000, 'cn-east');
+    assert.equal(ids.length, 1);
   });
 
-  test('权重是中继槽的主键：权重更高但慢的那台照样当选（只有权重一致才比延迟）', () => {
-    const pool = [cand('punch', { assist_only: 1 }), cand('heavy', { weight: 500 }), cand('light', { weight: 1 })];
-    const picked = pickRoomRelays(
-      pool,
-      pool,
-      [
-        { nodeId: 'heavy', ms: 90 },
-        { nodeId: 'light', ms: 12 },
-      ],
-      2,
-      BIG,
-    );
-    assert.deepEqual(picked, ['punch', 'heavy'], '权重参与：500 那台赢，哪怕慢 78ms');
-
-    // 权重一致时才走后续规则（延迟优先）
-    const sameWeight = [cand('punch', { assist_only: 1 }), cand('slow', { weight: 100 }), cand('fast', { weight: 100 })];
-    const hinted = pickRoomRelays(
-      sameWeight,
-      sameWeight,
-      [
-        { nodeId: 'slow', ms: 60 },
-        { nodeId: 'fast', ms: 5 },
-      ],
-      2,
-      BIG,
-    );
-    assert.deepEqual(hinted, ['punch', 'fast'], '权重一致 → 比延迟');
-  });
-
-  test('没有标 assist 的节点时，槽 1 退回原规则（与旧行为一致）', () => {
-    const pool = [cand('w-high', { weight: 300 }), cand('w-low', { weight: 1 })];
-    const picked = pickRoomRelays(
-      pool,
-      pool,
-      [
-        { nodeId: 'w-high', ms: 200 },
-        { nodeId: 'w-low', ms: 5 },
-      ],
-      2,
-      BIG,
-    );
-    // 槽 1 用 selectRelays（权重优先）→ w-high；槽 2 再按延迟挑 → w-low
-    assert.deepEqual(picked, ['w-high', 'w-low']);
-  });
-
-  test('本区域只有打洞节点：中继槽从**别的区域**调一台（跨区兜底）', () => {
-    const zonePool = [cand('punch-east', { assist_only: 1, region: 'cn-east' } as Partial<NodeRow>)];
-    const allPool = [
-      ...zonePool,
-      cand('relay-south', { region: 'cn-south', capacity_bps: 200_000_000 }),
-      cand('relay-north', { region: 'cn-north', capacity_bps: 200_000_000 }),
-    ];
-    const picked = pickRoomRelays(
-      zonePool,
-      allPool,
-      [
-        { nodeId: 'relay-south', ms: 35 },
-        { nodeId: 'relay-north', ms: 60 },
-      ],
-      2,
-      BIG,
+  test('权重优先：权重高的那台当选（权重一致才比延迟）', () => {
+    const ids = pickRoomRelays(
+      [cand('light', { weight: 1 }), cand('heavy', { weight: 500 })],
+      [],
+      [],
+      1,
+      10_000_000,
       'cn-east',
     );
-    assert.deepEqual(picked, ['punch-east', 'relay-south'], '槽 1 留在本区域；槽 2 取跨区里延迟最低的那台');
+    assert.deepEqual(ids, ['heavy']);
   });
 
-  test('本区域有能承载数据的节点时**不跨区**（区域仍是硬条件）', () => {
-    const zonePool = [
-      cand('punch-east', { assist_only: 1 }),
-      cand('relay-east-slow', { capacity_bps: 200_000_000 }),
-    ];
-    const allPool = [...zonePool, cand('relay-south-fast', { capacity_bps: 200_000_000 })];
-    const picked = pickRoomRelays(
-      zonePool,
-      allPool,
-      [
-        { nodeId: 'relay-east-slow', ms: 80 },
-        { nodeId: 'relay-south-fast', ms: 5 }, // 更快的外区节点也不该被拉进来
-      ],
-      2,
-      BIG,
+  test('capacity_bps = 0（控制台没填 = 不限）算大带宽档，不会被当作小管子漏掉', () => {
+    const ids = pickRoomRelays([cand('unlimited', { capacity_bps: 0 })], [], [], 1, 10_000_000, 'cn-east');
+    assert.deepEqual(ids, ['unlimited']);
+  });
+
+  test('本区域一台都挑不出来 → 从全局池跨区兜底（否则那个区域完全建不了房）', () => {
+    const ids = pickRoomRelays([], [cand('far', { region: 'cn-north' })], [], 1, 10_000_000, 'cn-east');
+    assert.deepEqual(ids, ['far']);
+  });
+
+  test('本区域有可用节点时不跨区（区域仍是硬条件）', () => {
+    const ids = pickRoomRelays(
+      [cand('local')],
+      [cand('local'), cand('far', { region: 'cn-north' })],
+      [],
+      1,
+      10_000_000,
+      'cn-east',
     );
-    assert.deepEqual(picked, ['punch-east', 'relay-east-slow']);
+    assert.deepEqual(ids, ['local']);
   });
 
-  test('大带宽档为空时中继槽不硬凑：退回全部候选并仍给两台', () => {
-    const pool = [cand('a', { capacity_bps: 1_000_000 }), cand('b', { capacity_bps: 2_000_000 })];
-    const picked = pickRoomRelays(
-      pool,
-      pool,
-      [
-        { nodeId: 'a', ms: 30 },
-        { nodeId: 'b', ms: 10 },
-      ],
-      2,
-      BIG,
-    );
-    // 两台都是小管子 → 槽 1 按原规则（权重相同则延迟优先）挑 b，槽 2 只能拿剩下的 a。
-    // 关键是**一台都不少给**：宁可两台都小，也不能让房间只剩一台中继。
-    assert.deepEqual(picked, ['b', 'a'], '池子里没有大管子：仍然给足两台');
-  });
-
-  test('capacity_bps = 0（控制台没填 = 不限）算大带宽档', () => {
-    const pool = [cand('punch', { assist_only: 1 }), cand('unset')];
-    const picked = pickRoomRelays(pool, pool, [], 2, BIG);
-    assert.equal(picked.length, 2, '没填容量的节点不该被判成小管子');
-    assert.equal(picked[0], 'punch');
-  });
-
-  test('只有一个能承载的候选时只返回一台（不重复、也不凭空造一台）', () => {
-    assert.deepEqual(pickRoomRelays([cand('only')], [cand('only')], [], 2, BIG), ['only']);
-    assert.deepEqual(pickRoomRelays([], [], [], 2, BIG), []);
+  test('一台候选都没有 → 空数组（调用方据此报"当前没有可用的中继节点"）', () => {
+    assert.deepEqual(pickRoomRelays([], [], [], 1, 10_000_000, 'cn-east'), []);
   });
 });
 
@@ -1680,54 +1582,34 @@ describe('房间两个槽位：打洞节点 + 中继节点', () => {
  *   · 状态机（degraded）与调度（不再接新房间）用的是**同一条线**。
  */
 /**
- * 手选节点落槽：建房页让玩家挑的按钮写的是「中继节点 → 手动选择」，
- * 所以**手选的节点必须当中继**；数组下标 `[0]` 永远是打洞节点（客户端靠下标判角色）。
+ * 单节点模型（2026-09-30 起）：一个房间只下发**一台**中继。
  *
- * 这一组盯的是用户 2026-09-29 实测报的问题：手选节点被塞在数组最前面 →
- * 100% 被标成「打洞节点」；而平台补的那台取自自动调度的**第一顺位**
- * （`pickRoomRelays` 的槽 1 候选，优先"只协助打洞"的节点）—— 那种节点不承载数据，
- * 于是手选一台 assist 节点时两个槽位都不是承载者，**房间等于没有中继**。
+ * 为什么放弃双槽：旧的"槽 1 打洞 / 槽 2 中继"完全依赖 EasyTier 的 avoid-relay 惩罚把数据
+ * 从槽 1 挤到槽 2，而实测（`scripts/repro-easytier-avoid-relay.mjs`，探针版二进制打印了
+ * 发布/读取/边表）这个惩罚对"代转外来网络的 public server"约一半的运行失效且**不自愈**
+ * —— 于是房间整片走那台不承载的节点、数据被丢掉。
+ * 现在：所有节点都允许中继，小带宽节点靠"卸荷阈值"停止接新房间。
  */
-describe('手选节点落槽 assignRelaySlots', () => {
-  const pick = (id: string, assistOnly = false) => ({ id, assistOnly });
+describe('中继选取 pickRoomRelay（单节点模型）', () => {
+  const pick = (id: string) => ({ id });
 
-  test('手选一台能承载数据的节点 → 它是槽 2（中继节点），槽 1 由自动调度补', () => {
-    const slots = assignRelaySlots([pick('chosen')], ['auto-punch', 'auto-relay']);
-    assert.deepEqual(slots, { punch: 'auto-punch', relay: 'chosen', extra: [], rejected: [] });
+  test('手选的第一台直接生效（不再按能力分槽）', () => {
+    assert.deepEqual(pickRoomRelay([pick('chosen')], ['auto-1', 'auto-2']), { relay: 'chosen', rejected: [] });
   });
 
-  test('手选的是「只协助打洞」的节点 → 它落槽 1，中继槽用自动调度的**中继候选**', () => {
-    const slots = assignRelaySlots([pick('small-assist', true)], ['auto-punch', 'auto-relay']);
-    assert.equal(slots.punch, 'small-assist');
-    assert.equal(slots.relay, 'auto-relay', '不能把 auto[0]（打洞候选）补进中继槽');
+  test('没手选时用自动调度的第一台', () => {
+    assert.deepEqual(pickRoomRelay([], ['auto-1', 'auto-2']), { relay: 'auto-1', rejected: [] });
   });
 
-  test('自动调度只给得出一台时，补的那台不会和中继槽撞车', () => {
-    const slots = assignRelaySlots([pick('chosen')], ['only-node']);
-    assert.equal(slots.relay, 'chosen');
-    assert.equal(slots.punch, 'only-node');
+  test('两边都没有 → relay 为 null（调用方据此报"没有可用的中继节点"）', () => {
+    assert.deepEqual(pickRoomRelay([], []), { relay: null, rejected: [] });
   });
 
-  test('手选的就是自动调度里那台中继：两个槽位不重复占', () => {
-    const slots = assignRelaySlots([pick('auto-relay')], ['auto-punch', 'auto-relay']);
-    assert.deepEqual([slots.punch, slots.relay], ['auto-punch', 'auto-relay']);
-    assert.deepEqual(slots.extra, []);
-  });
-
-  test('没有手选时 = 自动调度的两个槽位原样下发', () => {
-    const slots = assignRelaySlots([], ['p', 'r']);
-    assert.deepEqual([slots.punch, slots.relay, ...slots.extra], ['p', 'r']);
-  });
-
-  test('多选能承载数据的节点：第一台当槽 2，其余挂在后面当额外入口', () => {
-    const slots = assignRelaySlots([pick('a'), pick('b'), pick('c')], ['auto-punch', 'auto-relay']);
-    assert.deepEqual([slots.punch, slots.relay, ...slots.extra], ['auto-punch', 'a', 'b', 'c']);
-  });
-
-  test('多选的「只协助打洞」超出打洞槽那份 → 拒绝并给出理由（不许当额外入口）', () => {
-    const slots = assignRelaySlots([pick('a'), pick('assist-1', true), pick('assist-2', true)], ['p', 'r']);
-    assert.deepEqual([slots.punch, slots.relay, ...slots.extra], ['assist-1', 'a']);
-    assert.deepEqual(slots.rejected, [{ id: 'assist-2', reason: '只协助打洞的节点不能作为中继节点' }]);
+  test('多选：只认第一台，其余如实记进 rejected（界面要能说清为什么被忽略）', () => {
+    const r = pickRoomRelay([pick('a'), pick('b'), pick('c')], ['auto-1']);
+    assert.equal(r.relay, 'a');
+    assert.deepEqual(r.rejected.map((x) => x.id), ['b', 'c']);
+    assert.match(r.rejected[0]?.reason ?? '', /只下发一台中继/);
   });
 });
 
@@ -1778,89 +1660,32 @@ describe('主控对外地址 masterOrigin（签发节点命令）', () => {
 });
 
 /**
- * 「可信反向代理」的生效优先级。
- *
- * 用户实测痛点：这两个值以前只能改 `/etc/mclink/mclink.env`，而升级脚本会重写那个文件，
- * 于是每升一次级都要 SSH 上去再改一遍。现在控制台里存的值优先，环境变量只作初值。
+ * 小带宽节点"到线不再接新房间"由**服务层**的候选过滤负责（`shedUtilFor` 算出的
+ * `shedUtil` 会被硬条件挡掉，见 `RoomService.scheduleRelays`），模块级的
+ * `pickRoomRelays` 只负责在**已经过滤过的候选**里排序。
+ * 这里钉住模块层的可观测行为：候选里权重高的那台（大管子）当选，一台候选也没有时返回空数组。
  */
-describe('可信反向代理 effectiveTrustedProxies（控制台优先于环境变量）', () => {
-  const env = { trustProxy: true, trustedProxiesRaw: '127.0.0.1/8,::1/128' };
-
-  test('控制台里填了就用它（环境变量被盖住）', () => {
-    assert.deepEqual(effectiveTrustedProxies({ trustProxy: true, trustedProxies: '10.0.0.0/8' }, env), {
-      trustProxy: true,
-      raw: '10.0.0.0/8',
-    });
+describe('单节点调度：候选过滤后的排序', () => {
+  const cand = (id: string, weight: number): RelayCandidate => ({
+    row: {
+      id,
+      name: id,
+      region: 'cn-east',
+      endpoint: '',
+      status: 'online',
+      weight,
+      capacity_bps: 100_000_000,
+      assist_only: 0,
+      disabled: 0,
+    } as RelayCandidate['row'],
+    utilization: 0,
   });
 
-  test('控制台留空才退回环境变量的初值', () => {
-    assert.equal(
-      effectiveTrustedProxies({ trustProxy: true, trustedProxies: '  ' }, env).raw,
-      env.trustedProxiesRaw,
-    );
+  test('权重高的那台当选（小管子被服务层挡掉后，这里只剩大管子）', () => {
+    assert.deepEqual(pickRoomRelays([cand('big', 500)], [cand('big', 500)], [], 1, 5_000_000, 'cn-east'), ['big']);
   });
 
-  test('只有明确 false 才不采信转发头（缺字段按 true 处理，兼容老库）', () => {
-    assert.equal(effectiveTrustedProxies({ trustProxy: false, trustedProxies: '' }, env).trustProxy, false);
-    assert.equal(
-      effectiveTrustedProxies({ trustedProxies: '' } as never, env).trustProxy,
-      true,
-      '老库里没有 trustProxy 这个键时应当保持历史行为（采信）',
-    );
-  });
-});
-
-describe('小带宽节点提前卸荷（80% 停止新增中继）', () => {
-  const BIG = 10_000_000;
-  const SMALL = 5_000_000;
-  const rowOf = (id: string, region: string, over: Partial<NodeRow> = {}): NodeRow =>
-    ({ id, region, capacity_peers: 500, peers: 0, weight: 100, status: 'online', ...over }) as NodeRow;
-  /** 与前面那组同款：只喂 scheduleRelays 真正用到的依赖 */
-  function schedule(
-    rows: NodeRow[],
-    utilizationOf: (row: NodeRow) => number = () => 0,
-    relayBigPipeBps = 0,
-    relaySmallShedPercent = 90,
-  ) {
-    const fake = Object.assign(Object.create(RoomService.prototype) as RoomService, {
-      nodes: { listSchedulable: () => rows },
-      utilizationOf,
-      settings: { current: { relayBigPipeBps, relayScaleMbps: 0, relaySmallShedPercent } },
-    });
-    return (zone: string, hints: RelayLatencyHint[] = [], max = 2): string[] =>
-      RoomService.prototype.scheduleRelays.call(fake, zone, hints, max);
-  }
-
-  test('shedUtilFor：小管子 80%，大管子/未填容量仍 90%，且封顶 90%', () => {
-    assert.equal(shedUtilFor(SMALL, BIG, 80), 0.8, '小管子：80% 就卸荷');
-    assert.equal(shedUtilFor(BIG, BIG, 80), UTIL_SHED, '够大档：仍走全局线');
-    assert.equal(shedUtilFor(200_000_000, BIG, 80), UTIL_SHED);
-    assert.equal(shedUtilFor(0, BIG, 80), UTIL_SHED, '没填容量（= 不限）不算小管子');
-    assert.equal(shedUtilFor(null, BIG, 80), UTIL_SHED);
-    assert.equal(shedUtilFor(SMALL, BIG, 95), UTIL_SHED, '配得比 90% 高时封顶在 90%，不会比全局线更晚');
-    assert.equal(shedUtilFor(SMALL, BIG, 50), 0.5, '管理员可以调得更保守');
-  });
-
-  test('状态机用同一条线：小管子 85% 就 degraded，大管子 85% 还是 online', () => {
-    assert.equal(nextNodeStatus('online', 0, 500, 0.85, shedUtilFor(SMALL, BIG, 80)), 'degraded');
-    assert.equal(nextNodeStatus('online', 0, 500, 0.85, shedUtilFor(BIG, BIG, 80)), null, '大管子 85% 仍有富余');
-  });
-
-  test('调度侧：小管子到了自己的线就不再接新房间，大管子照旧', () => {
-    const rows = [
-      rowOf('small-busy', 'cn-east', { capacity_bps: SMALL }),
-      rowOf('big-idle', 'cn-east', { capacity_bps: 200_000_000 }),
-    ];
-    const util = (row: NodeRow) => (row.id === 'small-busy' ? 0.85 : 0.1);
-    // 小管子线 = 80% → 85% 那台被移出候选，只剩大管子
-    const pick = schedule(rows, util, BIG, 80);
-    assert.deepEqual(pick('cn-east'), ['big-idle'], '小管子 85% 时不再接新房间');
-    // 大管子线 = 90% → 85% 仍然合格（证明这条线是**按节点分档**的，不是全局降线）
-    const onlyBig = [rowOf('big-busy', 'cn-east', { capacity_bps: 200_000_000 })];
-    const pickBig = schedule(onlyBig, () => 0.85, BIG, 80);
-    assert.deepEqual(pickBig('cn-east'), ['big-busy']);
-    // 默认（设置里没给这个值）= 90%：85% 的小管子照旧能接
-    const pickDefault = schedule(rows, util);
-    assert.equal(pickDefault('cn-east').includes('small-busy'), true, '没配这条线时行为不变');
+  test('候选全被过滤掉 → 空数组（调用方报"当前没有可用的中继节点"）', () => {
+    assert.deepEqual(pickRoomRelays([], [], [], 1, 5_000_000, 'cn-east'), []);
   });
 });

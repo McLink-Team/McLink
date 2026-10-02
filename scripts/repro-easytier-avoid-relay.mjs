@@ -14,6 +14,7 @@
  *   node scripts/repro-easytier-avoid-relay.mjs                 # 用 vendor/easytier 的二进制
  *   ET_DIR=/path/to/easytier node scripts/repro-easytier-avoid-relay.mjs
  *   node scripts/repro-easytier-avoid-relay.mjs --case=marked-latency-first
+ *   node scripts/repro-easytier-avoid-relay.mjs --case=marked-latency-first --series   # 每 2s 采样一次路径
  *   ET_DIR=<补丁构建> node scripts/repro-easytier-avoid-relay.mjs --expect=fixed   # 验收补丁
  *
  * 退出码：
@@ -71,6 +72,13 @@ const CASES = [
 const wanted = process.argv.find((a) => a.startsWith('--case='))?.slice(7);
 /** --keep：保留临时目录（里面每个实例一份 .log，含打补丁构建的 [mclink-probe] 探针） */
 const KEEP = process.argv.includes('--keep');
+/**
+ * --series：等到 client2 出现之后，每 2 秒采一次"到 client2 的 next_hop"，共 20 次。
+ *
+ * 为什么要它：只采一次会把"还没收敛"误判成"永远不绕开"（实测 vendored 二进制 3 次里
+ * 1 次采到 relayA、2 次采到 relayB —— 是时序，不是确定性逻辑错）。
+ */
+const SERIES = process.argv.includes('--series');
 /** --keep 时也顺带打印探针汇总 */
 for (const c of CASES) if (KEEP) c.keepLogs = true;
 const cases = wanted ? CASES.filter((c) => c.name === wanted) : CASES;
@@ -255,6 +263,16 @@ for (const c of cases) {
     const table = (await jsonCli(P.client1.rpc, ['route'])) ?? [];
     const found = Array.isArray(table) ? table.find((r) => r.hostname === 'client2') : null;
     if (found) row = found;
+    // 时间序列：看路径是"慢慢收敛"还是"一直不换"（只采一次会把"还没收敛"误判成 bug）
+    const series = [];
+    if (SERIES) {
+      for (let i = 0; i < 20; i += 1) {
+        const t = (await jsonCli(P.client1.rpc, ['route'])) ?? [];
+        const f = Array.isArray(t) ? t.find((r) => r.hostname === 'client2') : null;
+        series.push(f ? String(f.next_hop_hostname).replace('PublicServer_', '') : '-');
+        await sleep(2000);
+      }
+    }
     const peers = (await jsonCli(P.client1.rpc, ['peer', 'list'])) ?? [];
     // 外来网络里的服务端会带 "PublicServer_" 前缀，所以用包含匹配
     const relayA = Array.isArray(peers) ? peers.find((p) => String(p.hostname ?? '').includes('relayA')) : null;
@@ -269,6 +287,7 @@ for (const c of cases) {
       relayB: relayB ? `${relayB.cost}/${relayB.lat_ms}ms` : '(未连上)',
       probePublish: c.keepLogs ? summarizeProbe(path.join(dir, 'relayA.log'), 'publish') : null,
       probeRead: c.keepLogs ? summarizeProbe(path.join(dir, 'client1.log'), 'read') : null,
+      series: series.length > 0 ? series : null,
       dir,
     });
   } finally {
@@ -308,6 +327,16 @@ if (probed.length > 0) {
 if (KEEP) {
   console.log('\n日志目录（--keep）：');
   for (const r of results) console.log(`  · ${r.case}: ${r.dir}`);
+}
+
+// 时间序列（每 2 秒一次，共 20 次 ≈ 40 秒）
+for (const r of results) {
+  if (!r.series) continue;
+  console.log(`\n路径时间序列（${r.case}，每 2s 一次）：`);
+  console.log(`  ${r.series.join(' → ')}`);
+  const first = r.series[0];
+  const settled = r.series[r.series.length - 1];
+  console.log(`  首次=${first}  末次=${settled}${first !== settled ? `（第 ${r.series.findIndex((x) => x === settled) + 1} 次采样时切换）` : ''}`);
 }
 
 console.log('');
