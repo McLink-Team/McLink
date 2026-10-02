@@ -603,9 +603,10 @@ const envWhitelist = computed(() => asPatternList(env.value?.relayNetworkWhiteli
             <label class="label" for="s-bigpipe">小带宽节点门槛（Mbps）</label>
             <input id="s-bigpipe" v-model="form.relayBigPipeMbps" class="input" type="number" min="0" />
             <span class="hint">
-              节点的「带宽上限」**低于**它就算小管子（没填 = 不限，不算小管子）。
-              只用来算**卸荷线**：小管子到下一条设置里的百分比就停止接新房间。
-              ⚠️ 它不再影响"挑哪台当中继"—— 那件事现在完全按延迟优先（2026-10-03 起）。
+              节点的「带宽上限」**低于**它就算小管子（没填 = 不限，不算小管子）。两个用途：
+              ① 算**卸荷线**（小管子到下一条设置里的百分比就停止接新房间）；
+              ② **延迟差 ≤10ms 时让位给大管子**（2026-10-03 起："差距在 10ms 内就大管子优先"）。
+              ⚠️ 它不再是一道候选池门槛 —— 近的小管子照样能被选中（差超过 10ms 时）。
             </span>
           </div>
           <div class="field">

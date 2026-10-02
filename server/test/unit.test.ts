@@ -1598,6 +1598,41 @@ describe('房间中继：单节点模型', () => {
     assert.deepEqual(pickRoomRelays([smallNear], [smallNear, bigFar], hints, 1, 'cn-east'), ['small-near']);
   });
 
+  test('**延迟差 ≤10ms 时大管子优先**（2026-10-03 用户补的口径）', () => {
+    const big = cand('big', { capacity_bps: 200_000_000 });
+    const small = cand('small', { capacity_bps: 2_000_000 });
+    const pick = (hints: Array<{ nodeId: string; ms: number }>): string[] =>
+      pickRoomRelays([small, big], [small, big], hints, 1, 'cn-east', 10_000_000);
+    // 差 4ms（≤10）→ 大管子优先：不让 2 Mbps 的小管子扛整个房间
+    assert.deepEqual(pick([{ nodeId: 'small', ms: 10 }, { nodeId: 'big', ms: 14 }]), ['big']);
+    // 差到刚好 10ms → 仍算同一档 → 大管子
+    assert.deepEqual(pick([{ nodeId: 'small', ms: 10 }, { nodeId: 'big', ms: 20 }]), ['big']);
+    // 差 11ms（>10）→ 回到"谁近用谁"，小管子照样赢
+    assert.deepEqual(pick([{ nodeId: 'small', ms: 10 }, { nodeId: 'big', ms: 21 }]), ['small']);
+    // capacity_bps = 0（控制台没填 = 不限）也算大管子 → 同档内赢过 2 Mbps
+    assert.deepEqual(
+      pick([{ nodeId: 'small', ms: 10 }, { nodeId: 'big', ms: 12 }]),
+      ['big'],
+      '这里 big 是 200M；下面单测不限容量的情况',
+    );
+    assert.deepEqual(
+      pickRoomRelays(
+        [small, cand('unlimited', { capacity_bps: 0 })],
+        [small, cand('unlimited', { capacity_bps: 0 })],
+        [{ nodeId: 'small', ms: 10 }, { nodeId: 'unlimited', ms: 15 }],
+        1,
+        'cn-east',
+        10_000_000,
+      ),
+      ['unlimited'],
+    );
+    // 门槛设 0 = 关掉这条决胜 → 回到纯延迟（档内比空余带宽）
+    assert.deepEqual(
+      pickRoomRelays([small, big], [small, big], [{ nodeId: 'small', ms: 10 }, { nodeId: 'big', ms: 14 }], 1, 'cn-east', 0),
+      ['small'],
+    );
+  });
+
   test('capacity_bps = 0（控制台没填 = 不限）照样能当房间中继', () => {
     const ids = pickRoomRelays([cand('unlimited', { capacity_bps: 0 })], [], [], 1, 'cn-east');
     assert.deepEqual(ids, ['unlimited']);
