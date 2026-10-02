@@ -1932,16 +1932,45 @@ export class RoomService {
       log.warn('所有可用节点的带宽都已吃紧，回退到全量候选（新房间只能挤一挤）', { zone });
     }
 
+    /**
+     * 每次建房都把**决策依据**记一条 info（用户实测问过"延迟优先怎么给我推了个德国节点"：
+     * 没有这条日志就只能猜是"客户端没上报测速"还是"那台真的最快"）。
+     * 记的是：区域、收到几条延迟提示、候选池里每一台的 `ms / 利用率 / 权重 / 是不是大管子`。
+     * 候选按上限 12 台截断，避免节点多时刷屏。
+     */
+    const logPick = (picked: string[], scope: 'auto' | 'zone' | 'global'): string[] => {
+      const msOf = new Map(latencyHints.map((h) => [h.nodeId, h.ms]));
+      log.info('房间中继调度：选中了这些节点', {
+        zone,
+        scope,
+        hintsReceived: latencyHints.length,
+        candidates: pool.length,
+        picked: picked.map((id) => {
+          const row = pool.find((c) => c.row.id === id)?.row;
+          return row ? `${row.name}(${row.region}, ${msOf.get(id) ?? '无测速'}ms)` : id;
+        }),
+        table: pool.slice(0, 12).map((c) => ({
+          name: c.row.name,
+          region: c.row.region,
+          ms: msOf.get(c.row.id) ?? null,
+          util: Number(c.utilization.toFixed(3)),
+          weight: c.row.weight,
+          big: isBigPipeNode(c.row, this.smallPipeThresholdBps()),
+        })),
+      });
+      return picked;
+    };
+
     if (zone === 'auto') {
-      return this.pickRelays(pool, pool, latencyHints, max, zone);
+      return logPick(this.pickRelays(pool, pool, latencyHints, max, zone), 'auto');
     }
     const inZone = pool.filter((c) => c.row.region === zone);
     if (inZone.length === 0) {
       log.warn('指定区域没有可用节点，回退到全局调度', { zone });
-      return this.pickRelays(pool, pool, latencyHints, max, zone);
+      return logPick(this.pickRelays(pool, pool, latencyHints, max, zone), 'global');
     }
     // 注意这里传的是**两个**池：区域池用于槽 1，全局池只在"本区域没有可承载节点"时给槽 2 兜底
-    return this.pickRelays(inZone, pool, latencyHints, max, zone);
+    return logPick(this.pickRelays(inZone, pool, latencyHints, max, zone), 'zone');
   }
 
   /** 小管子判定门槛（字节/秒）：低于它的节点按小管子卸荷（见 `shedUtilOf`）。
