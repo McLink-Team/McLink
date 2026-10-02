@@ -615,6 +615,8 @@ export function registerAdminRoutes(router: Router, app: App): void {
       const report = app.broadcast.start({
         subject: body.subject,
         body: body.body,
+        /** `html: true` = 正文按 HTML 发（主控会同时生成一份纯文本兜底，见 broadcast.ts） */
+        html: body.html === true,
         actor: auth.userId,
         audience: audienceFrom(
           typeof body.roles === 'string' ? body.roles : undefined,

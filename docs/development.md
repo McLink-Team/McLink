@@ -475,6 +475,7 @@ node scripts/repro-easytier-avoid-relay.mjs    # 复现 EasyTier 的 avoid-relay
 node client/scripts/verify-platform.mjs        # 平台分支 + CI/文档静态断言（85 项）
 node client/scripts/verify-relay-roles.mjs     # 中继角色判定 + 中继横幅文案（24 项；纯函数，不用主控）
 node scripts/check-versions.mjs                # 6 个 package.json + Android versionName/Code + 发版说明（5 项）
+node scripts/check-html-mail.mjs --password X  # 活体：HTML 群发链路（自己起 SMTP 收信服务器，14 项）
 node scripts/fetch-client-artifacts.mjs --help # 一键收产物：改名 + 算 sha256 + 打印要填的三个设置
 ```
 

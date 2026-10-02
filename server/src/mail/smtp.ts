@@ -41,7 +41,14 @@ export interface SmtpConfig {
 export interface MailInput {
   to: string;
   subject: string;
+  /** 纯文本正文（**必填**：没有 HTML 时它就是全部内容；有 HTML 时它是纯文本客户端看到的那份） */
   text: string;
+  /**
+   * HTML 正文（可选）。给了就发 **multipart/alternative**（text + html 两份），
+   * 而不是只发 HTML —— 纯文本那一份是给不支持 HTML 的客户端与"纯文本偏好"的收件人看的，
+   * 也是反垃圾评分里更稳的做法（只发 HTML 的邮件更容易被判垃圾）。
+   */
+  html?: string | null;
 }
 
 export interface SmtpResult {
@@ -362,28 +369,91 @@ export function parseCapabilities(reply: string): Map<string, string> {
 /* ------------------------------------------------------------------ 组信 */
 
 /**
- * 组装一封最简 MIME 邮件。
+ * 组装一封 MIME 邮件（纯文本，或 text+html 的 multipart/alternative）。
  *
  * 两个容易被忽略但会直接坏掉中文邮件的地方，这里都处理了：
  *   1. 主题必须按 RFC 2047 编码（`=?UTF-8?B?...?=`），否则中文主题到客户端就是乱码；
  *   2. 正文用 base64，既避开 998 字节行长限制，也不需要考虑 dot-stuffing。
+ *
+ * HTML（`mail.html` 非空）时发 multipart/alternative：**纯文本在前、HTML 在后**
+ * （RFC 2046 要求"越靠后越接近原始内容"，客户端会挑它支持的最后一份显示）。
+ * 两个 part 各自 base64，所以同样不用管行长与 dot-stuffing。
  */
 export function buildMessage(config: SmtpConfig, mail: MailInput): string {
   const subject = encodeHeader(mail.subject);
   const from = config.fromName ? `${encodeHeader(config.fromName)} <${config.from}>` : config.from;
-  const body = wrapBase64(Buffer.from(mail.text, 'utf8').toString('base64'));
-  const headers = [
+  const head = [
     `From: ${from}`,
     `To: <${mail.to}>`,
     `Subject: ${subject}`,
     `Date: ${new Date().toUTCString()}`,
     `Message-ID: <${messageId(config.from)}>`,
     'MIME-Version: 1.0',
-    'Content-Type: text/plain; charset=UTF-8',
-    'Content-Transfer-Encoding: base64',
     'Auto-Submitted: auto-generated',
   ];
-  return `${headers.join(CRLF)}${CRLF}${CRLF}${body}`;
+  const html = typeof mail.html === 'string' && mail.html.trim().length > 0 ? mail.html : null;
+  if (!html) {
+    return [
+      ...head,
+      'Content-Type: text/plain; charset=UTF-8',
+      'Content-Transfer-Encoding: base64',
+      '',
+      wrapBase64(base64(mail.text)),
+    ].join(CRLF);
+  }
+  const boundary = `mclink-${messageId(config.from).replace(/[^A-Za-z0-9]/g, '').slice(0, 24)}`;
+  return [
+    ...head,
+    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+    '',
+    '这是一封多部分邮件，请用支持 MIME 的客户端查看。',
+    '',
+    `--${boundary}`,
+    'Content-Type: text/plain; charset=UTF-8',
+    'Content-Transfer-Encoding: base64',
+    '',
+    wrapBase64(base64(mail.text)),
+    '',
+    `--${boundary}`,
+    'Content-Type: text/html; charset=UTF-8',
+    'Content-Transfer-Encoding: base64',
+    '',
+    wrapBase64(base64(html)),
+    '',
+    `--${boundary}--`,
+  ].join(CRLF);
+}
+
+/** UTF-8 → base64（正文统一走它，中文与 emoji 都不会坏） */
+function base64(value: string): string {
+  return Buffer.from(value, 'utf8').toString('base64');
+}
+
+/**
+ * HTML → 纯文本（**只用于给 HTML 邮件配一份可读的纯文本兜底**）。
+ *
+ * 不追求完美：换行标签转成换行、去掉其余标签、解几个常见实体、压缩连续空行。
+ * 目的只是"纯文本客户端/纯文本偏好的人也能读懂这封信"，
+ * 而不是把 HTML 精确还原成排版（那件事做不到，也没必要）。
+ */
+export function htmlToText(html: string): string {
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|h[1-6]|li|tr)>/gi, '\n')
+    .replace(/<li[^>]*>/gi, '· ')
+    .replace(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, '$2（$1）')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&amp;/gi, '&')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 /** 非 ASCII 头部一律 base64 编码；纯 ASCII 原样返回（可读性更好） */
