@@ -49,6 +49,7 @@ import type { PeerView } from '../lib/easytier-parse.ts';
 import { linkKind } from '../lib/easytier-parse.ts';
 import { LOSS_THRESHOLD, formatLoss, hostLinkQuality } from '../lib/relay-fallback.ts';
 import { relayRoleOf, type RelayTicketNames } from '../lib/relay-roles.ts';
+import { relayHintCopy } from '../lib/relay-hint.ts';
 import { friendlyError } from '../lib/api.ts';
 import { copyText } from '../lib/clipboard.ts';
 import { confirmInApp } from '../lib/confirm.ts';
@@ -427,24 +428,18 @@ const relayStateText = computed(() => {
 const relayLedClass = computed(() => (relayMode.value === 'switching' ? 'led-warn' : 'led-ok'));
 
 /**
- * 中继横幅上那颗主按钮的文案（空 = 不显示这颗按钮）。
+ * 中继横幅的文案与按钮（**按角色拼**，纯函数在 `lib/relay-hint.ts`，回归脚本钉着）。
  *
- * 单节点模型下"换中继"＝整房搬走，**必须先房主**：
- *   · `apply`（房主已经切完）→ 成员点「重连」接上新中继，这是他们唯一要做的事；
- *   · `switch` + 自己是房主 → 「现在切换」，点了才真正落库生效；
- *   · `switch` + 自己是成员 → **不给按钮**：此时重连只会拿到旧中继（房间还没搬），
- *     给了按钮反而像是"点了能解决"，不如只留一句「知道了」，等房主切完会出现
- *     `apply` 那条横幅（由心跳发现，见 store 的 sendHeartbeat）。
+ * 为什么不在模板里写死：同一条提示发给全房，可房主要做的是"点立即切换"，
+ * 成员要做的是"等房主切完再重连" —— 一边读另一边的话术只会更糊涂。
+ * 这里只负责把 store 里那几个字段喂进纯函数。
  */
-const relayHintPrimaryLabel = computed(() => {
-  const kind = clientState.relayHint?.kind;
-  if (kind === 'apply') return '重连';
-  if (kind === 'switch' && isHost.value) return '现在切换';
-  return '';
-});
+const relayHintView = computed(() =>
+  clientState.relayHint ? relayHintCopy(clientState.relayHint, isHost.value) : null,
+);
 
 /** 次按钮：没有主按钮可点时它就是「知道了」，否则是「稍后」 */
-const relayHintDismissLabel = computed(() => (relayHintPrimaryLabel.value ? '稍后' : '知道了'));
+const relayHintDismissLabel = computed(() => (relayHintView.value?.action ? '稍后' : '知道了'));
 
 /**
  * 平台的中继提示 → 玩家点了主按钮。
@@ -453,7 +448,7 @@ const relayHintDismissLabel = computed(() => (relayHintPrimaryLabel.value ? '稍
  * 所以走同一套应用内确认弹层 —— 绝对不能在玩家没点确认时自己切（主控也只发提示）。
  * 注意切换用的是 `reenterRoom()`：它**不调 leave**，所以房主点它也不会关房。
  *
- * 两种 kind 的措辞不同（按钮文案见 `relayHintPrimaryLabel`）：
+ * 两种 kind 的措辞不同（按钮文案见 `relay-hint.ts`）：
  *   · `switch` —— 房主点了才真正把房间搬到新中继上，其他成员随后重连；
  *   · `apply`  —— 房主已经搬完了，成员点这里接上新中继。
  */
@@ -726,21 +721,20 @@ async function doLeave(): Promise<void> {
 
     <!--
       平台的中继提示：**只是提示**，主控不会替玩家切（切一次隧道要断几秒，
-      玩家可能正在打 BOSS / 比赛最后一把）。三种 kind 的按钮不一样：
-        · switch —— 主控已准备好更空闲的中继；**房主**点了才真正生效（单节点模型下
-          成员早点点「重连」只会拿到旧中继，不会把自己弄丢，但也没用）；
-        · notice —— 节点负载到线、暂时没得换，纯告知，只给「知道了」；
-        · apply  —— 房主已经切完，成员点「重连」接上新中继（点了就走 reenterRoom）。
+      玩家可能正在打 BOSS / 比赛最后一把）。文案与按钮由 lib/relay-hint.ts 按角色拼：
+        · switch —— 房主看到「立即切换」，成员看到"需要房主更换"（成员这会儿没有按钮）；
+        · notice —— 到线了但没得换，只给「知道了」；
+        · apply  —— 房主已经切完，成员点「重连」接上新中继。
     -->
-    <div v-if="clientState.relayHint" class="alert alert-hint">
-      <span class="grow">{{ clientState.relayHint.message }}</span>
+    <div v-if="clientState.relayHint && relayHintView" class="alert alert-hint">
+      <span class="grow">{{ relayHintView.body }}</span>
       <button
-        v-if="relayHintPrimaryLabel"
+        v-if="relayHintView.action"
         class="btn btn-sm btn-primary"
         type="button"
         @click="onApplyRelayHint"
       >
-        {{ relayHintPrimaryLabel }}
+        {{ relayHintView.action }}
       </button>
       <button class="btn btn-sm" type="button" @click="dismissRelayHint()">
         {{ relayHintDismissLabel }}

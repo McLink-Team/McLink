@@ -184,7 +184,16 @@ export type ServerEvent =
    * 客户端收到后复用消息通知那条链路弹出来（新版客户端还会响一声提示音）。
    * 老客户端会忽略这个未知事件（少了 `kind` 也只是按钮文案退化，不影响联机）。
    */
-  | { type: 'room.relayHint'; roomId: string; message: string; kind?: 'switch' | 'notice' | 'apply' }
+  | {
+      type: 'room.relayHint';
+      roomId: string;
+      message: string;
+      kind?: 'switch' | 'notice' | 'apply';
+      /** 当前中继的名字（横幅文案用，客户端按角色拼，见 client/src/lib/relay-hint.ts） */
+      currentLabel?: string;
+      /** 准备好的新中继名字；没有可换的（notice）时不带 */
+      targetLabel?: string;
+    }
   /** 中继节点上下线 */
   | { type: 'node.update'; node: unknown }
   /** 平台流量心跳（管理员与房间页使用） */

@@ -494,6 +494,29 @@ export function relayLoadAction(input: {
 }
 
 /**
+ * 这个房间里**还有人在真的走中继**吗（纯函数，单测直接钉住）。
+ *
+ * 用户 2026-10-03 的规则：「如果房间内所有成员都是 p2p 打洞，那就不发任何通知」——
+ * 道理很直白：成员与房主直连时，他们的流量根本不经过中继，那台中继忙不忙与他们无关，
+ * 这时候弹横幅 + 响提示音只会让人莫名其妙。
+ *
+ * 判据用的是主控已有的 `member.p2p`（心跳里由 `resolveMemberLink` 按 EasyTier 的 `cost`
+ * 判定"到房主这条链路是不是真直连"，见那里的注释）：
+ *   · 只算 **active 的非房主成员** —— 房主自己不经过中继（他连的是别人），
+ *     待审批/已踢出的人也不算；
+ *   · **一个成员都没有** → 也返回 false（房间里没别人，没人需要被通知）；
+ *   · 只要有一个成员不是 p2p（或者还没上报过 `p2p`）就算"在用中继" —— 宁可多提醒一次，
+ *     也别在真的有人卡着的时候一声不吭。
+ */
+export function roomUsesRelay(
+  members: ReadonlyArray<{ role: string; status: string; p2p: number | boolean | null }>,
+): boolean {
+  const guests = members.filter((m) => m.status === 'active' && m.role !== 'host');
+  if (guests.length === 0) return false;
+  return !guests.every((m) => m.p2p === 1 || m.p2p === true);
+}
+
+/**
  * 这名成员的票据中继是不是**已经落后于房间当前的中继**了（纯函数，单测直接钉住）。
  *
  * 用在心跳里：单节点模型下"换中继"＝整房搬走，房主点完「现在切换」之后，
@@ -1934,6 +1957,10 @@ export class RoomService {
     kind: 'switch' | 'notice';
     to: string;
     from: string;
+    /** 当前中继的名字（横幅文案用；客户端按角色拼，见 client/src/lib/relay-hint.ts） */
+    currentLabel: string;
+    /** 准备好的新中继名字；`notice` 时为 null（没有可换的） */
+    targetLabel: string | null;
     /** 那台节点**整体**的利用率（0–1），日志与文案都用它 */
     nodeUtil: number;
     rxBps: number;
@@ -1960,10 +1987,12 @@ export class RoomService {
       kind: 'switch' | 'notice';
       to: string;
       from: string;
+      currentLabel: string;
+      targetLabel: string | null;
       nodeUtil: number;
       rxBps: number;
       txBps: number;
-      /** 给玩家的建议文案（客户端复用消息通知弹出来，切不切由玩家决定） */
+      /** 给玩家的提示文案（客户端复用消息通知弹出来，切不切由玩家决定） */
       message: string;
     }> = [];
     for (const [roomId, r] of rate) {
@@ -1972,6 +2001,16 @@ export class RoomService {
       const row = this.rooms.findById(roomId);
       if (!row || row.status !== 'open') continue;
       const current = toRoom(row).relayNodeIds;
+
+      /*
+       * **全是 p2p 直连的房间不打扰**（用户 2026-10-03 的规则，见 `roomUsesRelay`）：
+       * 成员与房主直连时流量根本不经过中继，中继忙不忙与他们无关 ——
+       * 既不发系统消息，也不推横幅、不响提示音。
+       */
+      if (!roomUsesRelay(this.rooms.listMembers(roomId))) {
+        log.debug('房间的成员都直连房主（p2p），中继负载与它无关，不通知', { room: roomId, code: row.code });
+        continue;
+      }
 
       /*
        * **每个房间的过载阈值 = min(平台门槛, 该房间中继那台自己的卸荷线)**。
@@ -2036,9 +2075,10 @@ export class RoomService {
           this.#noticedAt.set(roomId, now);
           this.#loadWindows.set(roomId, 0);
           const percent = Math.round(Math.max(nodeUtil, relayCapBps > 0 ? total / relayCapBps : 0) * 100);
+          const currentName = relayRow?.name ?? relayId;
           const message =
-            `平台提示：这个房间用的中继节点「${relayRow?.name ?? relayId}」负载已经到线（约 ${percent}%），` +
-            '可能会开始卡顿。目前没有更空闲的节点可以换，先忍一下；' +
+            `平台提示：当前房间使用的中继节点「${currentName}」已经到容量上限（约 ${percent}%），` +
+            '可能会出现卡顿。目前没有更空闲的节点可以换，先忍一下；' +
             '稍后可以在房间页点「重连」再看一次，或让房主换个区域重新建房。';
           this.systemMessage(roomId, message);
           log.warn('房间中继节点负载到线，但没有更空的大带宽节点可换（已通知玩家）', {
@@ -2053,6 +2093,8 @@ export class RoomService {
             kind: 'notice',
             to: relayId,
             from: relayId,
+            currentLabel: currentName,
+            targetLabel: null,
             nodeUtil,
             rxBps: r.rx,
             txBps: r.tx,
@@ -2078,11 +2120,18 @@ export class RoomService {
          * 同时写一条房间系统消息：聊天记录里留痕，事后追溯"这个房间被换过中继"。
          */
         const targetName = candidate.row.name || candidate.row.id;
+        const currentName = relayRow?.name ?? relayId;
+        /**
+         * 房间系统消息（聊天里留痕，也是老客户端唯一能看到的那份文本）。
+         * **横幅上的文案由客户端按角色生成**（见 `client/src/lib/relay-hint.ts`）：
+         * 房主那台该显示「立即切换」，成员那台该显示"需要房主更换" ——
+         * 同一句话发下去两边都会别扭，所以事件里带上两台节点的名字（下面 push 的
+         * `currentLabel` / `targetLabel`），文案交给知道"我是谁"的那一端拼。
+         */
         const message =
-          `平台提示：这个房间的中继节点「${relayRow?.name ?? relayId}」负载到线了，` +
-          `已经准备好更空闲的「${targetName}」。` +
-          '房主点下面的「现在切换」即可（几秒断线），其他成员等房主切完之后点「重连」；' +
-          '请不要点「退出房间」—— 房主退出会关闭房间。不切换也不影响继续联机。';
+          `平台提示：当前房间使用的中继节点「${currentName}」已经到容量上限，可能会出现卡顿。` +
+          `可切换到新节点「${targetName}」—— 需要房主在房间页点「立即切换」，` +
+          '其他成员等房主切完后点「重连」（各卡顿几秒）。请不要点「退出房间」，房主退出会关闭房间。';
         this.systemMessage(roomId, message);
         promoted.push({
           roomId,
@@ -2090,6 +2139,8 @@ export class RoomService {
           kind: 'switch',
           to: candidate.row.id,
           from: relayId,
+          currentLabel: currentName,
+          targetLabel: targetName,
           nodeUtil,
           rxBps: r.rx,
           txBps: r.tx,

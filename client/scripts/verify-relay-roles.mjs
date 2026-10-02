@@ -12,6 +12,7 @@
  */
 import assert from 'node:assert/strict';
 import { relayNameKey, relayRoleOf, PUBLIC_SERVER_PREFIX } from '../src/lib/relay-roles.ts';
+import { relayHintCopy } from '../src/lib/relay-hint.ts';
 
 let passed = 0;
 function check(name, fn) {
@@ -113,6 +114,53 @@ check('字符集合匹配是"唯一命中"才认：两台都像时返回 null', 
   const ambiguous = { allLabels: ['华东-A（2 Mbps）', '华东-A（200 Mbps）'] };
   // `阿里云上海` 的字符同时出现在两个 label 里 → 不猜
   assert.equal(relayRoleOf('PublicServer_阿里云上海', ambiguous), null);
+});
+
+console.log('\n▸ 中继横幅文案（按角色拼，见 src/lib/relay-hint.ts）');
+/** 主控下发的结构：当前中继 / 准备好的新中继 */
+const hint = { kind: 'switch', currentLabel: '华东-A 2Mbps', targetLabel: '华北-A（200 Mbps）' };
+
+check('switch + 房主 → 有「立即切换」，文案里有"可切换"', () => {
+  const copy = relayHintCopy(hint, true);
+  assert.equal(copy.action, '立即切换');
+  assert.match(copy.body, /已经到容量上限/);
+  assert.match(copy.body, /华东-A 2Mbps/);
+  assert.match(copy.body, /华北-A（200 Mbps）/);
+});
+
+check('switch + 成员 → **没有按钮**，文案写明"需要房主更换"', () => {
+  const copy = relayHintCopy(hint, false);
+  assert.equal(copy.action, '', '成员在房主切换前不该有可点的动作');
+  assert.match(copy.body, /需要房主更换/);
+  assert.match(copy.body, /已经到容量上限/);
+});
+
+check('notice（没得换）→ 两边都没有按钮，文案说清"暂时没得换"', () => {
+  const notice = { kind: 'notice', currentLabel: '华东-A 2Mbps' };
+  for (const isHost of [true, false]) {
+    const copy = relayHintCopy(notice, isHost);
+    assert.equal(copy.action, '');
+    assert.match(copy.body, /已经到容量上限/);
+    assert.match(copy.body, /没有更空闲的节点可以换/);
+  }
+});
+
+check('apply（房主已切完）→ 两边都是「重连」', () => {
+  for (const isHost of [true, false]) {
+    assert.equal(relayHintCopy({ kind: 'apply' }, isHost).action, '重连');
+  }
+});
+
+check('老主控（只有 message、没有 kind）→ 原样显示 + 保留「现在切换」', () => {
+  const copy = relayHintCopy({ message: '这个房间的中继有点挤。' }, false);
+  assert.equal(copy.action, '现在切换');
+  assert.equal(copy.body, '这个房间的中继有点挤。');
+});
+
+check('字段缺失也不会显示成 undefined', () => {
+  const copy = relayHintCopy({ kind: 'switch' }, true);
+  assert.ok(!/undefined/.test(copy.body) && !/undefined/.test(copy.title));
+  assert.match(copy.body, /当前中继/);
 });
 
 if (process.exitCode === 1) {

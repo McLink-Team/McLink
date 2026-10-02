@@ -14,7 +14,7 @@ import { test, describe } from 'node:test';
 import { renderAcl, renderEasytierToml, buildLaunchArgs, tomlString, aclToJson, rpcPortalForListenPort, usableRpcPort } from '../src/easytier/config.ts';
 import { buildRoomAcl, isAclEmpty } from '../src/easytier/acl.ts';
 import { parseHumanNumber, parseLatencyMs } from '../src/easytier/manager.ts';
-import { hashRoomPassword, verifyRoomPassword, deriveNetworkName, resolveMemberLink, relayScore, nextRoomExpiry, selectRelays, pickRoomRelays, pickRoomRelay, pickMemberRelay, relayLoadAction, memberRelayStale, RELAY_NOTICE_COOLDOWN_MS, LATENCY_TIE_BAND_MS, MEMBER_RELAY_TIE_BAND_MS, RoomService, type RelayCandidate } from '../src/services/rooms.ts';
+import { hashRoomPassword, verifyRoomPassword, deriveNetworkName, resolveMemberLink, relayScore, nextRoomExpiry, selectRelays, pickRoomRelays, pickRoomRelay, pickMemberRelay, relayLoadAction, memberRelayStale, roomUsesRelay, RELAY_NOTICE_COOLDOWN_MS, LATENCY_TIE_BAND_MS, MEMBER_RELAY_TIE_BAND_MS, RoomService, type RelayCandidate } from '../src/services/rooms.ts';
 import { Db } from '../src/db/index.ts';
 import { NodeRepo } from '../src/db/nodes.ts';
 import { RoomRepo } from '../src/db/rooms.ts';
@@ -1861,6 +1861,20 @@ describe('单节点换中继：到线动作与"该重连了"的判定', () => {
     assert.equal(memberRelayStale(['n2'], 'n1', true), false, '房主的票据就是房间当前中继，永远一致');
     assert.equal(memberRelayStale(['n2'], null, false), false, '还没分配过（老成员/刚审批）→ 下次拉票据自动补');
     assert.equal(memberRelayStale([], 'n1', false), false, '房间当前没有中继是另一种故障，不能说成"换过了"');
+  });
+
+  test('roomUsesRelay：全员 p2p 直连就不打扰（用户 2026-10-03 的规则）', () => {
+    const host = { role: 'host', status: 'active', p2p: 0 };
+    const member = (p2p: number | null, status = 'active') => ({ role: 'member', status, p2p });
+    // 一个真在走中继的成员都不剩 → 不通知
+    assert.equal(roomUsesRelay([host, member(1), member(1)]), false, '全员 p2p：中继忙不忙与他们无关');
+    // 只要有一个不是 p2p（或者还没上报过）→ 照常通知
+    assert.equal(roomUsesRelay([host, member(1), member(0)]), true);
+    assert.equal(roomUsesRelay([host, member(null)]), true, '没上报过 p2p 的成员按"可能在用中继"处理');
+    // 房主自己不算（他连的是别人）；待审批/已踢出的也不算
+    assert.equal(roomUsesRelay([host]), false, '房间里没有别的成员 → 没人需要被通知');
+    assert.equal(roomUsesRelay([host, member(0, 'pending')]), false);
+    assert.equal(roomUsesRelay([host, member(0, 'kicked')]), false);
   });
 });
 

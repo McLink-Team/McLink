@@ -49,6 +49,7 @@ import {
 import { isMac, platform, supportsLanBroadcast, tunName } from './platform.ts';
 import { handleIncomingMessage, notifyPlatformHint } from './notify.ts';
 import { playNoticeSound } from './notice-sound.ts';
+import { relayHintCopy } from './relay-hint.ts';
 
 export type { PeerView } from './easytier-parse.ts';
 export { parsePeers } from './easytier-parse.ts';
@@ -177,13 +178,18 @@ const state = reactive({
    * 比赛最后一把），所以由他自己决定切不切 —— 房间页弹一条带「现在切换 / 稍后」的横幅。
    */
   /**
-   * 中继相关的一条提示（横幅）。`kind` 决定横幅上的按钮：
-   *   · `switch` —— 主控已经准备好更空闲的中继，房主点「现在切换」才生效（单节点模型下
-   *     必须先房主：成员早点点「重连」只会拿到旧中继，不会把自己弄丢）；
-   *   · `notice` —— 节点负载到线但暂时没得换，纯告知（没有切换按钮）；
-   *   · `apply`  —— 房主已经切换完了，成员点「重连」接上新中继。
+   * 中继相关的一条提示（横幅）。**文案不在这里**：服务端只下发 kind 与两台节点的名字，
+   * 由 `lib/relay-hint.ts` 的纯函数按"我是房主还是成员"拼（房主要有「立即切换」、
+   * 成员要看到"需要房主更换"）。见那里的注释。
    */
-  relayHint: null as null | { roomId: string; message: string; kind?: 'switch' | 'notice' | 'apply' },
+  relayHint: null as null | {
+    roomId: string;
+    /** 服务端给的通用文案（老主控只有这一条；也是系统通知的兜底文本） */
+    message: string;
+    kind?: 'switch' | 'notice' | 'apply';
+    currentLabel?: string;
+    targetLabel?: string;
+  },
   /** 自动回落开关（默认关，见 lib/relay-fallback.ts） */
   autoFallback: false,
   /** 本机客户端版本（来自 Electron 的 app.getVersion()） */
@@ -1759,7 +1765,8 @@ async function handleServerEvent(raw: string): Promise<void> {
     /**
      * 主控的中继提示（**只提示，绝不自动切**：玩家可能正在关键时刻）。
      * 三种来源，见 `state.relayHint.kind`：准备好切换 / 到线但没得换 / 房主已切完要你重连。
-     * 横幅由房间页渲染，横幅上的「现在切换」才走 `applyRelayHint()`。
+     * 横幅由房间页渲染（文案按角色拼，见 lib/relay-hint.ts），
+     * 按钮上的「立即切换」/「重连」才走 `applyRelayHint()`。
      */
     case 'room.relayHint': {
       const roomId = String(event.roomId ?? '');
@@ -1767,14 +1774,19 @@ async function handleServerEvent(raw: string): Promise<void> {
       const kind = event.kind === 'notice' ? 'notice' : 'switch';
       // 房主已切完那条（apply）由心跳发现，不走这个事件；这里收到的一律是上面两种
       const message = String(event.message ?? '这个房间的中继有点挤，可以切换到更空闲的中继。');
-      state.relayHint = { roomId, message, kind };
+      const currentLabel = typeof event.currentLabel === 'string' ? event.currentLabel : undefined;
+      const targetLabel = typeof event.targetLabel === 'string' ? event.targetLabel : undefined;
+      state.relayHint = { roomId, message, kind, currentLabel, targetLabel };
       /**
        * 复用消息通知那条链路（系统通知）**并额外响一声**（新版客户端才有，见 notice-sound.ts）：
        * 玩家多半全屏打游戏不看横幅，声音才穿得过去。
+       * 通知文案与横幅用同一个纯函数拼 —— 房主看到的是"可以切换"，
+       * 成员看到的是"需要房主更换"，两边不会互相读错。
        * 玩家就在房间里看着时只留横幅、不弹系统通知 —— 但**声音照响**：那是"提醒"，
        * 与他有没有在看这一屏无关（他可能在游戏里，房间页只是后台标签）。
        */
-      notifyPlatformHint({ title: kind === 'notice' ? '当前中继负载偏高' : '可以切换到更空闲的中继', body: message, roomId });
+      const copy = relayHintCopy(state.relayHint, state.session.isHost === true);
+      notifyPlatformHint({ title: copy.title, body: copy.body, roomId });
       playNoticeSound(roomId);
       break;
     }
