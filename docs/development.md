@@ -466,15 +466,24 @@ sudo bash "$PWD/deploy/install-server.sh" --skip-install --skip-web   # 无新�
 pnpm dev:server                                # 另开一个终端保持运行（默认 8787）
 
 node scripts/check-node-config-revision.mjs    # 配置版本 +1 / 心跳下发配置（11 项）
-node scripts/check-relay-slots.mjs             # 手选节点落槽顺序 + 票据 latency_first（7 项；自造节点、跑完清理）
+node scripts/check-relay-slots.mjs             # 房主票据=整个集合、成员只拿1台且按延迟优先（13 项；
+                                               #   自造节点 + 临时账号，跑完清理/封禁）
 node scripts/check-node-cmd-origin.mjs         # 签发节点命令里的主控地址（4 项；自造请求头）
 node scripts/check-trusted-proxies.mjs         # 控制台里的可信代理真的生效（7 项；看审计行 ip）
 node scripts/repro-easytier-avoid-relay.mjs    # 复现 EasyTier 的 avoid-relay 失效（四实例本地拓扑，见 §10.5）
 node client/scripts/verify-platform.mjs        # 平台分支 + CI/文档静态断言（85 项）
+node client/scripts/verify-relay-roles.mjs     # 中继角色判定（18 项；纯函数，不用主控）
+node scripts/fetch-client-artifacts.mjs --help # 一键收产物：改名 + 算 sha256 + 打印要填的三个设置
 ```
 
-五个脚本的默认管理员密码都是 `dev-only-passw0rd`，可用 `MCLINK_ADMIN_PASSWORD` /
-`MCLINK_MASTER`（或 `MCLINK_PORT`）覆盖；它们会在开发库里留下一次性注册密钥（未使用）。
+七个脚本的默认管理员密码都是 `dev-only-passw0rd`，可用 `MCLINK_ADMIN_PASSWORD` /
+`MCLINK_MASTER`（或 `MCLINK_PORT`）覆盖；它们会在开发库里留下一次性注册密钥（未使用），
+`check-relay-slots.mjs` 还会多留一个**已封禁**的临时账号（接口没有删用户的路径）。
+
+`check-relay-slots.mjs` 的 ④ 组是**成员侧**的活体断言（2026-10-02 加）：注册一个临时账号，
+带"故意偏心"的延迟提示进房，验"只拿 1 台 + 拿的是最近那台 + 分配已固定 + 写回了
+`relay_node_id`"。"过卸荷线就排除"那条 live 里构造不出来（要等 EWMA 收敛 3 分钟），
+由单测 `pickMemberRelay` 钉住。若主控开了「必须验证邮箱」，这一组会如实报 SKIP 而不是 FAIL。
 
 ---
 

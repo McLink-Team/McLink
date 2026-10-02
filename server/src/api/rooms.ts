@@ -99,6 +99,12 @@ export function registerRoomRoutes(router: Router, app: App): void {
   router.post(Routes.roomJoin, async (ctx) => {
     const auth = requireAuth(ctx);
     const body = await ctx.body();
+    /**
+     * 进房请求也可以带 `latencyHints`（**可选**，老客户端不发）：
+     * 主控用它决定**这名成员被分到哪台中继** —— 延迟优先、相差 10ms 以内取空余带宽最大的
+     * （口径与纯函数见 services/rooms.ts 的 `pickMemberRelay`，设计见 docs/relay-assignment.md）。
+     * 解析规则与建房完全相同（`parseLatencyHints`）：坏形状一律丢弃，绝不挡住进房。
+     */
     const result = app.roomService.join({
       userId: auth.userId,
       code: req(body, 'code', '加入码').toUpperCase(),
@@ -106,6 +112,7 @@ export function registerRoomRoutes(router: Router, app: App): void {
       deviceName: optStr(body, 'deviceName', 32) ?? null,
       listenPort: optInt(body, 'listenPort', 1024, 65535) ?? app.settings.current.relayPort,
       rpcPort: optInt(body, 'rpcPort', 1024, 65535) ?? undefined,
+      latencyHints: parseLatencyHints(body),
     });
     return result;
   }, { auth: true });

@@ -418,13 +418,18 @@ async function recomputeAcl(): Promise<void> {
               <!--
                 「调度名单」与「实际在带」是两回事：某台掉了、换节点、手动改过 endpoint
                 都会让两份名单不一致。排障要看的是后者。
+
+                ⚠️ 新模型（房主连 ≤3 台、成员各连 1 台，见 docs/relay-assignment.md）下
+                "不在房间的 relayNodeIds 里"是**正常**的：成员分到的是房间里那几台之一，
+                而这台只要还在转发就会出现在这里 —— 所以文案不再说"正在顶班"（那是旧模型
+                的临时状态），只说清"哪几台在带、与房间调度名单是否一致"。
               -->
               <template v-if="(detail.relayNodes ?? []).length > 0">
                 <Badge v-for="n in detail.relayNodes" :key="n.id" :tone="n.scheduled ? 'ok' : 'warn'">
                   {{ n.name }}
                 </Badge>
                 <span class="cell-sub">
-                  {{ (detail.relayNodes ?? []).every((n) => n.scheduled) ? '与调度名单一致' : '有节点不在调度名单里（正在顶班）' }}
+                  {{ (detail.relayNodes ?? []).every((n) => n.scheduled) ? '与房间的中继名单一致' : '有节点不在房间的中继名单里（成员可能被分到过它，或刚被换掉）' }}
                 </span>
               </template>
               <span v-else class="faint">此刻没有节点在转发这个房间（房间可能没人进来）</span>

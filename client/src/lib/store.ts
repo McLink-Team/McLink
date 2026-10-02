@@ -905,6 +905,14 @@ export async function joinRoom(code: string, password?: string): Promise<void> {
       deviceName: state.deviceName,
       listenPort: state.listenPort,
       rpcPort: state.rpcPort,
+      /**
+       * 进房也带上本机测到的延迟：主控用它决定**这名成员被分到哪台中继**
+       * （延迟优先，相差 10ms 以内取空余带宽最大的那台，见 server 的 `pickMemberRelay`）。
+       *
+       * 测不到就发空数组 —— "没测到"不是"延迟 0"，主控会退回"在房间那几台里挑最空的"，
+       * 进房**永远不会**被测速挡住（等待由调用方用 `waitForRelayProbe` 做有界处理）。
+       */
+      latencyHints: relayLatencyHints(),
     });
     if (result.pending || !result.ticket) {
       state.lastError = '已提交加入申请，等待房主审批';

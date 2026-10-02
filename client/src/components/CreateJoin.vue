@@ -192,10 +192,15 @@ async function doJoin(): Promise<void> {
   busy.value = true;
   try {
     /**
-     * 加入房间**不等测速**：它的请求里根本没有 `latencyHints`（路由/区域都由服务端按
-     * 房间已存的中继列表下发，见 server/src/api/rooms.ts 只有建房那条解析提示），
-     * 等一轮 tcping 只会白白拖慢进房。
+     * 进房请求里也带 `latencyHints` —— 主控用它决定**这名成员被分到哪台中继**
+     * （延迟优先，相差 10ms 以内取空余带宽最大的那台）。
+     *
+     * 于是这里和建房走同一条有界等待（最多 `RELAY_PROBE_WAIT_MS`，见 store.ts 的
+     * `waitForRelayProbe`）：没有在跑的探测 / 已经有提示 → 立刻返回；
+     * 超时或探测失败 → 照常进房（空提示照样能进，只是主控按负载挑）。
+     * 换句话说：**测速永远挡不住进房**，但"探测还在跑就静默拿空提示发出去"不再是默认路径。
      */
+    if (relayLatencyHints().length === 0) await waitForRelayProbe();
     await joinRoom(value, joinPassword.value || undefined);
     code.value = '';
     joinPassword.value = '';

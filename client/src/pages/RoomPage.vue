@@ -264,17 +264,35 @@ const relayNames = computed<RelayTicketNames>(() => {
 const relayRole = (p: PeerView): 'relay' | null => relayRoleOf(p.hostname ?? '', relayNames.value);
 
 /**
- * 认不出角色时，把**两边的原始名字**摆在界面上（而不是只写「角色未知」）。
+ * 认不出角色时，把**本机票据里到底有哪几台**摆在界面上（而不是只写「角色未知」）。
  *
  * 为什么这么做：这一条判据的口径是"内核报的 hostname ↔ 票据里的节点名"，
  * 两者一旦对不上，光看界面根本不知道差在哪（上一轮就是靠猜，来回装了两遍包）。
- * 把票据里的名字直接显示出来，截图一眼就能看出是"名字被改过""带了别的前缀"，
- * 还是"票据里压根没有这台"。
+ *
+ * ⚠️ 还有一种**看起来像 bug 的正常情况**（用户 2026-10-02 拿安卓端实测问过）：
+ * 成员只拿到 1 台中继，可这个列表里显示 3 台 —— 因为房主把房间那 ≤3 台**都**连上了，
+ * 于是成员通过自己的那台中继能**看到**（也能路由到）其它几台。它们不在本机票据里，
+ * 所以照实写「不在本机票据里」，而不是让人以为"我是不是拿到了 3 台"。
  */
 const relayNameHint = computed(() => {
   const labels = relayNames.value.allLabels.filter((l) => l.trim().length > 0);
-  if (labels.length === 0) return '票据里没有中继名单（老主控？）';
-  return `票据中继：${labels.join('、')}`;
+  if (labels.length === 0) return '不在本机票据里（票据里没有中继名单 —— 老主控？）';
+  return `不在本机票据里（本机票据只有：${labels.join('、')}）`;
+});
+
+/** 本机票据里的中继台数：房主 = 整个集合（≤3），成员 = 1（见 docs/relay-assignment.md） */
+const relayTicketCount = computed(() => relayNames.value.allLabels.filter((l) => l.trim().length > 0).length);
+
+/**
+ * 这一组的中文说明（挂在标题与角标的 `title` 上）。
+ *
+ * 存在的理由就是上面那条实测疑问：**"列表里有 3 台" ≠ "我拿到了 3 台"**。
+ * 数字与名单都从票据里取，所以这句话永远与真实的票据一致。
+ */
+const relayPeersTitle = computed(() => {
+  const labels = relayNames.value.allLabels.filter((l) => l.trim().length > 0);
+  if (labels.length === 0) return '本机票据里没有中继名单（老主控？）';
+  return `本机票据下发的中继有 ${labels.length} 台：${labels.join('、')}。这一列是网络里能看到的全部中继 —— 房主会把它们都连上，成员只连自己那一台，其余的通过自己那台可达。`;
 });
 
 /* ------------------------------------------------------- 丢包与回落中继 */
@@ -826,8 +844,15 @@ async function doLeave(): Promise<void> {
             -->
             <div v-if="relayPeers.length > 0" class="path-group">
               <div class="path-group-head">
-                <span class="path-group-title">中继节点</span>
+                <span class="path-group-title" :title="relayPeersTitle">中继节点</span>
                 <span class="faint">{{ relayPeers.length }}</span>
+                <!--
+                  一句话说清"列表里有 N 台"与"我的票据里有几台"的区别 —— 成员最容易误会的地方
+                  （用户拿安卓端实测问过：我只该拿 1 台，怎么这里显示 3 台？见 relayNameHint）。
+                -->
+                <span v-if="relayTicketCount > 0" class="faint" :title="relayPeersTitle">
+                  （本机票据 {{ relayTicketCount }} 台）
+                </span>
               </div>
               <div class="roster">
                 <div v-for="p in relayPeers" :key="`r-${p.ipv4}${p.hostname}`" class="roster-row">
@@ -851,7 +876,7 @@ async function doLeave(): Promise<void> {
                   <span
                     v-else
                     class="badge badge-neutral"
-                    :title="`认不出这台是不是票据里的中继：内核报的 hostname 是「${p.hostname}」，${relayNameHint}`"
+                    :title="`认不出这台是不是本机票据里的中继：内核报的 hostname 是「${p.hostname}」；${relayPeersTitle}`"
                   >
                     角色未知
                   </span>

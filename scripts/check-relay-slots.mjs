@@ -82,6 +82,8 @@ async function makeNode(name, port) {
 
 const made = [];
 const createdRooms = [];
+/** ④ 里注册的临时成员账号（收尾时封禁它，避免它在开发主控上继续可用） */
+let memberId = null;
 try {
   const a = await makeNode(`slots-data-${RUN}`, BASE_PORT);
   const b = await makeNode(`slots-assist-${RUN}`, BASE_PORT + 1);
@@ -155,6 +157,88 @@ try {
     '③ 房主票据里仍有 latency_first',
     String(ticket.configToml ?? '').includes('latency_first = true'),
   );
+
+  /*
+   * ④ 成员侧（2026-10-02 新增，见 docs/relay-assignment.md 的"成员分配的口径"）：
+   *   注册第二个账号 → 带**故意偏心**的延迟提示进房 → 断言：
+   *     · 成员票据**只有 1 台**中继（整个集合只给房主）；
+   *     · 拿到的正是他自己上报延迟最低的那台（**延迟优先**，不是按负载）；
+   *     · 再拉一次票据仍是同一台（分配已固定）；
+   *     · 分配写回 `room_members.relay_node_id`（房主在成员列表里能看到）。
+   *
+   *   为什么这里只能验"延迟优先"：房间集合里 a / b 两台利用率都是 0（没有流量采样），
+   *   于是"延迟"是唯一能分出胜负的规则 —— 提示给 b 5ms、给 a 900ms 就应当分到 b。
+   *   "过卸荷线就排除"这条要等 EWMA 收敛（tau = 3 分钟），live 脚本里构造不出来，
+   *   由单测 `pickMemberRelay`（server/test/unit.test.ts）钉住。
+   */
+  const memberName = `slots_m_${RUN}`;
+  const memberPass = `Slots-${RUN}-pw`;
+  const reg = await api('/auth/register', {
+    method: 'POST',
+    body: { username: memberName, password: memberPass },
+  });
+  memberId = reg.user.id;
+  let joined = null;
+  try {
+    joined = await api('/rooms/join', {
+      method: 'POST',
+      token: reg.token,
+      body: {
+        code: r2.room.code,
+        deviceName: memberName,
+        listenPort: BASE_PORT + 2,
+        latencyHints: [
+          { nodeId: b.id, ms: 5 },
+          { nodeId: a.id, ms: 900 },
+        ],
+      },
+    });
+  } catch (err) {
+    /*
+     * 平台开着「必须验证邮箱」时新账号进不了房（403 EMAIL_NOT_VERIFIED）——
+     * 那是环境限制，不是这次改动的问题，如实报 SKIP 而不是 FAIL。
+     */
+    if (String(err?.message ?? '').includes('邮箱')) {
+      console.log(`  [SKIP] ④ 成员侧检查：该主控开启了"必须验证邮箱"，临时账号进不了房（${err.message}）`);
+    } else {
+      throw err;
+    }
+  }
+  if (joined) {
+    const memberRelays = joined.ticket?.relays ?? [];
+    check(
+      '④ 成员票据只含 **1 台**中继（整个集合只给房主）',
+      memberRelays.length === 1,
+      `relays=${JSON.stringify(memberRelays.map((r) => r.label))}`,
+    );
+    check(
+      '④ 成员拿到的是**他自己上报延迟最低**的那台（延迟优先）',
+      memberRelays[0]?.nodeId === b.id,
+      `分了 ${memberRelays[0]?.label}（提示：b=5ms / a=900ms）`,
+    );
+    const again = await api(`/rooms/${r2.room.id}/ticket`, { token: reg.token });
+    check(
+      '④ 再拉一次票据仍是同一台（分配已固定，不会来回漂）',
+      (again.relays ?? [])[0]?.nodeId === memberRelays[0]?.nodeId,
+      JSON.stringify((again.relays ?? []).map((r) => r.label)),
+    );
+    /*
+     * 分配就发生在 join 内部那次 ticket() 里 —— 所以 join 的响应必须**重新读一次**成员行，
+     * 否则这里永远是 null（票据里已经有中继了、接口却说"没分"）。这条就是那个 bug 的回归哨兵。
+     */
+    check(
+      '④ 进房响应里的 member.relayNodeId 就是分到的那台（不能是 null）',
+      joined.member?.relayNodeId === memberRelays[0]?.nodeId,
+      `relayNodeId=${joined.member?.relayNodeId}`,
+    );
+    const detail = await api(`/rooms/${r2.room.id}`, { token: admin.token });
+    const mine = (detail.members ?? []).find((m) => m.userId === reg.user.id);
+    check(
+      '④ 分配写回了 room_members.relay_node_id（房主看得到）',
+      mine?.relayNodeId === memberRelays[0]?.nodeId,
+      `relayNodeId=${mine?.relayNodeId}`,
+    );
+  }
 }
  catch (err) {
   fail += 1;
@@ -162,7 +246,11 @@ try {
 } finally {
   for (const id of createdRooms) await api(`/rooms/${id}/close`, { method: 'POST', token: admin.token }).catch(() => {});
   for (const id of made) await api(`/admin/nodes/${id}`, { method: 'DELETE', token: admin.token }).catch(() => {});
+  // 临时成员账号：接口没有删用户，就封禁 + 清掉它的会话（别在开发主控上留一个能用的账号）
+  if (memberId) {
+    await api(`/admin/users/${memberId}`, { method: 'PATCH', token: admin.token, body: { banned: true } }).catch(() => {});
+  }
 }
 
-console.log(`\n结果：${pass} 通过 / ${fail} 失败（临时房间与节点已清理）`);
+console.log(`\n结果：${pass} 通过 / ${fail} 失败（临时房间与节点已清理${memberId ? '，临时账号已封禁' : ''}）`);
 process.exitCode = fail === 0 ? 0 : 1;
