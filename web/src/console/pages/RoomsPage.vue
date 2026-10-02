@@ -58,6 +58,30 @@ interface RoomDetail {
   relayNodes?: Array<{ id: string; name: string; region: string | null; scheduled: boolean }>;
 }
 
+/**
+ * 成员票据里那台中继的名字（房主 = 整个集合，成员 = 分到的那一台）。
+ *
+ * 数据来自 `room_members.relay_node_id`（V25 迁移起落库，见 docs/relay-assignment.md）：
+ * 它是**这名成员真正连的那台**，排障时比"房间的调度名单"更直接 ——
+ * 用户实测问过"成员到底连了哪台"，答案就在这一列。
+ * 名字从 `scheduledRelays` 里取（同一份房间名单）；对不上时退回 ID 并标出来。
+ */
+function memberRelayLabel(m: RoomMember): string {
+  if (m.role === 'host') {
+    const count = (detail.value?.scheduledRelays ?? []).length;
+    return count > 0 ? `全部 ${count} 台（房主都连）` : '全部（房主都连）';
+  }
+  const id = m.relayNodeId ?? null;
+  if (!id) return '未分配（下次拉票据时分）';
+  const hit = (detail.value?.scheduledRelays ?? []).find((r) => r.id === id);
+  return hit ? relayLabel(hit) : `${id}（不在房间名单里）`;
+}
+
+/** 这一列不是故障态，只有"未分配"才值得标灰 */
+function memberRelayAssigned(m: RoomMember): boolean {
+  return m.role === 'host' || Boolean(m.relayNodeId);
+}
+
 /** 节点名兜底：服务端没解析出名字（节点记录已被删除）时退回 ID，并标明它已经没了 */
 function relayLabel(entry: { id: string; name: string | null; exists?: boolean }): string {
   if (entry.name) return entry.name;
@@ -495,6 +519,11 @@ async function recomputeAcl(): Promise<void> {
                     <th>角色</th>
                     <th>状态</th>
                     <th>虚拟 IP</th>
+                    <!--
+                      「走哪台中继」：房主连整个集合，成员只连自己那一台（见 docs/relay-assignment.md）。
+                      这一列直接读 room_members.relay_node_id —— 用户实测最常问的就是这一格。
+                    -->
+                    <th>中继</th>
                     <th>设备</th>
                     <th class="table-num">延迟</th>
                     <th class="table-num">收发</th>
@@ -513,6 +542,7 @@ async function recomputeAcl(): Promise<void> {
                     <td><Badge :tone="memberTone(m.status)">{{ memberLabel(m.status) }}</Badge></td>
                     <td v-if="m.virtualIp" class="mono cell-sub">{{ m.virtualIp }}</td>
                     <td v-else class="cell-void">未分配</td>
+                    <td :class="memberRelayAssigned(m) ? 'cell-sub' : 'cell-void'">{{ memberRelayLabel(m) }}</td>
                     <td v-if="m.deviceName" class="cell-sub">{{ m.deviceName }}</td>
                     <td v-else class="cell-void">未知设备</td>
                     <td class="table-num">
