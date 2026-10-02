@@ -14,7 +14,7 @@ import { test, describe } from 'node:test';
 import { renderAcl, renderEasytierToml, buildLaunchArgs, tomlString, aclToJson, rpcPortalForListenPort, usableRpcPort } from '../src/easytier/config.ts';
 import { buildRoomAcl, isAclEmpty } from '../src/easytier/acl.ts';
 import { parseHumanNumber, parseLatencyMs } from '../src/easytier/manager.ts';
-import { hashRoomPassword, verifyRoomPassword, deriveNetworkName, resolveMemberLink, relayScore, nextRoomExpiry, selectRelays, pickRoomRelays, pickRoomRelay, pickMemberRelay, relayLoadAction, memberRelayStale, roomUsesRelay, advanceLoadWindows, RELAY_NOTICE_COOLDOWN_MS, RELAY_SCALE_WINDOWS, RELAY_NODE_BUSY_WINDOWS, LATENCY_TIE_BAND_MS, MEMBER_RELAY_TIE_BAND_MS, RoomService, type RelayCandidate } from '../src/services/rooms.ts';
+import { hashRoomPassword, verifyRoomPassword, deriveNetworkName, resolveMemberLink, relayScore, nextRoomExpiry, selectRelays, pickRoomRelays, pickRoomRelay, pickMemberRelay, relayLoadAction, memberRelayStale, roomUsesRelay, advanceLoadWindows, nodeAtShedLine, RELAY_NOTICE_COOLDOWN_MS, RELAY_SCALE_WINDOWS, RELAY_NODE_BUSY_WINDOWS, LATENCY_TIE_BAND_MS, MEMBER_RELAY_TIE_BAND_MS, RoomService, type RelayCandidate } from '../src/services/rooms.ts';
 import { Db } from '../src/db/index.ts';
 import { NodeRepo } from '../src/db/nodes.ts';
 import { RoomRepo } from '../src/db/rooms.ts';
@@ -1974,6 +1974,17 @@ describe('单节点换中继：到线动作与"该重连了"的判定', () => {
     // 两条判据的门槛：房间流量 6 轮（≈3 分钟）、节点整体到线 2 轮（≈1 分钟）
     assert.equal(RELAY_SCALE_WINDOWS, 6);
     assert.equal(RELAY_NODE_BUSY_WINDOWS, 2);
+  });
+
+  test('nodeAtShedLine：EWMA 或**最近一次原始采样**越线都算（用户要的"超线就弹"）', () => {
+    // 只信 EWMA 的话，"贴着容量跑"要 ~5 分钟才爬过 80% 线 —— 玩家早卡半天了
+    assert.equal(nodeAtShedLine(0.3, 0.95, 0.9), true, '原始采样已经超线 → 立刻算到线');
+    assert.equal(nodeAtShedLine(0.95, 0.1, 0.9), true, 'EWMA 超线（持续跑了一会儿）→ 也算');
+    assert.equal(nodeAtShedLine(0.89, 0.89, 0.9), false, '两边都没到线');
+    // 半忙的节点不算（原始 50% / EWMA 50%）
+    assert.equal(nodeAtShedLine(0.5, 0.5, 0.8), false);
+    // 小管子的线更低（80%）：原始采样 82% 就算
+    assert.equal(nodeAtShedLine(0.4, 0.82, 0.8), true);
   });
 });
 
