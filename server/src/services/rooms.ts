@@ -458,6 +458,22 @@ export function nextRoomExpiry(current: string | null, nowMs: number, ttlMs: num
 }
 
 /**
+ * 没有任何测速数据时的兜底：**先把候选收窄到国内节点**（`region` 以 `cn-` 开头）。
+ *
+ * 为什么需要它（用户实测）：延迟提示是"谁近"的唯一依据；拿不到提示时排序会退化成
+ * `relayScore`（权重 × 余量），于是一台"权重高、带宽大、没负载"的**海外**节点
+ * （德国 9929 500Mbps）会赢过国内的近节点 —— 用户看到的就是"延迟优先怎么给我推了个德国"。
+ * 没有数据的时候我们至少知道"建房这台机器大概率在国内"（区域选的是 auto、没主动挑海外），
+ * 所以先把海外排出去；**国内一台可用都没有时才放开**（调用方会记一条 warn）。
+ *
+ * 显式选了区域的房间不走这里（华东/香港/海外本来就有区域过滤）。
+ */
+export function domesticRelayPool(pool: readonly RelayCandidate[]): readonly RelayCandidate[] {
+  const domestic = pool.filter((c) => (c.row.region ?? '').startsWith('cn-'));
+  return domestic.length > 0 ? domestic : pool;
+}
+
+/**
  * 「房间自己跑出来的量」这条判据的阈值（bit/s）：`relayScaleMbps = 0` 时返回 `+∞` = **关闭这一条**。
  *
  * ⚠️ **0 只关这一条**（用户 2026-10-03 实测踩到）：他线上把「房间中继过载阈值」设成 0，
@@ -1933,6 +1949,21 @@ export class RoomService {
     }
 
     /**
+     * **没有测速数据时先只用国内节点**（见 `domesticRelayPool`）：
+     * 否则排序退化成 `relayScore`，"谁大谁空谁赢" → 用户实测被推到德国 9929 那台。
+     * 区域池（显式选了区域）不受影响 —— 那是用户自己指定的范围。
+     */
+    const noHints = latencyHints.length === 0;
+    const globalPool = noHints ? domesticRelayPool(pool) : pool;
+    if (noHints && globalPool !== pool) {
+      log.warn('这次建房没有任何测速数据：先把候选收窄到国内节点（海外节点在无数据时不参与竞争）', {
+        zone,
+        domestic: globalPool.length,
+        total: pool.length,
+      });
+    }
+
+    /**
      * 每次建房都把**决策依据**记一条 info（用户实测问过"延迟优先怎么给我推了个德国节点"：
      * 没有这条日志就只能猜是"客户端没上报测速"还是"那台真的最快"）。
      * 记的是：区域、收到几条延迟提示、候选池里每一台的 `ms / 利用率 / 权重 / 是不是大管子`。
@@ -1940,16 +1971,17 @@ export class RoomService {
      */
     const logPick = (picked: string[], scope: 'auto' | 'zone' | 'global'): string[] => {
       const msOf = new Map(latencyHints.map((h) => [h.nodeId, h.ms]));
+      const scopePool = scope === 'zone' ? inZone : globalPool;
       log.info('房间中继调度：选中了这些节点', {
         zone,
         scope,
         hintsReceived: latencyHints.length,
-        candidates: pool.length,
+        candidates: scopePool.length,
         picked: picked.map((id) => {
-          const row = pool.find((c) => c.row.id === id)?.row;
+          const row = scopePool.find((c) => c.row.id === id)?.row;
           return row ? `${row.name}(${row.region}, ${msOf.get(id) ?? '无测速'}ms)` : id;
         }),
-        table: pool.slice(0, 12).map((c) => ({
+        table: scopePool.slice(0, 12).map((c) => ({
           name: c.row.name,
           region: c.row.region,
           ms: msOf.get(c.row.id) ?? null,
@@ -1961,16 +1993,16 @@ export class RoomService {
       return picked;
     };
 
+    const inZone = zone === 'auto' ? [] : globalPool.filter((c) => c.row.region === zone);
     if (zone === 'auto') {
-      return logPick(this.pickRelays(pool, pool, latencyHints, max, zone), 'auto');
+      return logPick(this.pickRelays(globalPool, globalPool, latencyHints, max, zone), 'auto');
     }
-    const inZone = pool.filter((c) => c.row.region === zone);
     if (inZone.length === 0) {
       log.warn('指定区域没有可用节点，回退到全局调度', { zone });
-      return logPick(this.pickRelays(pool, pool, latencyHints, max, zone), 'global');
+      return logPick(this.pickRelays(globalPool, globalPool, latencyHints, max, zone), 'global');
     }
-    // 注意这里传的是**两个**池：区域池用于槽 1，全局池只在"本区域没有可承载节点"时给槽 2 兜底
-    return logPick(this.pickRelays(inZone, pool, latencyHints, max, zone), 'zone');
+    // 注意这里传的是**两个**池：区域池用于槽 1，全局池只在本区域的候选都过卸荷线时兜底
+    return logPick(this.pickRelays(inZone, globalPool, latencyHints, max, zone), 'zone');
   }
 
   /** 小管子判定门槛（字节/秒）：低于它的节点按小管子卸荷（见 `shedUtilOf`）。

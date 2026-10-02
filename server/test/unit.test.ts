@@ -14,7 +14,7 @@ import { test, describe } from 'node:test';
 import { renderAcl, renderEasytierToml, buildLaunchArgs, tomlString, aclToJson, rpcPortalForListenPort, usableRpcPort } from '../src/easytier/config.ts';
 import { buildRoomAcl, isAclEmpty } from '../src/easytier/acl.ts';
 import { parseHumanNumber, parseLatencyMs } from '../src/easytier/manager.ts';
-import { hashRoomPassword, verifyRoomPassword, deriveNetworkName, resolveMemberLink, relayScore, nextRoomExpiry, selectRelays, pickRoomRelays, pickRoomRelay, pickMemberRelay, relayLoadAction, memberRelayStale, roomUsesRelay, advanceLoadWindows, nodeAtShedLine, roomTrafficThreshold, RELAY_NOTICE_COOLDOWN_MS, RELAY_SCALE_WINDOWS, RELAY_NODE_BUSY_WINDOWS, LATENCY_TIE_BAND_MS, MEMBER_RELAY_TIE_BAND_MS, RoomService, type RelayCandidate } from '../src/services/rooms.ts';
+import { hashRoomPassword, verifyRoomPassword, deriveNetworkName, resolveMemberLink, relayScore, nextRoomExpiry, selectRelays, pickRoomRelays, pickRoomRelay, pickMemberRelay, relayLoadAction, memberRelayStale, roomUsesRelay, advanceLoadWindows, nodeAtShedLine, roomTrafficThreshold, domesticRelayPool, RELAY_NOTICE_COOLDOWN_MS, RELAY_SCALE_WINDOWS, RELAY_NODE_BUSY_WINDOWS, LATENCY_TIE_BAND_MS, MEMBER_RELAY_TIE_BAND_MS, RoomService, type RelayCandidate } from '../src/services/rooms.ts';
 import { Db } from '../src/db/index.ts';
 import { NodeRepo } from '../src/db/nodes.ts';
 import { RoomRepo } from '../src/db/rooms.ts';
@@ -1974,6 +1974,21 @@ describe('单节点换中继：到线动作与"该重连了"的判定', () => {
     // 两条判据的门槛：房间流量 6 轮（≈3 分钟）、节点整体到线 2 轮（≈1 分钟）
     assert.equal(RELAY_SCALE_WINDOWS, 6);
     assert.equal(RELAY_NODE_BUSY_WINDOWS, 2);
+  });
+
+  test('domesticRelayPool：没有测速数据时先只用国内节点（海外在无数据时不参与竞争）', () => {
+    const cand = (id: string, region: string): RelayCandidate => ({
+      row: { id, name: id, region, capacity_peers: 500, peers: 0, weight: 100, status: 'online' } as NodeRow,
+      utilization: 0,
+    });
+    const east = cand('east', 'cn-east');
+    const de = cand('de', 'oversea');
+    const hk = cand('hk', 'hk');
+    assert.deepEqual(domesticRelayPool([east, de, hk]).map((c) => c.row.id), ['east'], '有国内节点就只留国内');
+    assert.deepEqual(domesticRelayPool([de, hk]).map((c) => c.row.id), ['de', 'hk'], '一台国内都没有 → 原样放开');
+    assert.deepEqual(domesticRelayPool([east]).map((c) => c.row.id), ['east'], '本来就全是国内 → 不动');
+    // 区域字段缺失的按"非国内"处理（不知道就别当成国内）
+    assert.deepEqual(domesticRelayPool([cand('unknown', ''), de]).map((c) => c.row.id), ['unknown', 'de']);
   });
 
   test('nodeAtShedLine：EWMA 或**最近一次原始采样**越线都算（用户要的"超线就弹"）', () => {
