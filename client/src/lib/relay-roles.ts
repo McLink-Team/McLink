@@ -36,14 +36,18 @@ export function relayNameKey(name: string): string {
 }
 
 export interface RelayTicketNames {
-  /** 票据 `relays[0]`（= `room.relayNodeIds[0]`）的 label：打洞节点 */
-  punchLabel: string | null;
-  /** 票据里所有中继的 label，用来确认"这个 peer 确实是我们的中继之一" */
+  /**
+   * 票据里所有中继的 label，用来确认"这个 peer 确实是我们的中继之一"。
+   *
+   * 早期这里还有个 `punchLabel`（票据 `relays[0]` = 打洞节点）—— **已经不适用**：
+   * 中继集合模型（2026-09-30 起，见 `docs/relay-assignment.md`）下不再有"打洞节点"这个角色，
+   * 所有节点都允许中继，一个房间最多下发 3 台、成员各连其中一台，**每一台都是中继**。
+   */
   allLabels: readonly string[];
 }
 
 /**
- * 内核 peer 行属于哪个槽位。
+ * 内核 peer 行是不是我们的中继之一。
  *
  * 匹配分三趟（从严到宽）：
  *   1. 归一化后**完全相同** —— 正常情况都走这一趟；
@@ -54,10 +58,10 @@ export interface RelayTicketNames {
  *      （词序正好相反），前两趟都对不上。
  *      第 3 趟只在**唯一命中**时才认（多个 label 都像就返回 null），避免把两台搞混。
  *
- * @returns `'punch'` 打洞节点 / `'relay'` 中继节点 / `null` 认不出来（**不标角色**：
+ * @returns `'relay'` 命中我们的一台中继 / `null` 认不出来（**不标角色**：
  *          标错比不标更糟，玩家会照着一个错的角色去排障）
  */
-export function relayRoleOf(hostname: string, names: RelayTicketNames): 'punch' | 'relay' | null {
+export function relayRoleOf(hostname: string, names: RelayTicketNames): 'relay' | null {
   const key = relayNameKey(hostname ?? '');
   if (!key) return null;
 
@@ -65,10 +69,6 @@ export function relayRoleOf(hostname: string, names: RelayTicketNames): 'punch' 
     .map((label) => ({ label, key: relayNameKey(label) }))
     .filter((entry) => entry.key.length > 0);
   if (entries.length === 0) return null;
-
-  const punchKey = relayNameKey(names.punchLabel ?? '');
-  // 票据里没给打洞槽（老主控只下发一台）时也不瞎猜
-  if (!punchKey) return null;
 
   // ① 完全相同
   let hit = entries.find((entry) => entry.key === key);
@@ -88,7 +88,10 @@ export function relayRoleOf(hostname: string, names: RelayTicketNames): 'punch' 
     });
     if (byChars.length === 1) hit = byChars[0];
   }
-  if (!hit) return null;
-
-  return punchKey === hit.key ? 'punch' : 'relay';
+  /*
+   * 中继集合模型下票据里的每一台都是中继 —— 没有"打洞节点"这个角色了。
+   * （老版本这里还会拿 `punchLabel` 比一下，把 `relays[0]` 标成「打洞节点」，
+   *   现在那样标必然是错的：成员票据只有一台，而它就是承载数据的那台。）
+   */
+  return hit ? 'relay' : null;
 }

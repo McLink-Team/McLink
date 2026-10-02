@@ -661,6 +661,23 @@ const V25_MEMBER_RELAY_NODE = `
 alter table room_members add column relay_node_id text;
 `;
 
+/**
+ * V26：客户端版本 1.0.9 → **1.1.0**。
+ *
+ * 1.1.0 是一次"中继模型"的收口（见 `docs/relay-assignment.md`）：主控侧改成
+ * 「房主连最多 3 台中继、成员各从这 3 台里按负载分一台」；客户端只跟着改了一处标注
+ * ——「打洞节点」这个角色不存在了，票据里的每一台都显示为「中继节点」。
+ *
+ * 纪律同前：只动"还停在上一版默认值"的部署，管理员手改过的一律不碰。
+ */
+const V26_CLIENT_1_1_0 = `
+update settings
+   set value = json_set(value, '$.clientVersion', '1.1.0'),
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ where key = 'platform'
+   and json_extract(value, '$.clientVersion') = '1.0.9';
+`;
+
 const V24_CLIENT_1_0_9 = `
 update settings
    set value = json_set(value, '$.clientVersion', '1.0.9'),
@@ -710,6 +727,7 @@ export const MIGRATIONS: readonly string[] = [
    * 老数据为 NULL = 用房间默认（`rooms.relay_node_ids[0]`），行为与改造前一致。
    */
   V25_MEMBER_RELAY_NODE,
+  V26_CLIENT_1_1_0,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
