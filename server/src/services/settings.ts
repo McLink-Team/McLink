@@ -33,7 +33,8 @@ export const DEFAULT_SETTINGS: PlatformSettings = {
   // 大带宽档门槛 10 Mbps（用户拍板：超过 10M 就算大管子）；房间中继过载判据 8 Mbps；
   // 小带宽节点 80% 就停止新增中继（大带宽节点仍是 90%）
   relayBigPipeBps: 10_000_000,
-  relayScaleMbps: 8,
+  /* 单节点模型（2026-09-30）：默认从 8 降到 2 —— 见 relayScaleMbps 的注释。 */
+  relayScaleMbps: 2,
   relaySmallShedPercent: 80,
   registrationOpen: true,
   relayPort: 11010,
