@@ -458,6 +458,19 @@ export function nextRoomExpiry(current: string | null, nowMs: number, ttlMs: num
 }
 
 /**
+ * 「**节点整体**到线」的判定（纯函数，单测直接钉住）：**EWMA 或最近一次原始采样**任一越过卸荷线。
+ *
+ * 为什么两个都要看（用户 2026-10-03 问"超线一分钟就弹对吧"，发现只有 EWMA 太慢）：
+ *   · 只用 EWMA（时间常数 3 分钟）：贴着容量跑的小管子要 ~5 分钟才爬过 80% 线，
+ *     再加窗口计数就是 6 分钟才提醒 —— 玩家早卡了半天；
+ *   · 只看最近一次原始采样：一次资源包下载/存档同步的脉冲就会误报。
+ * 两个取**或**：脉冲靠后面的"连续 2 轮"（≈1 分钟）滤掉，而"真的持续超线"最快 1 分钟就提醒。
+ */
+export function nodeAtShedLine(ewmaUtil: number, rawUtil: number, shedUtil: number): boolean {
+  return Math.max(ewmaUtil, rawUtil) >= shedUtil;
+}
+
+/**
  * 「房间自己跑出来的量」到线要连续多少轮（30 秒一轮 → 6 轮 ≈ 3 分钟）。
  *
  * 为什么不是一次就动：房间刚建好、玩家在下载资源包、有人刚进服，都会让瞬时速率冲高，
@@ -473,6 +486,9 @@ export const RELAY_SCALE_WINDOWS = 6;
  * 节点利用率是**已经平滑过**的信号（`NodeUtilization` 的 EWMA，时间常数 3 分钟），
  * 它不可能瞬时冲高；再叠 6 轮窗口等于双重平滑，等到通知发出去房间已经卡了好几分钟。
  * 1 分钟足够滤掉单次采样的毛刺（心跳 20 秒一次，两轮 = 至少 2 个采样点都在线上）。
+ *
+ * ⚠️ 光靠 EWMA 还是慢（贴线跑要 ~5 分钟才爬过线），所以见 `nodeAtShedLine`：
+ * **最近一次原始采样**越过线也算，于是"真的超线"大约 1 分钟就会提醒。
  */
 export const RELAY_NODE_BUSY_WINDOWS = 2;
 
@@ -2047,15 +2063,21 @@ export class RoomService {
        *   ① 这个房间自己跑出来的量 ≥ 房间阈值（原来的判据，按房间流量算）；
        *   ② 那台节点**整体**的利用率 ≥ 它自己的卸荷线 —— 上面还跑着别的房间，
        *      节点快满了，这个房间也该准备搬（单节点模型里"搬"＝整房换台）。
-       * ② 用的就是调度、卸荷线共用的那个 EWMA 利用率（节点心跳算出来），不是这个房间的读数。
+       * ② 的判定见 `nodeAtShedLine`：**EWMA 或最近一次原始采样**任一越线都算 ——
+       * 只看 EWMA 的话"贴着容量跑"要 ~5 分钟才爬过线，玩家早卡半天了。
        *
        * 两条**各有各的窗口数**（阈值与理由见那两个常量）：
        *   ① 是本房间的瞬时吞吐，容易因为下载资源包冲高 → 要 6 轮（≈3 分钟）才算数；
-       *   ② 是已经平滑过的节点利用率 → 2 轮（≈1 分钟）就够，否则"卡了三分钟才提醒"。
+       *   ② 要 2 轮（≈1 分钟）就够，否则"卡了三分钟才提醒"。
        */
-      const nodeUtil = relayRow ? this.utilizationOf(relayRow) : 0;
+      const ewmaUtil = relayRow ? this.utilizationOf(relayRow) : 0;
+      const relayCap = relayRow?.capacity_bps ?? 0;
+      // 最近一次心跳报上来的原始速率（不平滑）÷ 容量：用来抓"刚开始超线"的那一刻
+      const rawUtil =
+        relayRow && relayCap > 0 ? Math.min(1, Math.max(relayRow.rx_bps, relayRow.tx_bps) / relayCap) : 0;
       const nodeShed = relayRow ? this.shedUtilOf(relayRow) : UTIL_SHED;
-      const nodeBusy = relayRow !== null && nodeUtil >= nodeShed;
+      const nodeUtil = Math.max(ewmaUtil, rawUtil);
+      const nodeBusy = relayRow !== null && nodeAtShedLine(ewmaUtil, rawUtil, nodeShed);
 
       const next = advanceLoadWindows(this.#loadWindows.get(roomId) ?? 0, total >= roomThreshold);
       this.#loadWindows.set(roomId, next);
