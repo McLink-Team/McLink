@@ -249,19 +249,19 @@ const relayPeers = computed(() => visiblePeers.value.filter((p) => !isMemberPeer
 /* --------------------------------------------------------- 打洞 / 中继角色 */
 
 /**
- * 两个槽位的角色判定：判据与"为什么要剥 `PublicServer_` 前缀"全部写在
+ * 中继名字判定：判据与"为什么要剥 `PublicServer_` 前缀"全部写在
  * `lib/relay-roles.ts`（纯函数，回归脚本 `scripts/verify-relay-roles.mjs` 钉着它）。
  * 这里只负责把票据里的 label 取出来喂进去。
+ *
+ * ⚠️ 中继集合模型（v1.1.0 起）下**没有"打洞节点"这个角色**：票据里最多 3 台，
+ * 每一台都会承载数据，所以命中就是「中继节点」。老版本的 `punchLabel` 已经删掉。
  */
-/** 票据里的中继名字：`punch` 是打洞节点（无票据时为 null），`all` 用于确认名字认不认得出来 */
 const relayNames = computed<RelayTicketNames>(() => {
   const relays = session.value?.ticket?.relays ?? [];
-  const punchId = session.value?.room?.relayNodeIds?.[0];
-  const byId = punchId ? relays.find((r) => r.nodeId === punchId) : undefined;
-  return { punchLabel: byId?.label ?? relays[0]?.label ?? null, allLabels: relays.map((r) => r.label) };
+  return { allLabels: relays.map((r) => r.label) };
 });
 
-const relayRole = (p: PeerView): 'punch' | 'relay' | null => relayRoleOf(p.hostname ?? '', relayNames.value);
+const relayRole = (p: PeerView): 'relay' | null => relayRoleOf(p.hostname ?? '', relayNames.value);
 
 /**
  * 认不出角色时，把**两边的原始名字**摆在界面上（而不是只写「角色未知」）。
@@ -820,9 +820,9 @@ async function doLeave(): Promise<void> {
             </div>
 
             <!--
-              两个槽位的角色（主控 `RoomService.pickRoomRelays`）：票据 relays[0] = 打洞节点
-              （协调 P2P 打洞，**不承载数据**），relays[1] = 中继节点（真正转发房间流量）。
-              两台平时都连着（保活），所以不能靠"有没有字节"来判断谁在用 —— 按票据顺序标角色。
+              中继集合模型（v1.1.0 起）：票据里最多 3 台，**每一台都是中继**（都会承载数据）——
+              不再有"打洞节点"那个角色。一个成员只会连其中一台，房主会把这几台都连上。
+              两台以上平时都连着（保活），"谁在实际转发"看流量列，不靠角色标签判断。
             -->
             <div v-if="relayPeers.length > 0" class="path-group">
               <div class="path-group-head">
@@ -841,16 +841,9 @@ async function doLeave(): Promise<void> {
                     <span v-else class="roster-sub">{{ p.ipv4 || '平台下发的中继入口' }}</span>
                   </span>
                   <span
-                    v-if="relayRole(p) === 'punch'"
-                    class="badge badge-neutral"
-                    title="打洞节点：协助两端打洞（交换公网地址），不承载房间流量"
-                  >
-                    打洞节点
-                  </span>
-                  <span
-                    v-else-if="relayRole(p) === 'relay'"
+                    v-if="relayRole(p) === 'relay'"
                     class="badge badge-ok"
-                    title="中继节点：打不通 P2P 时，房间流量走这一台"
+                    title="中继节点：房间流量走这一台（打不通 P2P 时由它转发）"
                   >
                     中继节点
                   </span>
@@ -858,7 +851,7 @@ async function doLeave(): Promise<void> {
                   <span
                     v-else
                     class="badge badge-neutral"
-                    :title="`认不出这台是打洞节点还是中继节点：内核报的 hostname 是「${p.hostname}」，${relayNameHint}`"
+                    :title="`认不出这台是不是票据里的中继：内核报的 hostname 是「${p.hostname}」，${relayNameHint}`"
                   >
                     角色未知
                   </span>
