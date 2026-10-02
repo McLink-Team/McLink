@@ -134,10 +134,23 @@ if (source === 'github') {
   }
 } else if (source) {
   /* ---------------- 从本地目录收 ---------------- */
-  const files = fs
+  const all = fs
     .readdirSync(source, { withFileTypes: true })
     .filter((e) => e.isFile())
     .map((e) => path.join(source, e.name));
+  /*
+   * 优先只认**文件名里带这个版本号**的产物。
+   *
+   * 为什么必须有这一步：`--from` 常常指向"下载"文件夹，里面同时堆着好几个版本的
+   * exe / dmg。只按后缀挑会随手命中旧版本 —— 收进来的**文件名是对的、内容却是上一版的**，
+   * 而且事后没人看得出来（上一轮的坑，见 docs/relay-assignment.md 的待办）。
+   * 一个带版本号的都没有时才退回宽松匹配，并明确警告。
+   */
+  const versioned = all.filter((f) => path.basename(f).includes(version));
+  const files = versioned.length > 0 ? versioned : all;
+  if (all.length > 0 && versioned.length === 0) {
+    console.log(`  ⚠️ 目录里没有文件名带 ${version} 的产物 —— 退回按后缀挑，可能挑到别的版本（建议 --version 指定）`);
+  }
   const pick = (re) => files.find((f) => re.test(path.basename(f)));
   const pairs = [
     [pick(/\.exe$/i), names.win],
