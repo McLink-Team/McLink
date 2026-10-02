@@ -110,7 +110,11 @@ try {
   });
   createdRooms.push(r1.room.id);
   const ids1 = r1.room.relayNodeIds ?? [];
-  check('① 手选的节点就是房间唯一的中继（数组长度为 1）', ids1.length === 1 && ids1[0] === a.id, JSON.stringify(ids1));
+  check(
+    '① 手选的节点进了房间的中继集合（≤3 台，且它是第一台）',
+    ids1.length >= 1 && ids1.length <= 3 && ids1[0] === a.id,
+    JSON.stringify(ids1),
+  );
   check('① nodeSelection.roles 告诉界面谁是中继', r1.nodeSelection?.roles?.relay === a.id, JSON.stringify(r1.nodeSelection?.roles));
   check('① 单节点模型下没有"打洞节点"角色', r1.nodeSelection?.roles?.punch === null, JSON.stringify(r1.nodeSelection?.roles?.punch));
 
@@ -122,10 +126,14 @@ try {
   });
   createdRooms.push(r2.room.id);
   const ids2 = r2.room.relayNodeIds ?? [];
-  check('② 多选只认第一台（单节点）', ids2.length === 1 && ids2[0] === b.id, JSON.stringify(ids2));
   check(
-    '② 多余的节点如实记进 rejected（界面要能说清）',
-    (r2.nodeSelection?.rejected ?? []).some((x) => x.id === a.id),
+    '② 手选两台都在集合里（上限 3 台，不会只留一台）',
+    ids2.includes(b.id) && ids2.includes(a.id) && ids2.length <= 3,
+    JSON.stringify(ids2),
+  );
+  check(
+    '② 没超过上限就没有 rejected',
+    (r2.nodeSelection?.rejected ?? []).length === 0,
     JSON.stringify(r2.nodeSelection?.rejected),
   );
 
