@@ -67,7 +67,15 @@ export function registerRoomRoutes(router: Router, app: App): void {
       rpcPort: optInt(body, 'rpcPort', 1024, 65535) ?? undefined,
       ttlMinutes: 'ttlMinutes' in body ? optInt(body, 'ttlMinutes', 0, 60 * 24 * 30) ?? null : undefined,
     });
-    log.info('房间创建成功', { room: result.room.id, name, zone });
+    log.info('房间创建成功', {
+      room: result.room.id,
+      name,
+      zone,
+      // 手选了哪些、最后用了哪台（自动调度的决策依据在 scheduleRelays 里另记一条）
+      picked: nodeIds.length,
+      relays: result.room.relayNodeIds ?? [],
+      latencyHints: latencyHints.length,
+    });
     return result;
   }, { auth: true });
 
