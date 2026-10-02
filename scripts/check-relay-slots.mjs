@@ -52,8 +52,14 @@ async function api(path, { method = 'GET', token, body } = {}) {
 
 const admin = await api('/auth/login', { method: 'POST', body: { username: 'admin', password: PASS } });
 
-/** 注册一台临时节点并让它上线（pending → 首次心跳即 online） */
-async function makeNode(name, port) {
+/**
+ * 注册一台临时节点并让它上线（pending → 首次心跳即 online）。
+ *
+ * `opts.capacityBps` 在**首次心跳之前**写进去，`opts.rxBps/txBps` 就是首帧读数 ——
+ * 这是造"利用率立刻到 100%"的唯一办法：EWMA 的**第一个样本直接作为初值**
+ * （见 `node-utilization.ts` 的 record），之后再补帧只会被 3 分钟的时间常数拖住。
+ */
+async function makeNode(name, port, { capacityBps, rxBps = 0, txBps = 0 } = {}) {
   const key = await api('/admin/nodes/enroll-key', {
     method: 'POST',
     token: admin.token,
@@ -72,10 +78,13 @@ async function makeNode(name, port) {
       version: 'verify',
     },
   });
+  if (capacityBps !== undefined) {
+    await api(`/admin/nodes/${node.node.id}`, { method: 'PATCH', token: admin.token, body: { capacityBps } });
+  }
   await api('/agent/heartbeat', {
     method: 'POST',
     token: node.nodeToken,
-    body: { peers: 0, rooms: 0, rxBps: 0, txBps: 0, appliedConfigRevision: 0 },
+    body: { peers: 0, rooms: 0, rxBps, txBps, appliedConfigRevision: 0 },
   });
   return { id: node.node.id, token: node.nodeToken };
 }
@@ -104,7 +113,7 @@ try {
     nodes.filter((n) => [a.id, b.id].includes(n.id)).every((n) => n.assistOnly === undefined),
     JSON.stringify(nodes.filter((n) => [a.id, b.id].includes(n.id)).map((n) => [n.name, n.assistOnly])),
   );
-  // ① 手选一台 → 它就是房间唯一的节点（单节点模型：不再有"打洞槽/中继槽"之分）
+  // ① 手选一台 → 它就是房间唯一的中继（单节点模型：房间只下发一台）
   const r1 = await api('/rooms', {
     method: 'POST',
     token: admin.token,
@@ -113,14 +122,14 @@ try {
   createdRooms.push(r1.room.id);
   const ids1 = r1.room.relayNodeIds ?? [];
   check(
-    '① 手选的节点进了房间的中继集合（≤3 台，且它是第一台）',
-    ids1.length >= 1 && ids1.length <= 3 && ids1[0] === a.id,
+    '① 手选的节点就是房间**唯一**的中继（单节点模型：length === 1）',
+    ids1.length === 1 && ids1[0] === a.id,
     JSON.stringify(ids1),
   );
   check('① nodeSelection.roles 告诉界面谁是中继', r1.nodeSelection?.roles?.relay === a.id, JSON.stringify(r1.nodeSelection?.roles));
   check('① 单节点模型下没有"打洞节点"角色', r1.nodeSelection?.roles?.punch === null, JSON.stringify(r1.nodeSelection?.roles?.punch));
 
-  // ② 手选两台 → 只认第一台，其余如实进 rejected
+  // ② 手选两台 → 只认第一台，第二台如实进 rejected（并说清"一个房间只下发一台"）
   const r2 = await api('/rooms', {
     method: 'POST',
     token: admin.token,
@@ -129,28 +138,26 @@ try {
   createdRooms.push(r2.room.id);
   const ids2 = r2.room.relayNodeIds ?? [];
   check(
-    '② 手选两台都在集合里（上限 3 台，不会只留一台）',
-    ids2.includes(b.id) && ids2.includes(a.id) && ids2.length <= 3,
+    '② 手选两台 → 只留第一台（单节点模型）',
+    ids2.length === 1 && ids2[0] === b.id,
     JSON.stringify(ids2),
   );
+  const rejected2 = r2.nodeSelection?.rejected ?? [];
   check(
-    '② 没超过上限就没有 rejected',
-    (r2.nodeSelection?.rejected ?? []).length === 0,
-    JSON.stringify(r2.nodeSelection?.rejected),
+    '② 被忽略的那台如实进 rejected，且理由说清"最多 1 台"',
+    rejected2.length === 1 && rejected2[0]?.id === a.id && /最多 1 台/.test(rejected2[0]?.reason ?? ''),
+    JSON.stringify(rejected2),
   );
 
   /*
-   * ③ 票据按角色给中继集合（docs/relay-assignment.md）：
-   *   · 房主 → **全部**可调度节点（每台都有一条直达房主的链路，成员分配怎么变都不用动房主）；
-   *   · 成员 → **只有分配给他的那一台**（分配写回 room_members.relay_node_id）。
-   * 这个脚本里的账号是建房者 = 房主，所以这里断言"房主拿到多台"这一半；
-   * 成员侧要用第二个账号在开发主控上验（见文档的验收标准）。
+   * ③ 票据：单节点模型下**房主也只是一台**（他自己的核心只连这一台），
+   * 与房间的中继集合完全一致 —— 这是"房间里没有第二条可被误选的路"的前提。
    */
   const ticket = await api(`/rooms/${r2.room.id}/ticket`, { token: admin.token });
   const hostRelays = ticket.relays ?? [];
   check(
-    '③ 房主票据包含**全部**可调度节点（不只房间默认那一台）',
-    hostRelays.length >= 2,
+    '③ 房主票据也只有 **1 台**中继，且等于房间中继集合',
+    hostRelays.length === 1 && hostRelays[0]?.nodeId === b.id,
     `relays=${JSON.stringify(hostRelays.map((r) => r.label))}`,
   );
   check(
@@ -159,20 +166,16 @@ try {
   );
 
   /*
-   * ④ 成员侧（2026-10-02 新增，见 docs/relay-assignment.md 的"成员分配的口径"）：
-   *   注册第二个账号 → 带**故意偏心**的延迟提示进房 → 断言：
-   *     · 成员票据**只有 1 台**中继（整个集合只给房主）；
-   *     · 拿到的正是他自己上报延迟最低的那台（**延迟优先**，不是按负载）；
-   *     · 再拉一次票据仍是同一台（分配已固定）；
-   *     · 分配写回 `room_members.relay_node_id`（房主在成员列表里能看到）。
-   *
-   *   为什么这里只能验"延迟优先"：房间集合里 a / b 两台利用率都是 0（没有流量采样），
-   *   于是"延迟"是唯一能分出胜负的规则 —— 提示给 b 5ms、给 a 900ms 就应当分到 b。
-   *   "过卸荷线就排除"这条要等 EWMA 收敛（tau = 3 分钟），live 脚本里构造不出来，
-   *   由单测 `pickMemberRelay`（server/test/unit.test.ts）钉住。
+   * ④ 成员侧（2026-10-02 加，2026-10-03 按单节点模型重写）：
+   *   注册第二个账号 → 进房 → 断言：
+   *     · 成员票据**只有 1 台**中继，且**与房主那台是同一台**（单节点模型的全部意义）；
+   *     · 分配写回 `room_members.relay_node_id`，进房响应里就能看到；
+   *     · 再拉一次票据仍是同一台（分配已固定）。
+   *   提示里故意写"a 只要 5ms、b 要 900ms"，用来证明**单节点模型下不会因为延迟好就换台** ——
+   *   房间是谁就是谁（延迟排序只在集合里有多台时才有得挑，见单测 pickMemberRelay）。
    */
   const memberName = `slots_m_${RUN}`;
-  const memberPass = `Slots-${RUN}-pw`;
+  const memberPass = `Slots-${RUN}-pw1`;
   const reg = await api('/auth/register', {
     method: 'POST',
     body: { username: memberName, password: memberPass },
@@ -188,8 +191,8 @@ try {
         deviceName: memberName,
         listenPort: BASE_PORT + 2,
         latencyHints: [
-          { nodeId: b.id, ms: 5 },
-          { nodeId: a.id, ms: 900 },
+          { nodeId: a.id, ms: 5 },
+          { nodeId: b.id, ms: 900 },
         ],
       },
     });
@@ -207,14 +210,14 @@ try {
   if (joined) {
     const memberRelays = joined.ticket?.relays ?? [];
     check(
-      '④ 成员票据只含 **1 台**中继（整个集合只给房主）',
+      '④ 成员票据只含 **1 台**中继',
       memberRelays.length === 1,
       `relays=${JSON.stringify(memberRelays.map((r) => r.label))}`,
     );
     check(
-      '④ 成员拿到的是**他自己上报延迟最低**的那台（延迟优先）',
-      memberRelays[0]?.nodeId === b.id,
-      `分了 ${memberRelays[0]?.label}（提示：b=5ms / a=900ms）`,
+      '④ 成员拿到的就是**房主那台**（单节点：房间里没有第二条路）',
+      memberRelays[0]?.nodeId === hostRelays[0]?.nodeId,
+      `成员=${memberRelays[0]?.label} 房主=${hostRelays[0]?.label}（提示故意说另一台只要 5ms）`,
     );
     const again = await api(`/rooms/${r2.room.id}/ticket`, { token: reg.token });
     check(
@@ -234,9 +237,52 @@ try {
     const detail = await api(`/rooms/${r2.room.id}`, { token: admin.token });
     const mine = (detail.members ?? []).find((m) => m.userId === reg.user.id);
     check(
-      '④ 分配写回了 room_members.relay_node_id（房主看得到）',
+      '④ 分配写回了 room_members.relay_node_id（房主在控制台看得到）',
       mine?.relayNodeId === memberRelays[0]?.nodeId,
       `relayNodeId=${mine?.relayNodeId}`,
+    );
+    /*
+     * ⑤ 心跳里那条"该重连了"的标志（单节点换中继的一半机制，见 memberRelayStale）：
+     *   正常态必须是 false —— 房间里没换过中继，客户端就不该弹横幅、不该响。
+     *   另一半（房主切完之后真的变成 true）需要真的触发一次过载切换（6 个 30 秒窗口），
+     *   live 脚本里等不起，由单测 memberRelayStale + relayLoadAction 钉住判定本身。
+     */
+    const hb = await api(`/rooms/${r2.room.id}/heartbeat`, {
+      method: 'POST',
+      token: reg.token,
+      body: { virtualIp: joined.member?.virtualIp ?? null, peers: [], rxBps: 0, txBps: 0, aclRevision: 0 },
+    });
+    check(
+      '⑤ 没换过中继时，心跳的 relayChanged 是 false（不会平白弹横幅/响铃）',
+      hb.relayChanged === false,
+      `relayChanged=${JSON.stringify(hb.relayChanged)}`,
+    );
+
+    /*
+     * ⑥ 卸荷线 live（2026-10-02 加，2026-10-03 按单节点模型改写）：
+     *   "过线的节点不再接新房间"原来只有单测，这是它的活体证据。
+     *
+     *   造一台**首帧就顶满**的节点：容量写 1 Mbps、第一次心跳就报 rxBps = 1 Mbps。
+     *   EWMA 的第一个样本直接作为初值（见 node-utilization.ts 的 record），
+     *   于是它的利用率稳稳是 100% ≥ 卸荷线（小管子 80%），必被排除在**自动调度**之外。
+     *   然后建一个不带手选节点的房间（region = cn-east）：房间的中继**不能**是它。
+     *
+     *   注意单节点模型下"过线的节点仍可被手选"（手选是用户的直接意图，见
+     *   `#validatePickedNodes`），这里验的是**平台自己挑**的那条路。
+     */
+    const hot = await makeNode(`slots-hot-${RUN}`, BASE_PORT + 3, { capacityBps: 1_000_000, rxBps: 1_000_000 });
+    made.push(hot.id);
+    const r3 = await api('/rooms', {
+      method: 'POST',
+      token: admin.token,
+      body: { name: `slot-hot ${RUN}`, zone: 'cn-east' },
+    });
+    createdRooms.push(r3.room.id);
+    const autoIds = r3.room.relayNodeIds ?? [];
+    check(
+      '⑥ 自动调度不会把已过卸荷线的节点分给新房间',
+      autoIds.length === 1 && !autoIds.includes(hot.id),
+      `房间中继=${JSON.stringify(autoIds)}（过线的 hot=${hot.id}）`,
     );
   }
 }

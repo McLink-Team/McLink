@@ -177,13 +177,18 @@ export function registerRoomRoutes(router: Router, app: App): void {
     });
 
     if (result.kicked) {
-      return { kicked: true, aclToml: null, aclRevision: 0 };
+      return { kicked: true, aclToml: null, aclRevision: 0, relayChanged: false };
     }
     return {
       kicked: false,
       // 只有房主需要 ACL；非房主恒为 null，避免把房间策略泄露给成员
       aclToml: result.aclToml,
       aclRevision: result.aclRevision,
+      /**
+       * 房间的中继已经换到别台、而这个成员还连着旧那台（单节点模型下整房搬走的结果）。
+       * 客户端据此弹横幅 + 响一声，点「重连」即可；见 `RoomService.#relayChangedFor`。
+       */
+      relayChanged: result.relayChanged,
     };
   }, { auth: true });
 

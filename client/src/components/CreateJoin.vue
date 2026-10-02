@@ -19,6 +19,7 @@ import { regionLabel, type Room } from '@mclink/shared';
 import {
   clientState,
   createRoom,
+  ensureFreshRelayHints,
   ensureRelayProbe,
   joinRoom,
   loadRooms,
@@ -27,7 +28,6 @@ import {
   reenterRoom,
   relayLatencyHints,
   relayLatencyOf,
-  waitForRelayProbe,
   type RelayNodeOption,
 } from '../lib/store.ts';
 import { friendlyError } from '../lib/api.ts';
@@ -193,14 +193,14 @@ async function doJoin(): Promise<void> {
   try {
     /**
      * 进房请求里也带 `latencyHints` —— 主控用它决定**这名成员被分到哪台中继**
-     * （延迟优先，相差 10ms 以内取空余带宽最大的那台）。
+     * （有效延迟 = 握手延迟 + 负载折价，见 server 的 `pickMemberRelay`）。
      *
-     * 于是这里和建房走同一条有界等待（最多 `RELAY_PROBE_WAIT_MS`，见 store.ts 的
-     * `waitForRelayProbe`）：没有在跑的探测 / 已经有提示 → 立刻返回；
-     * 超时或探测失败 → 照常进房（空提示照样能进，只是主控按负载挑）。
-     * 换句话说：**测速永远挡不住进房**，但"探测还在跑就静默拿空提示发出去"不再是默认路径。
+     * 这里调 `ensureFreshRelayHints()`：有缓存且没过期就立刻返回；没有/过期了才测一轮，
+     * 且**最多等 `RELAY_PROBE_WAIT_MS`**（探测失败、超时都照常进房）。
+     * 换句话说：**测速永远挡不住进房**，但"拿一份十年前的数"或"手速快过测速就发空提示"
+     * 都不再是默认路径。
      */
-    if (relayLatencyHints().length === 0) await waitForRelayProbe();
+    await ensureFreshRelayHints();
     await joinRoom(value, joinPassword.value || undefined);
     code.value = '';
     joinPassword.value = '';
@@ -224,12 +224,14 @@ async function doCreate(): Promise<void> {
      * 所以玩家完全可能在 tcping 还在跑的时候就点提交 —— 那一刻延迟提示是空数组，
      * 主控那侧的延迟键失效，直接退化成"权重 × 余量"排序。
      *
-     * 这里先**有界等待**那次探测（最多 `RELAY_PROBE_WAIT_MS`，见 store.ts 的 waitForRelayProbe）：
-     *   · 没有在跑的探测 / 已经有提示 → 立刻返回，不多花一毫秒；
+     * `ensureFreshRelayHints()`（见 store.ts）把这件事收成一条：
+     *   · 有缓存且没过保鲜期（10 分钟）→ 立刻返回，不多花一毫秒；
+     *   · 没缓存 / 过期了 → 测一轮并**有界等待**（最多 `RELAY_PROBE_WAIT_MS`）；
      *   · 超时或探测失败 → 照常发请求（空提示也能建房，只是主控按负载排）。
-     * 换句话说：探测**永远不会**挡住建房，但"探测还在跑就静默拿空提示发出去"不再是默认路径。
+     * 换句话说：探测**永远不会**挡住建房，但"拿一份很旧的数"或"跑到一半就发空提示"
+     * 都不再是默认路径。
      */
-    if (relayLatencyHints().length === 0) await waitForRelayProbe();
+    await ensureFreshRelayHints();
     await createRoom({
       name: form.value.name.trim(),
       zone: form.value.zone,

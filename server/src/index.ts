@@ -253,30 +253,45 @@ async function main(): Promise<void> {
       for (const row of openRows) app.rooms.recalcCounts(row.id);
 
       /**
-       * 房间中继过载 → 把大带宽节点提到主中继位置。
+       * 房间中继过载（房间自己的流量到线，或者**那台节点整体**到卸荷线）→
+       * 准备一台更空闲的中继并通知玩家。
        *
        * 数据源就是子节点心跳报上来的逐房间速率（`relayingNetworks()`），
-       * 不需要主控自己转发任何流量。**只影响新票据**：后来进房/重进房的人按新顺序连，
-       * 房里的人这一局不变（用户明确接受的取舍：原来的那台已经到负载边缘，
-       * 让后来的人走大管子就够了）。
+       * 不需要主控自己转发任何流量。
+       *
+       * ⚠️ 单节点模型（2026-10-03）下这里**只准备、不落库**：真正的切换发生在
+       * 房主下一次拉票据（点「现在切换」或退出重进）那一刻 —— 成员先搬过去会找不到房主。
+       * `kind = 'notice'` 表示"到线了但没有更空的节点可换"，只通知不切换。
        */
       const promoted = app.roomService.promoteOverloadedRooms(app.nodeService.relayingNetworks());
       for (const event of promoted) {
-        log.warn('房间中继过载：已把中继槽换成更空的大带宽节点（只影响之后进房的人）', {
-          room: event.roomId,
-          code: event.code,
-          newRelay: event.to,
-          demoted: event.from,
-          rxBps: Math.round(event.rxBps),
-          txBps: Math.round(event.txBps),
-        });
+        if (event.kind === 'switch') {
+          log.warn('房间中继到线：已准备好更空闲的中继（等房主点「现在切换」生效）', {
+            room: event.roomId,
+            code: event.code,
+            newRelay: event.to,
+            current: event.from,
+            nodeUtil: Number(event.nodeUtil.toFixed(3)),
+            rxBps: Math.round(event.rxBps),
+            txBps: Math.round(event.txBps),
+          });
+        } else {
+          log.warn('房间中继到线：没有更空闲的节点可换（已通知玩家，不切换）', {
+            room: event.roomId,
+            code: event.code,
+            current: event.from,
+            nodeUtil: Number(event.nodeUtil.toFixed(3)),
+          });
+        }
         /**
          * 推给房间里的玩家：**建议**切换（不是自动切）。
-         * 客户端复用消息通知那条链路弹提示，玩家自己决定；老客户端会忽略这个未知事件。
+         * 客户端复用消息通知那条链路弹提示（新版客户端还会响一声），
+         * 玩家自己决定；老客户端会忽略这个未知事件。
          */
         hub.publish(Topics.room(event.roomId), {
           type: 'room.relayHint',
           roomId: event.roomId,
+          kind: event.kind,
           message: event.message,
         });
         const row = app.rooms.findById(event.roomId);

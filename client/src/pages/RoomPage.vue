@@ -427,20 +427,47 @@ const relayStateText = computed(() => {
 const relayLedClass = computed(() => (relayMode.value === 'switching' ? 'led-warn' : 'led-ok'));
 
 /**
- * 平台建议切换中继 → 玩家点了「现在切换」。
+ * 中继横幅上那颗主按钮的文案（空 = 不显示这颗按钮）。
+ *
+ * 单节点模型下"换中继"＝整房搬走，**必须先房主**：
+ *   · `apply`（房主已经切完）→ 成员点「重连」接上新中继，这是他们唯一要做的事；
+ *   · `switch` + 自己是房主 → 「现在切换」，点了才真正落库生效；
+ *   · `switch` + 自己是成员 → **不给按钮**：此时重连只会拿到旧中继（房间还没搬），
+ *     给了按钮反而像是"点了能解决"，不如只留一句「知道了」，等房主切完会出现
+ *     `apply` 那条横幅（由心跳发现，见 store 的 sendHeartbeat）。
+ */
+const relayHintPrimaryLabel = computed(() => {
+  const kind = clientState.relayHint?.kind;
+  if (kind === 'apply') return '重连';
+  if (kind === 'switch' && isHost.value) return '现在切换';
+  return '';
+});
+
+/** 次按钮：没有主按钮可点时它就是「知道了」，否则是「稍后」 */
+const relayHintDismissLabel = computed(() => (relayHintPrimaryLabel.value ? '稍后' : '知道了'));
+
+/**
+ * 平台的中继提示 → 玩家点了主按钮。
  *
  * 这是一次**真实的中断**（本地核心重启、隧道断几秒），和「强制走中继」同一量级，
- * 所以走同一套应用内确认弹层 —— 绝对不能在玩家没点确认时自己切（主控也只发建议）。
+ * 所以走同一套应用内确认弹层 —— 绝对不能在玩家没点确认时自己切（主控也只发提示）。
  * 注意切换用的是 `reenterRoom()`：它**不调 leave**，所以房主点它也不会关房。
+ *
+ * 两种 kind 的措辞不同（按钮文案见 `relayHintPrimaryLabel`）：
+ *   · `switch` —— 房主点了才真正把房间搬到新中继上，其他成员随后重连；
+ *   · `apply`  —— 房主已经搬完了，成员点这里接上新中继。
  */
 async function onApplyRelayHint(): Promise<void> {
+  const isApply = clientState.relayHint?.kind === 'apply';
   const ok = await confirmInApp({
-    title: '切换到更空闲的中继',
+    title: isApply ? '重连到新的中继' : '切换到更空闲的中继',
     message: '重新取一次票据并重建本地核心。',
-    detail:
-      '连接会中断几秒，房间里其他人不受影响。你正在打的重要进度不会丢（联机本身会短暂卡一下），' +
-      '想等这局结束再切就点「稍后」。',
-    confirmText: '现在切换',
+    detail: isHost.value
+      ? '你是房主：点了之后房间就搬到新中继上，其他成员也要重连一次才能看到你。' +
+        '连接会中断几秒，你正在打的重要进度不会丢（联机本身会短暂卡一下）。'
+      : '连接会中断几秒。如果房主还没切，重连后仍然是原来的中继（不影响现在联机）；' +
+        '房主切完之后再点这里，就会接上新中继。想等这局结束再点就点「稍后」。',
+    confirmText: isApply ? '重连' : '现在切换',
     danger: false,
   });
   if (!ok) return;
@@ -698,13 +725,26 @@ async function doLeave(): Promise<void> {
     </div>
 
     <!--
-      平台的中继建议：**只是建议**，主控不会替玩家切（切一次隧道要断几秒，
-      玩家可能正在打 BOSS / 比赛最后一把）。横幅给两个按钮，玩家自己决定。
+      平台的中继提示：**只是提示**，主控不会替玩家切（切一次隧道要断几秒，
+      玩家可能正在打 BOSS / 比赛最后一把）。三种 kind 的按钮不一样：
+        · switch —— 主控已准备好更空闲的中继；**房主**点了才真正生效（单节点模型下
+          成员早点点「重连」只会拿到旧中继，不会把自己弄丢，但也没用）；
+        · notice —— 节点负载到线、暂时没得换，纯告知，只给「知道了」；
+        · apply  —— 房主已经切完，成员点「重连」接上新中继（点了就走 reenterRoom）。
     -->
     <div v-if="clientState.relayHint" class="alert alert-hint">
       <span class="grow">{{ clientState.relayHint.message }}</span>
-      <button class="btn btn-sm btn-primary" type="button" @click="onApplyRelayHint">现在切换</button>
-      <button class="btn btn-sm" type="button" @click="dismissRelayHint()">稍后</button>
+      <button
+        v-if="relayHintPrimaryLabel"
+        class="btn btn-sm btn-primary"
+        type="button"
+        @click="onApplyRelayHint"
+      >
+        {{ relayHintPrimaryLabel }}
+      </button>
+      <button class="btn btn-sm" type="button" @click="dismissRelayHint()">
+        {{ relayHintDismissLabel }}
+      </button>
     </div>
 
     <div class="room-columns">

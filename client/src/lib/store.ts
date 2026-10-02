@@ -48,6 +48,7 @@ import {
 } from './relay-fallback.ts';
 import { isMac, platform, supportsLanBroadcast, tunName } from './platform.ts';
 import { handleIncomingMessage, notifyPlatformHint } from './notify.ts';
+import { playNoticeSound } from './notice-sound.ts';
 
 export type { PeerView } from './easytier-parse.ts';
 export { parsePeers } from './easytier-parse.ts';
@@ -175,7 +176,14 @@ const state = reactive({
    * 配置，要生效只能重取票据重建隧道（卡顿几秒）。玩家可能正在关键时刻（打 BOSS、
    * 比赛最后一把），所以由他自己决定切不切 —— 房间页弹一条带「现在切换 / 稍后」的横幅。
    */
-  relayHint: null as null | { roomId: string; message: string },
+  /**
+   * 中继相关的一条提示（横幅）。`kind` 决定横幅上的按钮：
+   *   · `switch` —— 主控已经准备好更空闲的中继，房主点「现在切换」才生效（单节点模型下
+   *     必须先房主：成员早点点「重连」只会拿到旧中继，不会把自己弄丢）；
+   *   · `notice` —— 节点负载到线但暂时没得换，纯告知（没有切换按钮）；
+   *   · `apply`  —— 房主已经切换完了，成员点「重连」接上新中继。
+   */
+  relayHint: null as null | { roomId: string; message: string; kind?: 'switch' | 'notice' | 'apply' },
   /** 自动回落开关（默认关，见 lib/relay-fallback.ts） */
   autoFallback: false,
   /** 本机客户端版本（来自 Electron 的 app.getVersion()） */
@@ -514,6 +522,41 @@ export async function waitForRelayProbe(timeoutMs = RELAY_PROBE_WAIT_MS): Promis
   } finally {
     if (timer !== undefined) window.clearTimeout(timer);
   }
+}
+
+/**
+ * 延迟缓存的**保鲜期**（默认 10 分钟）：超过它就认为"学到的那组数"过时了，重新测一次。
+ *
+ * 为什么要过期（用户 2026-10-02 追问："他学到之后岂不一直用旧的，而且根本不知道谁卡了"）：
+ *   · tcping 测的是**握手路径**，网络一变（换基站、运营商调度、晚高峰）它就旧了；
+ *   · 它永远测不出"那台卡不卡" —— 那是主控用节点心跳算的负载，由服务端折进分配
+ *     （平台设置「负载折价」），客户端这边只能保证"距离这一半"尽量新。
+ * 10 分钟是折中：一轮 tcping 只连打 3 次握手、几百毫秒就完，代价很小；
+ * 而更短（比如 1 分钟）会在每次建房/进房前都白跑一轮。
+ */
+export const RELAY_LATENCY_TTL_MS = 10 * 60_000;
+
+/** 手上的延迟缓存是不是过时/没有（没有缓存也算过时） */
+export function relayLatencyStale(ttlMs = RELAY_LATENCY_TTL_MS): boolean {
+  if (state.relayNodes.length === 0) return true;
+  const at = state.relayProbe.lastProbedAt;
+  if (!at) return true;
+  const ms = Date.parse(at);
+  return !Number.isFinite(ms) || Date.now() - ms > ttlMs;
+}
+
+/**
+ * 建房/进房前调它：**保证手上有一份不太旧的延迟**（有界等待，绝不抛错、绝不挡住建房）。
+ *
+ * 三条路径：
+ *   1. 有缓存且没过期 → 立刻返回（不多花一毫秒）；
+ *   2. 没缓存 / 过期了 → 发起一次探测（已有在跑的会复用），最多等 `RELAY_PROBE_WAIT_MS`；
+ *   3. 探测失败或超时 → 照常往下走（空提示/旧提示照样能建房进房，只是主控少了"距离"这一半依据）。
+ */
+export async function ensureFreshRelayHints(): Promise<void> {
+  if (!relayLatencyStale()) return;
+  void probeRelayNodes();
+  await waitForRelayProbe();
 }
 
 /* ------------------------------------------------------------ 新版本发现 */
@@ -1430,7 +1473,7 @@ async function sendHeartbeat(): Promise<void> {
   if (!session) return;
   await pollPeers();
   try {
-    const result = await api.post<{ kicked: boolean; aclToml: string | null; aclRevision: number }>(
+    const result = await api.post<{ kicked: boolean; aclToml: string | null; aclRevision: number; relayChanged?: boolean }>(
       Routes.roomHeartbeat(session.room.id),
       {
         virtualIp: session.virtualIp,
@@ -1460,6 +1503,23 @@ async function sendHeartbeat(): Promise<void> {
     if (session.isHost && result.aclToml && result.aclRevision !== session.aclRevision) {
       session.aclRevision = result.aclRevision;
       await applyHostAclIfNeeded(true);
+    }
+
+    /**
+     * 房主已经把房间的中继换掉了（单节点模型下整房搬走），而我还连着旧那台 ——
+     * 旧节点上已经没有到房主的路，不重连就一直连不上。主控在每次心跳里告诉我们这件事
+     * （见 `#relayChangedFor`），这里弹横幅 + 响一声，点「重连」走正常的 `reenterRoom`。
+     *
+     * 只在**没有其它横幅**时设置：真要同时有"准备好切换"的横幅，那条信息更靠前
+     * （房主还没切，重连也没用），别互相覆盖。
+     */
+    if (result.relayChanged && !session.isHost && !state.relayHint) {
+      state.relayHint = {
+        roomId: session.room.id,
+        kind: 'apply',
+        message: '房间的中继已经换到更空闲的节点了，点「重连」接上新的中继（会卡顿几秒）。',
+      };
+      playNoticeSound(session.room.id);
     }
   } catch (err) {
     // 网络抖动不应该让玩家掉线，只提示
@@ -1697,16 +1757,25 @@ async function handleServerEvent(raw: string): Promise<void> {
       break;
     }
     /**
-     * 主控建议切换中继：**只提示，绝不自动切**（玩家可能正在关键时刻）。
+     * 主控的中继提示（**只提示，绝不自动切**：玩家可能正在关键时刻）。
+     * 三种来源，见 `state.relayHint.kind`：准备好切换 / 到线但没得换 / 房主已切完要你重连。
      * 横幅由房间页渲染，横幅上的「现在切换」才走 `applyRelayHint()`。
      */
     case 'room.relayHint': {
       const roomId = String(event.roomId ?? '');
       if (!state.session || roomId !== state.session.room.id) break;
+      const kind = event.kind === 'notice' ? 'notice' : 'switch';
+      // 房主已切完那条（apply）由心跳发现，不走这个事件；这里收到的一律是上面两种
       const message = String(event.message ?? '这个房间的中继有点挤，可以切换到更空闲的中继。');
-      state.relayHint = { roomId, message };
-      // 复用消息通知那条链路（系统通知）；玩家就在房间里看着时只留横幅、不弹系统通知
-      notifyPlatformHint({ title: '可以切换到更空闲的中继', body: message, roomId });
+      state.relayHint = { roomId, message, kind };
+      /**
+       * 复用消息通知那条链路（系统通知）**并额外响一声**（新版客户端才有，见 notice-sound.ts）：
+       * 玩家多半全屏打游戏不看横幅，声音才穿得过去。
+       * 玩家就在房间里看着时只留横幅、不弹系统通知 —— 但**声音照响**：那是"提醒"，
+       * 与他有没有在看这一屏无关（他可能在游戏里，房间页只是后台标签）。
+       */
+      notifyPlatformHint({ title: kind === 'notice' ? '当前中继负载偏高' : '可以切换到更空闲的中继', body: message, roomId });
+      playNoticeSound(roomId);
       break;
     }
     default:

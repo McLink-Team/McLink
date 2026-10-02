@@ -36,6 +36,13 @@ export const DEFAULT_SETTINGS: PlatformSettings = {
   /* 单节点模型（2026-09-30）：默认从 8 降到 2 —— 见 relayScaleMbps 的注释。 */
   relayScaleMbps: 2,
   relaySmallShedPercent: 80,
+  /*
+   * 「卡」折成延迟的汇率（ms / 100% 利用率）：40 —— 跑满的中继 = 远了 40ms。
+   * 为什么需要它：成员的 tcping 只测握手路径，看不出那台是不是已经忙到 80%；
+   * 主控知道（节点心跳的 EWMA 利用率），但按"纯延迟优先"只在 10ms 档内用得上。
+   * 折进成本之后，"近但忙"不再无条件赢"远但空"（见 pickMemberRelay）。0 = 关掉。
+   */
+  relayLoadPenaltyMs: 40,
   registrationOpen: true,
   relayPort: 11010,
   announcement: null,
