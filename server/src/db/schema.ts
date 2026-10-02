@@ -657,6 +657,10 @@ alter table relay_nodes add column assist_only integer not null default 0;
  * 纪律同前：只动"还停在上一版默认值"的部署，管理员手改过的一律不碰；
  * 从更老的版本升上来会依次跑 V21 → V24，最终都落在 1.0.9。
  */
+const V25_MEMBER_RELAY_NODE = `
+alter table room_members add column relay_node_id text;
+`;
+
 const V24_CLIENT_1_0_9 = `
 update settings
    set value = json_set(value, '$.clientVersion', '1.0.9'),
@@ -695,6 +699,17 @@ export const MIGRATIONS: readonly string[] = [
   V22_TRAFFIC_LEDGER,
   V23_NODE_ASSIST_ONLY,
   V24_CLIENT_1_0_9,
+  /**
+   * V25：**成员级中继分配**（`room_members.relay_node_id`）。
+   *
+   * 背景：EasyTier 的 avoid-relay 惩罚只对"同网 peer"可靠，对"代转外来网络的 public server"
+   * 约一半的运行失效且不自愈（复现见 `scripts/repro-easytier-avoid-relay.mjs`）——
+   * 所以"哪台承载"不再交给它选路，改由调度在**票据**上定死（见 `docs/relay-assignment.md`）：
+   *   · 房主 → **全部可调度节点**（每台都有一条直达房主的链路，成员分配怎么变都不用动房主）；
+   *   · 成员 → **只有分配给他的那一台**（到房主的路只有一条）。
+   * 老数据为 NULL = 用房间默认（`rooms.relay_node_ids[0]`），行为与改造前一致。
+   */
+  V25_MEMBER_RELAY_NODE,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

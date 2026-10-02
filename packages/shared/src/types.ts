@@ -249,6 +249,11 @@ export interface RoomMember {
   status: MemberStatus;
   /** 该成员在房间虚拟网络中的地址，形如 10.200.7.3 */
   virtualIp: string | null;
+  /**
+   * 该成员被分配的中继节点 id（票据里只下发这一台，见 `docs/relay-assignment.md`）。
+   * 房主不使用这个字段（房主的票据下发**全部**可调度节点）；null = 用房间默认。
+   */
+  relayNodeId?: string | null;
   /** 成员客户端上报的设备名，便于房主识别 */
   deviceName: string | null;
   /** 成员上报的直连延迟（ms），null 表示需经中继 */
