@@ -14,7 +14,7 @@ import { test, describe } from 'node:test';
 import { renderAcl, renderEasytierToml, buildLaunchArgs, tomlString, aclToJson, rpcPortalForListenPort, usableRpcPort } from '../src/easytier/config.ts';
 import { buildRoomAcl, isAclEmpty } from '../src/easytier/acl.ts';
 import { parseHumanNumber, parseLatencyMs } from '../src/easytier/manager.ts';
-import { hashRoomPassword, verifyRoomPassword, deriveNetworkName, resolveMemberLink, relayScore, nextRoomExpiry, selectRelays, pickRoomRelays, pickRoomRelay, pickMemberRelay, relayLoadAction, memberRelayStale, roomUsesRelay, advanceLoadWindows, nodeAtShedLine, RELAY_NOTICE_COOLDOWN_MS, RELAY_SCALE_WINDOWS, RELAY_NODE_BUSY_WINDOWS, LATENCY_TIE_BAND_MS, MEMBER_RELAY_TIE_BAND_MS, RoomService, type RelayCandidate } from '../src/services/rooms.ts';
+import { hashRoomPassword, verifyRoomPassword, deriveNetworkName, resolveMemberLink, relayScore, nextRoomExpiry, selectRelays, pickRoomRelays, pickRoomRelay, pickMemberRelay, relayLoadAction, memberRelayStale, roomUsesRelay, advanceLoadWindows, nodeAtShedLine, roomTrafficThreshold, RELAY_NOTICE_COOLDOWN_MS, RELAY_SCALE_WINDOWS, RELAY_NODE_BUSY_WINDOWS, LATENCY_TIE_BAND_MS, MEMBER_RELAY_TIE_BAND_MS, RoomService, type RelayCandidate } from '../src/services/rooms.ts';
 import { Db } from '../src/db/index.ts';
 import { NodeRepo } from '../src/db/nodes.ts';
 import { RoomRepo } from '../src/db/rooms.ts';
@@ -1985,6 +1985,17 @@ describe('单节点换中继：到线动作与"该重连了"的判定', () => {
     assert.equal(nodeAtShedLine(0.5, 0.5, 0.8), false);
     // 小管子的线更低（80%）：原始采样 82% 就算
     assert.equal(nodeAtShedLine(0.4, 0.82, 0.8), true);
+  });
+
+  test('roomTrafficThreshold：`relayScaleMbps = 0` **只关掉房间流量这条**，不牵连节点到线', () => {
+    // 关掉 = 阈值 +∞（房间流量永远不算过载）；用户实测踩过：以前这一条会把整套判定一起 return 掉
+    assert.equal(roomTrafficThreshold(0, 200_000_000, 0.9), Number.POSITIVE_INFINITY);
+    // 平台门槛是上限：200M 的大管子也按 2 Mbps 算（避免"房间流量大"就换台）
+    assert.equal(roomTrafficThreshold(2, 200_000_000, 0.9), 2_000_000);
+    // 小管子按自己的线：2 Mbps × 80% = 1.6 Mbps（否则它永远到不了默认门槛）
+    assert.equal(roomTrafficThreshold(8, 2_000_000, 0.8), 1_600_000);
+    // 没填容量：只剩平台门槛
+    assert.equal(roomTrafficThreshold(2, 0, 0.9), 2_000_000);
   });
 });
 

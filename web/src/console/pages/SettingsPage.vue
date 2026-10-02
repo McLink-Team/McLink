@@ -615,7 +615,8 @@ const envWhitelist = computed(() => asPatternList(env.value?.relayNetworkWhiteli
             <span class="hint">
               某房间的中继速率（收+发）连续 3 分钟超过它，平台会**准备**一台更空闲的中继并提示房间里的
               玩家（房主点「立即切换」才真正换过去）；那台节点**整体**利用率到卸荷线则只要 1 分钟就提示。
-              0 = 关闭这套判定。
+              ⚠️ **0 = 只关掉"按房间流量"这一条**（大带宽节点上的房间流量本来就大，不该算节点过载）——
+              "节点整体到卸荷线"的提示**不受影响**，照样会弹。
             </span>
           </div>
           <div class="field">

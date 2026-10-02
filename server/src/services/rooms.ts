@@ -458,6 +458,24 @@ export function nextRoomExpiry(current: string | null, nowMs: number, ttlMs: num
 }
 
 /**
+ * 「房间自己跑出来的量」这条判据的阈值（bit/s）：`relayScaleMbps = 0` 时返回 `+∞` = **关闭这一条**。
+ *
+ * ⚠️ **0 只关这一条**（用户 2026-10-03 实测踩到）：他线上把「房间中继过载阈值」设成 0，
+ * 因为"大带宽节点上的房间流量本来就大，不能算节点过载"—— 结果连"**节点整体到卸荷线**"
+ * 那条提示也一起哑了（原来 `promoteOverloadedRooms` 在 threshold<=0 时直接 return）。
+ * 现在两条判据分开：0 = 不看房间流量，节点自己的线照样算。
+ *
+ * 口径：`min(平台门槛, 该节点容量 × 它的卸荷比例)` —— 2 Mbps 的小管子按 80% 算就是 1.6 Mbps，
+ * 否则它永远到不了默认门槛、换台永不触发（用户上次实测反馈的就是这个）。
+ */
+export function roomTrafficThreshold(scaleMbps: number, capacityBps: number, shedUtil: number): number {
+  const platform = Math.max(0, scaleMbps) * 1_000_000;
+  if (platform <= 0) return Number.POSITIVE_INFINITY;
+  const shedLine = capacityBps > 0 ? capacityBps * shedUtil : Number.POSITIVE_INFINITY;
+  return Math.max(1, Math.min(platform, shedLine));
+}
+
+/**
  * 「**节点整体**到线」的判定（纯函数，单测直接钉住）：**EWMA 或最近一次原始采样**任一越过卸荷线。
  *
  * 为什么两个都要看（用户 2026-10-03 问"超线一分钟就弹对吧"，发现只有 EWMA 太慢）：
@@ -2018,8 +2036,12 @@ export class RoomService {
     txBps: number;
     message: string;
   }> {
-    const threshold = Math.max(0, this.settings.current.relayScaleMbps) * 1_000_000;
-    if (threshold <= 0) return [];
+    /**
+     * ⚠️ 这里**不再**因为 `relayScaleMbps = 0` 就整体 return（用户实测踩到的坑）：
+     * 那个字段只关掉"按房间流量判定"这一条，**节点整体到卸荷线的提示照样要发**。
+     * 每条判据各自的阈值在下面的循环里按房间算（`roomTrafficThreshold`）。
+     */
+    const scaleMbps = this.settings.current.relayScaleMbps;
 
     /** 房间 → 这一轮的跨节点合计速率 */
     const rate = new Map<string, { rx: number; tx: number }>();
@@ -2082,11 +2104,18 @@ export class RoomService {
        * 于是房间**永远不会被判定过载**、换槽永不触发 —— 用户实测：手选一台 2 Mbps，
        * 房间占满之后新进来的人还是拿同一台。按节点自己的线算（小管子 80% → 2 Mbps × 0.8
        * = 1.6 Mbps）才会在该卸的时候卸。平台门槛仍然作为上限，避免大管子被过早换掉。
+       *
+       * ⚠️ `relayScaleMbps = 0` 时这个阈值是 `+∞` = **只关掉"按房间流量"这一条**
+       * （用户 2026-10-03 的理由很对：大带宽节点上的房间流量本来就大，不能算节点过载），
+       * 而下面 ② 那条"节点整体到卸荷线"照样生效。
        */
       const relayRow = current[0] ? this.nodes.findById(current[0]) : null;
       const relayCapBps = relayRow?.capacity_bps ?? 0;
-      const shedLine = relayCapBps > 0 ? relayCapBps * this.shedUtilOf(relayRow!) : Number.POSITIVE_INFINITY;
-      const roomThreshold = Math.max(1, Math.min(threshold, shedLine));
+      const roomThreshold = roomTrafficThreshold(
+        scaleMbps,
+        relayCapBps,
+        relayRow ? this.shedUtilOf(relayRow) : UTIL_SHED,
+      );
       /**
        * **两种"到线"都算过载**（用户 2026-10-03 的口径：「节点负载到了就通知」）：
        *   ① 这个房间自己跑出来的量 ≥ 房间阈值（原来的判据，按房间流量算）；
