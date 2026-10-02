@@ -507,24 +507,20 @@ export function pickRelayNode(
 }
 
 /**
- * 取中继：**槽 1 = 打洞节点，槽 2 = 中继节点**（用户 2026-09-28 拍板的模型）。
+ * 取房间的中继：**单节点模型**（2026-09-30 起）。
  *
- * 为什么要分角色：部分节点的带宽确实少，但它们在网络里并非没用 ——
- * EasyTier 的 P2P 打洞需要一个双方都能连上的公共 peer 来交换公网地址。
- * 把这类节点标成「只协助打洞」（`assist_only`，生成配置时写 `disable_relay_data`）后：
- *   · 槽 1 放它：负责协调打洞，**不承载数据**（OSPF 会给它的中继链路极大代价）；
- *   · 槽 2 放大管子：因为槽 1 转不了数据，"客户端走中继时用哪台"就由结构决定，
- *     不需要客户端配合 —— 这正是我们要的确定性。
+ * 为什么不再分"两个槽位"：双槽（槽 1 打洞 / 槽 2 中继）完全依赖 EasyTier 的 avoid-relay
+ * 惩罚把数据从槽 1 挤到槽 2，而实测（`scripts/repro-easytier-avoid-relay.mjs`，探针版
+ * 二进制打印了发布/读取/边表）这个惩罚**只对"同网 peer"可靠**：当那台节点是
+ * "代转外来网络的 public server"（＝我们房间的形态）时，约一半的运行里对端仍会选它，
+ * 而且**不自愈** —— 于是房间整片走那台不承载的节点、数据被丢掉。
  *
- * 三条硬纪律：
- *   · 没有标 assist 的节点时，槽 1 退回原规则（等价于旧的"主中继"），行为向后兼容；
- *   · **打洞节点永远不会被放进槽 2** —— 它不承载数据，放进去等于这个房间没有中继；
- *   · 没有大带宽档时槽 2 退回全部候选并记 warn，绝不为了满足约束而少给一台中继。
- *
- * 跨区域调中继（用户 2026-09-28 追加）：区域仍然是硬条件，但**本区域一个能承载数据的
- * 节点都没有**（全是"只协助打洞"）时，槽 2 从**全局池**里挑一台（延迟优先 —— 跨区时
- * 它自然就挑最近的那个外区节点），并记一条 warn。槽 1（打洞）仍然留在本区域：
- * 打洞节点要和玩家近，"帮打洞"这件事跨区没有意义。
+ * 单节点模型下房间里根本没有第二条可被误选的路：
+ *   · **所有节点都允许中继**（生成配置不再写 `disable_relay_data`）；
+ *   · 小带宽节点靠**卸荷阈值**停止接新房间：`shedUtilFor(capacity_bps, …)` 是硬条件，
+ *     选中台的时候就把它挡在候选之外（小管子 80%、其余 90%，见平台设置）；
+ *   · 已经在跑的房间**不受影响**；要换机器靠"过载换槽"（`maybeSwapOverloadedRelay`），
+ *     它只改后续进房的人拿到的票据。
  */
 export function pickRoomRelays(
   zonePool: readonly RelayCandidate[],
@@ -534,95 +530,50 @@ export function pickRoomRelays(
   thresholdBps: number,
   zone = '',
 ): string[] {
-  if (max <= 0 || zonePool.length === 0) return [];
-  if (max === 1) return selectRelays(zonePool, latencyHints, 1).map((n) => n.id);
-
-  // 槽 1：优先从「只协助打洞」的节点里挑（同一套排序：权重 → 延迟 → 空余带宽）
-  const assist = zonePool.filter((c) => c.row.assist_only === 1);
-  const punch = selectRelays(assist.length > 0 ? assist : zonePool, latencyHints, 1)[0];
-  if (!punch) return [];
-
-  /**
-   * 槽 2 的候选必须是**能承载数据的节点**（排除打洞节点）。
-   * 本区域一台都没有时跨区调 —— 这是"某个区域只有打洞节点"的唯一解法；
-   * 否则该区域建出来的房间只有一条打洞路径，实际没有中继可用。
+  if (max <= 0) return [];
+  /*
+   * 房间用的是单节点（调用方传 max = 1）。这里保留"多台"的分支是为了让**排序规则**
+   * 本身可测、也可复用（`test/unit.test.ts` 的「权重优先调度」一组就是按多台来断言排序的）
+   * —— 单纯按 `selectRelays` 的权重优先顺序取前 max 台，不再有"打洞/中继"的角色之分。
    */
-  const local = zonePool.filter((c) => c.row.assist_only !== 1);
-  const crossed = local.length === 0;
-  const candidates = crossed ? allPool.filter((c) => c.row.assist_only !== 1) : local;
-  if (candidates.length === 0) return [punch.id];
-  if (crossed) {
-    log.warn('本区域没有可承载数据的中继节点（只有打洞节点），已从其它区域调一台', {
-      zone,
-      candidates: candidates.length,
-    });
-  }
-
-  // 槽 2：大带宽档 + 客户端实测延迟优先
-  const relay = pickRelayNode(candidates, latencyHints, punch.id, thresholdBps, zone);
-  return relay ? [punch.id, relay.id] : [punch.id];
+  if (max > 1) return selectRelays(zonePool, latencyHints, max).map((n) => n.id);
+  const local = zonePool.length > 0 ? pickRelayNode(zonePool, latencyHints, '', thresholdBps, zone) : null;
+  if (local) return [local.id];
+  /*
+   * 本区域一台都挑不出来（都过了卸荷线 / 被硬条件挡掉）→ 跨区兜底。
+   * 不兜底的话，某个区域的小管子全到线时那个区域就完全建不了房。
+   */
+  const cross = pickRelayNode(allPool, latencyHints, '', thresholdBps, zone);
+  if (!cross) return [];
+  log.warn('本区域没有可用的中继节点，已从其它区域调一台', { zone, candidates: allPool.length });
+  return [cross.id];
 }
 
 /**
- * 把手选节点与自动调度结果**按角色**排进两个槽位：`[槽 1 打洞, 槽 2 中继, ...额外手选]`。
+ * 手选节点与自动调度结果合并成**一个**中继（单节点模型的全部规则）。
  *
- * 为什么需要它（2026-09-29 用户实测报的问题）：建房页那颗按钮写的是
- * 「中继节点 → 手动选择」，但服务端只是把手选节点**原样塞在数组最前面**，而客户端把
- * `relayNodeIds[0]` 当「打洞节点」（`client/src/lib/relay-roles.ts`）—— 于是
- * **玩家挑的中继 100% 被标成打洞节点**，平台再按"延迟优先"补一台当中继。
+ * 以前这里是 `assignRelaySlots`（按能力把多台手选节点排进两个槽位）。单节点模型下
+ * "槽位"这个概念没有了：**手选的第一台生效，其余忽略并如实告诉界面**；没手选就用自动调度的第一台。
  *
- * 更糟的是补的那台取的是自动调度的**第一顺位**，也就是 `pickRoomRelays` 的**槽 1 候选**
- * （优先挑「只协助打洞」的节点）—— 而那种节点根本不承载数据（`disable_relay_data`）。
- * 手选一台 assist 节点时，两个槽位可能都不是数据承载者，**房间等于没有中继**。
- *
- * 现在的规则（按能力落槽，槽位顺序固定，`[0]` 永远是打洞）：
- *   · 手选里**能承载数据**的第一台 → 槽 2（中继节点）—— 玩家在界面上挑的就是它；
- *   · 手选里**只协助打洞**的第一台 → 槽 1（打洞节点）—— 它本来也当中继用不了；
- *   · 空出来的槽由自动调度补：`auto[0]` 是槽 1 候选、`auto[1]` 是槽 2 候选
- *     （两者同出一套规则，见 `pickRoomRelays`）；
- *   · 多出来的手选节点挂在两个槽位后面当额外入口；**只协助打洞的不许当额外入口**
- *     （它在界面上会被标成「中继节点」，那是错的），改为记进 rejected 让界面说清楚。
- *
- * 纯函数（与 `pickRoomRelays` 一样放模块级），单测直接钉住这套规则。
+ * 纯函数，单测直接钉住（`test/unit.test.ts`）。
  */
-export function assignRelaySlots(
-  picked: ReadonlyArray<{ id: string; assistOnly: boolean }>,
+export function pickRoomRelay(
+  picked: readonly { id: string; name?: string }[],
   auto: readonly string[],
-): {
-  punch: string | null;
-  relay: string | null;
-  extra: string[];
-  rejected: Array<{ id: string; reason: string }>;
-} {
-  const pickedIds = picked.map((p) => p.id);
-  const pickedAssist = picked.filter((p) => p.assistOnly).map((p) => p.id);
-  const pickedData = picked.filter((p) => !p.assistOnly).map((p) => p.id);
-
-  /** 自动调度的槽 2 候选 = 第二顺位（没有第二台时退回第一台：单节点部署） */
-  const autoRelay = auto[1] ?? auto[0] ?? null;
-  /** 槽 2：手选里能承载数据的第一台；否则用自动调度的中继候选（它保证是能承载数据的节点） */
-  const relay = pickedData[0] ?? autoRelay;
-  /** 槽 1：手选里只协助打洞的第一台；否则用自动调度的打洞候选（避开已经占了槽 2 的那台） */
-  const autoPunch = auto[0] ?? null;
-  const punch =
-    pickedAssist[0] ??
-    (autoPunch && autoPunch !== relay ? autoPunch : null) ??
-    pickedIds.find((id) => id !== relay) ??
-    null;
-
-  const used = new Set([punch, relay].filter((x): x is string => Boolean(x)));
-  const extra: string[] = [];
-  const rejected: Array<{ id: string; reason: string }> = [];
-  for (const p of picked) {
-    if (used.has(p.id)) continue;
-    if (p.assistOnly) {
-      rejected.push({ id: p.id, reason: '只协助打洞的节点不能作为中继节点' });
-      continue;
-    }
-    extra.push(p.id);
+): { relay: string | null; rejected: Array<{ id: string; reason: string }> } {
+  const first = picked[0];
+  if (first) {
+    return {
+      relay: first.id,
+      rejected: picked.slice(1).map((p) => ({
+        id: p.id,
+        reason: '一个房间只下发一台中继，多余的已忽略（单节点模型）',
+      })),
+    };
   }
-  return { punch, relay, extra, rejected };
+  return { relay: auto[0] ?? null, rejected: [] };
 }
+
 
 export class RoomService {
   private readonly config: ServerConfig;
@@ -754,48 +705,39 @@ export class RoomService {
 
     const zone = input.zone && input.zone !== '' ? input.zone : 'auto';
     /**
-     * 中继节点：**两个槽位，数组顺序固定 `[槽 1 打洞, 槽 2 中继]`**。
+     * 中继节点：**单节点模型** —— 一个房间只下发**一台**中继。
      *
-     * 自动模式（没有手选）沿用 `pickRoomRelays` 的结论：槽 1 优先「只协助打洞」的节点
-     * （它不承载数据、专职协调打洞），槽 2 从"大带宽档 + 能承载数据"的候选里挑。
+     * 自动模式（没有手选）：`pickRoomRelays` 从本区域（挑不出就跨区兜底）挑一台，
+     * 硬条件里已经包含"小管子过了卸荷线就不再接新房间"。
      *
-     * 手动模式：建房页让玩家挑的是**中继节点**，所以手选节点按**能力**落槽
-     * （规则本体在模块级 `assignRelaySlots`，纯函数、有单测）：
-     *   · 能承载数据的手选节点 → 槽 2（玩家挑的就是它，不再被标成「打洞节点」）；
-     *   · 只协助打洞的手选节点 → 槽 1（它当中继也用不了）；
-     *   · 空出来的槽由自动调度补，且补的是**对应槽位**的候选 —— 以前一律取第一顺位，
-     *     会把"不承载数据的打洞节点"补进中继槽，手选一台 assist 节点时房间就没有中继了。
+     * 手动模式：建房页让玩家挑的就是那台中继，**手选的第一台直接生效**，
+     * 多余的忽略并记进 `rejected` 让界面说清楚（规则本体是模块级纯函数 `pickRoomRelay`）。
      *
-     * `latencyHints` 只喂给自动调度：自动模式下决定"同权重且延迟并列时选谁"，
-     * 手动模式下决定"补的那台先落在哪台"。
+     * `latencyHints` 只喂给自动调度（同权重时决定先挑哪台）。
      *
-     * ⚠️ **浮动切换是天然的，不需要状态机**：票据每次请求都现算，`utilization` 也是实时采样
-     * （见 `scheduleRelays`），所以"这台满了 → 下次先挑另一台"会在**下一张票据**里自动生效。
-     * 已经进了房间的玩家**不会**因为这次切换被踢：他们的 peer 列表来自加入时那张票据，
-     * 只有重连/重进（重新拉票据）才会拿到新的中继排序。
+     * ⚠️ **浮动切换是天然的，不需要状态机**：票据每次请求都现算，`utilization` 也是实时采样，
+     * 所以"这台满了 → 下次先挑另一台"会在**下一张票据**里自动生效。
+     * 已经进了房间的玩家**不会**因为这次切换被踢：他们的 peer 列表来自加入时那张票据。
      */
     const picked = this.#validatePickedNodes(input.nodeIds ?? []);
-    const auto = this.scheduleRelays(zone, input.latencyHints ?? [], 2);
-    const slots = assignRelaySlots(
-      picked.ids
-        .map((id) => this.nodes.findById(id))
-        .filter((row): row is NodeRow => Boolean(row))
-        .map((row) => ({ id: row.id, assistOnly: row.assist_only === 1 })),
+    const auto = this.scheduleRelays(zone, input.latencyHints ?? [], 1);
+    const chosenRelay = pickRoomRelay(
+      picked.ids.map((id) => ({ id })),
       auto,
     );
-    /** `[0]` 永远是打洞节点：客户端靠下标判角色（`client/src/lib/relay-roles.ts`） */
-    const relayNodeIds = [slots.punch, slots.relay, ...slots.extra].filter((id): id is string => Boolean(id));
-    /** 平台补的那台（不在手选名单里）—— 界面据此说明"平台补了谁" */
-    const fallback =
-      [slots.punch, slots.relay].filter((id): id is string => Boolean(id)).find((id) => !picked.ids.includes(id)) ??
-      null;
+    const relayNodeIds = chosenRelay.relay ? [chosenRelay.relay] : [];
+    /** 平台挑的那台（不在手选名单里）—— 界面据此说明"平台补了谁" */
+    const fallback = relayNodeIds.find((id) => !picked.ids.includes(id)) ?? null;
     const nodeSelection = {
       requested: input.nodeIds ?? [],
       accepted: picked.ids,
-      rejected: [...picked.rejected, ...slots.rejected],
+      rejected: [...picked.rejected, ...chosenRelay.rejected],
       fallback,
-      /** 谁落在哪个槽：界面与控制台都读它，别再靠数组下标去猜 */
-      roles: { punch: slots.punch, relay: slots.relay },
+      /**
+       * 单节点模型：只有 `relay` 一个角色（`punch` 恒为 null）。
+       * 界面与控制台都读它，别再靠数组下标去猜 —— 旧模型下 `[0]` 是"打洞节点"。
+       */
+      roles: { punch: null as string | null, relay: chosenRelay.relay },
     };
     /**
      * 硬守卫：**一个可调度的子节点都没有，就不给建房**。
@@ -1646,25 +1588,19 @@ export class RoomService {
       const current = toRoom(row).relayNodeIds;
 
       if (next >= RELAY_SCALE_WINDOWS && !this.#scaled.has(roomId)) {
-        const [punchId, relayId] = current;
-        if (!punchId || !relayId) continue;
-        /**
-         * 换的是**槽 2（中继节点）**，槽 1（打洞节点）不动 —— 这是新模型下的正确动作：
-         * 打洞节点本来就不承载数据，把它换掉没有意义；要缓解过载只能换那台真正在转发的。
-         * 只在"确实存在更空的大管子"时才换，避免为了动作而动作。
+        /*
+         * 单节点模型：房间只有一台中继，过载时把它换成"更空的大管子"。
+         * 换完**只影响后续进房的人**（票据每次都现算）；已经在房间里的人这一局不变。
+         * 只在确实存在更空的候选时才换，避免为了动作而动作。
          */
+        const [relayId] = current;
+        if (!relayId) continue;
         const currentRelay = this.nodes.findById(relayId);
         const currentFree = currentRelay ? freeBandwidth(this.utilizationOf(currentRelay)) : -1;
         const candidate = this.nodes
           .listSchedulable()
           .map((row) => ({ row, utilization: this.utilizationOf(row), shedUtil: this.shedUtilOf(row) }))
-          .filter(
-            (c) =>
-              c.row.id !== punchId &&
-              c.row.id !== relayId &&
-              this.isBigPipe(c.row) &&
-              !this.isBandwidthBusy(c.row),
-          )
+          .filter((c) => c.row.id !== relayId && this.isBigPipe(c.row) && !this.isBandwidthBusy(c.row))
           .sort((a, b) => freeBandwidth(b.utilization) - freeBandwidth(a.utilization) || b.row.weight - a.row.weight)[0];
         if (!candidate) {
           log.warn('房间中继过载，但没有更空的大带宽节点可换（见设置「大带宽档门槛」）', { room: roomId, code: row.code });
@@ -1674,7 +1610,7 @@ export class RoomService {
           log.warn('房间中继过载，但当前中继已是最空的大带宽节点', { room: roomId, code: row.code });
           continue;
         }
-        this.rooms.setRelayNodeIds(roomId, [punchId, candidate.row.id]);
+        this.rooms.setRelayNodeIds(roomId, [candidate.row.id]);
         this.#scaled.set(roomId, { previous: current, rxBps: r.rx, txBps: r.tx, at: now });
         this.#loadWindows.set(roomId, 0);
         /**

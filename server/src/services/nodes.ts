@@ -305,18 +305,19 @@ export class NodeService {
          * 按代价选路（LeastCost），而不是按跳数（LeastHop）。
          *
          * 与客户端票据里的同名项保持一致：`AVOID_RELAY_COST` 那个惩罚**只在 LeastCost 下
-         * 参与比较**，默认的 LeastHop 会绕过它 —— 少了这一行，「只协助打洞」标了也没用。
+         * 参与比较**，默认的 LeastHop 会绕过它。
          */
         latencyFirst: true,
-        /**
-         * 「只协助打洞」的节点：不转发房间数据。
+        /*
+         * ⚠️ 单节点模型（2026-09-30 起）：**不再写 `disable_relay_data`**。
          *
-         * `disable_relay_data = true` 让 EasyTier 广播 "avoid relay"，OSPF 会给它的中继链路
-         * 一个极大代价（`peer_ospf_route.rs` 的 AVOID_RELAY_COST）—— 它照样参与路由与打洞协调
-         * （两端通过它交换公网地址），但**数据不落在它身上**。带宽很少的机器就该这么用。
-         * ⚠️ 前提是上面那行 `latencyFirst`（否则惩罚会被"最少跳数"策略绕过）。
+         * 以前「只协助打洞」的节点靠它广播 avoid-relay、让对端绕开；实测
+         * （`scripts/repro-easytier-avoid-relay.mjs`，探针版二进制）这个惩罚对
+         * "代转外来网络的 public server"约一半的运行失效且**不自愈** —— 数据被它丢掉、房间不通。
+         * 现在改成：**所有节点都允许中继**，一个房间只下发**一台**中继（见 `pickRoomRelays`），
+         * 小带宽节点靠"卸荷阈值"停止接新房间（`shedUtilFor`，小管子 80% / 其余 90%）。
+         * `relay_nodes.assist_only` 列保留（老数据还在），但**不再影响生成配置**。
          */
-        ...(row.assist_only === 1 ? { disableRelayData: true } : {}),
         // 平台设置里的限速是「kbps」，EasyTier 的 foreign_relay_bps_limit 是「字节/秒」
         ...(s.relayBandwidthKbps > 0 ? { foreignRelayBpsLimit: kbpsToBytesPerSecond(s.relayBandwidthKbps) } : {}),
       },
