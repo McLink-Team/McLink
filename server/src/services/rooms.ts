@@ -549,6 +549,43 @@ export function pickRoomRelays(
   return [cross.id];
 }
 
+/** 房主票据里最多下发几台中继（成员从这几台里按负载抽，见 `docs/relay-assignment.md`） */
+export const RELAY_SET_SIZE = 3;
+
+/**
+ * 组出房间的中继集合（**最多 `size` 台**，默认 3 —— 用户 2026-09-30 定的模型）。
+ *
+ * 规则：手选的第一台优先，剩下的由自动调度补齐（同一套排序：权重 → 延迟 → 空余带宽）；
+ * 去重、截断到 `size`；没进集合的手选节点如实记进 `rejected` 让界面说清楚。
+ *
+ * 为什么是"一组几台"而不是"一台"或"全部"：
+ *   · 房主把这几台**都**连上 → 每台都有一条直达房主的链路 ✓；
+ *   · 成员从这几台里按负载抽一台 → 路径恒为 `成员 → 它那台 → 房主`（两跳）✓，
+ *     既不依赖 EasyTier 那个靠不住的 avoid-relay 惩罚，也不需要节点之间互为 peer ✓；
+ *   · 台数固定，房主的隧道数不会随成员增多而膨胀 ✓。
+ *
+ * 纯函数，单测直接钉住（`test/unit.test.ts`）。
+ */
+export function pickRoomRelaySet(
+  picked: readonly { id: string }[],
+  auto: readonly string[],
+  size = RELAY_SET_SIZE,
+): { relays: string[]; rejected: Array<{ id: string; reason: string }> } {
+  const relays: string[] = [];
+  for (const p of picked) {
+    if (relays.includes(p.id)) continue;
+    if (relays.length < size) relays.push(p.id);
+  }
+  for (const id of auto) {
+    if (relays.length >= size) break;
+    if (!relays.includes(id)) relays.push(id);
+  }
+  const rejected = picked
+    .filter((p) => !relays.includes(p.id))
+    .map((p) => ({ id: p.id, reason: `一个房间最多 ${size} 台中继，这台已忽略` }));
+  return { relays, rejected };
+}
+
 /**
  * 手选节点与自动调度结果合并成**一个**中继（单节点模型的全部规则）。
  *
@@ -720,24 +757,24 @@ export class RoomService {
      * 已经进了房间的玩家**不会**因为这次切换被踢：他们的 peer 列表来自加入时那张票据。
      */
     const picked = this.#validatePickedNodes(input.nodeIds ?? []);
-    const auto = this.scheduleRelays(zone, input.latencyHints ?? [], 1);
-    const chosenRelay = pickRoomRelay(
+    const auto = this.scheduleRelays(zone, input.latencyHints ?? [], RELAY_SET_SIZE);
+    const chosenSet = pickRoomRelaySet(
       picked.ids.map((id) => ({ id })),
       auto,
     );
-    const relayNodeIds = chosenRelay.relay ? [chosenRelay.relay] : [];
+    const relayNodeIds = chosenSet.relays;
     /** 平台挑的那台（不在手选名单里）—— 界面据此说明"平台补了谁" */
     const fallback = relayNodeIds.find((id) => !picked.ids.includes(id)) ?? null;
     const nodeSelection = {
       requested: input.nodeIds ?? [],
       accepted: picked.ids,
-      rejected: [...picked.rejected, ...chosenRelay.rejected],
+      rejected: [...picked.rejected, ...chosenSet.rejected],
       fallback,
       /**
        * 单节点模型：只有 `relay` 一个角色（`punch` 恒为 null）。
        * 界面与控制台都读它，别再靠数组下标去猜 —— 旧模型下 `[0]` 是"打洞节点"。
        */
-      roles: { punch: null as string | null, relay: chosenRelay.relay },
+      roles: { punch: null as string | null, relay: relayNodeIds[0] ?? null },
     };
     /**
      * 硬守卫：**一个可调度的子节点都没有，就不给建房**。
@@ -1152,13 +1189,23 @@ export class RoomService {
      * 分配失败（比如一台都不可调度）时退回房间默认（`room.relayNodeIds[0]`）—— 也就是旧行为。
      */
     let assignedRelayId = member.relay_node_id ?? null;
-    if (!isHost && !assignedRelayId) {
-      assignedRelayId = this.scheduleRelays(row.zone, [], 1)[0] ?? room.relayNodeIds[0] ?? null;
-      if (assignedRelayId) this.rooms.setMemberRelay(roomId, userId, assignedRelayId);
+    if (!isHost) {
+      /*
+       * 成员：在房间的中继集合（最多 3 台，见 `RELAY_SET_SIZE`）里**按负载抽一台** ✓ ——
+       * 空余带宽最大的那台优先；分好之后写回 `relay_node_id` 固定下来（除非它已不在集合里）。
+       */
+      const pool = room.relayNodeIds.filter((id) => this.nodes.findById(id));
+      if (pool.length > 0 && (!assignedRelayId || !pool.includes(assignedRelayId))) {
+        const best = pool
+          .map((id) => ({ id, row: this.nodes.findById(id) }))
+          .map((x) => ({ id: x.id, free: x.row ? freeBandwidth(this.utilizationOf(x.row)) : -1 }))
+          .sort((a, b) => b.free - a.free)[0];
+        assignedRelayId = best?.id ?? pool[0] ?? null;
+        if (assignedRelayId) this.rooms.setMemberRelay(roomId, userId, assignedRelayId);
+      }
     }
-    const assignedIds = isHost
-      ? this.nodes.listSchedulable().map((n) => n.id)
-      : [assignedRelayId].filter((id): id is string => Boolean(id));
+    /** 房主连**整组**（每台都有一条直达房主的链路）；成员只连分到的那一台 */
+    const assignedIds = isHost ? room.relayNodeIds : [assignedRelayId].filter((id): id is string => Boolean(id));
     const relayRows = this.nodes.findByIds(assignedIds);
     /*
      * 下发给客户端的端口必须是**链接端口**，不是节点本机的运行端口：
