@@ -600,27 +600,28 @@ const envWhitelist = computed(() => asPatternList(env.value?.relayNetworkWhiteli
             <span class="hint">0 表示不限；会写入中继与子节点的 foreign_relay_bps_limit（按 bit/s 下发）。</span>
           </div>
           <div class="field">
-            <label class="label" for="s-bigpipe">大带宽档门槛（Mbps）</label>
+            <label class="label" for="s-bigpipe">小带宽节点门槛（Mbps）</label>
             <input id="s-bigpipe" v-model="form.relayBigPipeMbps" class="input" type="number" min="0" />
             <span class="hint">
-              节点的「带宽上限」≥ 它就算大管子（**没填 = 不限，也算大管子**）。
-              房间的第二台中继（兜底）优先从大带宽档里选，让每个房间一开局就握着一条大管子。
+              节点的「带宽上限」**低于**它就算小管子（没填 = 不限，不算小管子）。
+              只用来算**卸荷线**：小管子到下一条设置里的百分比就停止接新房间。
+              ⚠️ 它不再影响"挑哪台当中继"—— 那件事现在完全按延迟优先（2026-10-03 起）。
             </span>
           </div>
           <div class="field">
             <label class="label" for="s-scale">房间中继过载阈值（Mbps）</label>
             <input id="s-scale" v-model="form.relayScaleMbps" class="input" type="number" min="0" />
             <span class="hint">
-              某房间的中继速率（收+发）连续 3 分钟超过它，平台会把该房间的**中继槽**换成
-              当前最空的大带宽节点，让**之后进房的人**走大管子（房里的人不受影响）；
-              流量回落 3 分钟后自动还原。0 = 关闭。
+              某房间的中继速率（收+发）连续 3 分钟超过它，平台会**准备**一台更空闲的中继并提示房间里的
+              玩家（房主点「立即切换」才真正换过去）；那台节点**整体**利用率到卸荷线则只要 1 分钟就提示。
+              0 = 关闭这套判定。
             </span>
           </div>
           <div class="field">
             <label class="label" for="s-small-shed">小带宽节点卸荷线（%）</label>
             <input id="s-small-shed" v-model="form.relaySmallShedPercent" class="input" type="number" min="1" max="90" />
             <span class="hint">
-              大带宽节点跑到 90% 才不再接新房间；**小管子**（填了带宽上限、但不到「大带宽档门槛」的节点）
+              其余节点跑到 90% 才不再接新房间；**小管子**（填了带宽上限、但低于「小带宽节点门槛」的节点）
               到这个百分比就停止**新增中继** —— 默认 80%，封顶 90%。
               ⚠️ 只挡新房间：已经在上面跑的房间一个都不动，节点默认仍然正常中继。
             </span>

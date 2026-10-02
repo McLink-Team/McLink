@@ -1028,23 +1028,27 @@ describe('带宽利用率与调度打分', () => {
 });
 
 /**
- * 「建房自动选中继」的调度规则：**权重优先，权重一致时才比延迟**。
+ * 「建房自动选中继」的调度规则：**延迟优先 → 延迟同档比空余带宽 → 权重只在最后兜底**。
  *
- * 用户拍板的语义（覆盖上一轮的"纯延迟优先"，也**不**引入档位/阈值）：
- *   ① `weight` 降序（主键）→ ② 权重相同才比延迟（有提示且真有余量的按 ms 升序）
- *   → ③ 仍相同用 relayScore 降序 → ④ 最后以 peers 升序收尾。
- * 前面还有一道"键 0"：真有余量（`peers < capacity_peers` 且利用率 < 90%）的节点排在满员/吃紧的节点之前
- * —— 满员/带宽吃紧是硬条件的延伸，weight 再高也不该顶掉一台还能接人的节点。
+ * 用户 2026-10-03 定的语义（**推翻** 2026-09-29 的"权重优先"）：
+ *   ① 有提示且真有余量的按 `ms` 升序（主键）→ ② 延迟落在并列带（≤ `LATENCY_TIE_BAND_MS`）内
+ *   比空余带宽 → ③ 仍相同用 relayScore 降序（这一步才轮到权重）→ ④ 最后以 peers 升序收尾。
+ * 前面还有一道"键 0"：真有余量（`peers < capacity_peers` 且利用率 < 卸荷线）的节点排在满员/吃紧的
+ * 节点之前 —— 满员/带宽吃紧是硬条件的延伸，延迟再好也不该顶掉一台还能接人的节点。
+ *
+ * 为什么改：他线上建房时明明有 2 Mbps / 5 Mbps 的近节点，房间却总落到 200 Mbps 的河北 ——
+ * 那其实不是权重干的，而是"大带宽档门槛"（`relayBigPipeBps`）把近节点整个筛掉了；
+ * 门槛已随这次一起删，排序也顺势改成"谁近用谁"。
  *
  * 这里要钉住六件事：
- *   1. 权重是主键：**高权重但延迟差** 胜过 低权重但延迟好（本轮语义的核心）；
- *   2. 权重相同才看延迟：延迟好的赢，哪怕它的 relayScore 更低；
- *   3. 权重相同、延迟差落在 LATENCY_TIE_BAND_MS 内 → 交回 relayScore 决胜（并列带只在同权重内生效）；
+ *   1. 延迟是主键：**近但权重低** 胜过 远但权重高；
+ *   2. 延迟好就赢，哪怕它的 relayScore（余量打分）更低；
+ *   3. 延迟差落在 LATENCY_TIE_BAND_MS 内 → 按空余带宽/打分决胜；
  *   4. 提示**绝不能**绕过硬条件（权重 0 / 停用 / 离线 / 满员 / 带宽吃紧 / 区域不符）；
- *   5. `latencyHints` 缺省/空/全是池外 id 时三者结果完全一致；
- *   6. **老客户端（无提示）的结果也变了**：以前是纯 relayScore，现在权重在前（见本组倒数第二条测试）。
+ *   5. `latencyHints` 缺省/空/全是池外 id 时三者结果完全一致（= 回到 relayScore 排序）；
+ *   6. 空余与延迟都并列时，权重仍然是最后的兜底（运营方意图没有被完全丢掉）。
  */
-describe('权重优先调度 selectRelays / scheduleRelays', () => {
+describe('延迟优先调度 selectRelays / scheduleRelays', () => {
   const cand = (id: string, over: Partial<NodeRow> = {}, utilization = 0): RelayCandidate => ({
     row: { id, capacity_peers: 500, peers: 0, weight: 100, status: 'online', ...over } as NodeRow,
     utilization,
@@ -1053,28 +1057,34 @@ describe('权重优先调度 selectRelays / scheduleRelays', () => {
   const rowOf = (id: string, region: string, over: Partial<NodeRow> = {}): NodeRow =>
     ({ id, region, capacity_peers: 500, peers: 0, weight: 100, status: 'online', ...over }) as NodeRow;
 
-  test('权重是主键：权重高但延迟差 胜过 权重低但延迟好（本轮语义的核心）', () => {
+  test('**延迟优先**：近的那台赢，权重高但远 90ms 的抢不走（2026-10-03 改口径）', () => {
     const slow = cand('slow', { weight: 100 });
     const fast = cand('fast', { weight: 20 });
-    // 前置条件：低权重那台的 relayScore 其实更高（更空），但延迟只有它的 1%
+    // 前置条件：低权重那台的 relayScore 其实更低（人更多），但延迟只有它的 1%
     assert.ok(relayScore(fast.row, 0) < relayScore(slow.row, 0), '前置条件：fast 的打分本来就低于 slow');
     const hints = [
       { nodeId: 'slow', ms: 500 },
       { nodeId: 'fast', ms: 5 },
     ];
-    assert.deepEqual(selectRelays([fast, slow], hints, 1).map((row) => row.id), ['slow']);
+    assert.deepEqual(selectRelays([fast, slow], hints, 1).map((row) => row.id), ['fast'], '延迟是主键');
     // 入参顺序反过来结果不变（排序键与候选顺序无关）
-    assert.deepEqual(selectRelays([slow, fast], hints, 2).map((row) => row.id), ['slow', 'fast']);
-    // 权重只差 1 也照样赢：并列带不会跨权重生效（它只在权重相同时才看延迟）
+    assert.deepEqual(selectRelays([slow, fast], hints, 2).map((row) => row.id), ['fast', 'slow']);
+    // 权重只差 1 也一样：延迟好就是好（权重退到"延迟与空余都并列"时才看）
     assert.deepEqual(
       selectRelays([cand('w99', { weight: 99 }), cand('w100', { weight: 100 })], [{ nodeId: 'w99', ms: 5 }, { nodeId: 'w100', ms: 500 }], 1)
+        .map((row) => row.id),
+      ['w99'],
+    );
+    // 两台延迟完全一样 → 才轮到权重（打分之一）：权重高的赢
+    assert.deepEqual(
+      selectRelays([cand('w99', { weight: 99 }), cand('w100', { weight: 100 })], [{ nodeId: 'w99', ms: 20 }, { nodeId: 'w100', ms: 20 }], 1)
         .map((row) => row.id),
       ['w100'],
     );
   });
 
-  test('权重相同才比延迟：延迟好的赢，即使它的 relayScore 更低', () => {
-    // 两台同权重 50：loaded 更挤（打分 10），idle 很空（打分 ≈49.5）
+  test('延迟优先的强度：延迟好的赢，即使它的 relayScore 更低、权重更小', () => {
+    // 两台：loaded 更挤（打分 10）但只有 5ms；idle 很空（打分 ≈49.5）但 100ms
     const loaded = cand('loaded', { weight: 50, peers: 400 });
     const idle = cand('idle', { weight: 50 });
     assert.ok(relayScore(loaded.row, 0) < relayScore(idle.row, 0), '前置条件：loaded 的打分更低');
@@ -1157,7 +1167,7 @@ describe('权重优先调度 selectRelays / scheduleRelays', () => {
     assert.deepEqual(picked2.map((row) => row.id), ['idle']);
   });
 
-  test('hints 为空 / 缺省 / 全是池外 id：三者完全一致，且就是"权重优先"的排序', () => {
+  test('hints 为空 / 缺省 / 全是池外 id：三者完全一致，且回到 relayScore 排序', () => {
     const list = [
       cand('a', { weight: 10 }),
       cand('b', { weight: 90 }),
@@ -1165,17 +1175,19 @@ describe('权重优先调度 selectRelays / scheduleRelays', () => {
       cand('d', { status: 'degraded', weight: 100 }),
       cand('e', { peers: 3, weight: 40 }),
     ];
-    // 权重降序 → 同权重按 relayScore 降序 → peers 升序
-    // 权重 100：c（50×0.99=… 吃紧 → 100×0.2=20）比 d（100×0.99−100≈−1）靠前
-    const expected = ['c', 'd', 'b', 'e', 'a'];
+    /**
+     * 没有提示时 = **纯 relayScore 排序**（= 2026-09-29 改造前的行为）：
+     * 权重是打分里的因子，所以"权重低但更空"的节点可以赢。
+     * 这也是 2026-10-03 改口径的副产物：既然延迟成了主键，权重就退回打分因子，
+     * 无提示的老客户端拿到的是"按余量与权重综合打分"的默认结果。
+     */
+    const expected = [...list]
+      .sort((x, y) => relayScore(y.row, 0) - relayScore(x.row, 0) || x.row.peers - y.row.peers)
+      .map((c) => c.row.id);
+    assert.deepEqual(expected, ['b', 'e', 'c', 'a', 'd'], '先钉住默认排序到底是什么，免得两边一起错');
     assert.deepEqual(selectRelays(list, [], 5).map((row) => row.id), expected);
     assert.deepEqual(selectRelays(list, undefined, 5).map((row) => row.id), expected);
     assert.deepEqual(selectRelays(list, [{ nodeId: 'ghost', ms: 1 }], 5).map((row) => row.id), expected);
-    // ⚠️ 与改造前的纯 relayScore 排序（['b','e','c','a','d']）**不同**：权重现在是第一判据
-    const legacy = [...list]
-      .sort((x, y) => relayScore(y.row, 0) - relayScore(x.row, 0) || x.row.peers - y.row.peers)
-      .map((c) => c.row.id);
-    assert.deepEqual(legacy, ['b', 'e', 'c', 'a', 'd'], '旧行为：权重只是打分因子，低权重但更空的节点可以赢');
   });
 
   test('候选池外的节点（权重 0 / 停用 / 离线）——权重给到 500、延迟给到 1ms 也拉不进来', () => {
@@ -1210,11 +1222,11 @@ describe('权重优先调度 selectRelays / scheduleRelays', () => {
   });
 
   /**
-   * 只喂 `scheduleRelays` 真正用到的那几个依赖（候选查询 + 利用率采样 + 平台设置里的门槛），
-   * 这样区域过滤、带宽吃紧过滤、回退全局、两个槽位的选法这些**服务层规则**也能被单测直接钉住。
+   * 只喂 `scheduleRelays` 真正用到的那几个依赖（候选查询 + 利用率采样 + 平台设置里的卸荷线），
+   * 这样区域过滤、带宽吃紧过滤、回退全局、取几台这些**服务层规则**也能被单测直接钉住。
    *
-   * `relayBigPipeBps: 0` 表示"所有节点都算大带宽档"（等价于没配容量），
-   * 于是中继槽就退化成"延迟优先"，正好让下面几条老断言继续描述同一个语义。
+   * `relayBigPipeBps` 现在只剩"小管子判定"这一个用途（卸荷线），不再影响挑谁当中继
+   * —— 2026-10-03 用户删掉了那道大带宽档门槛（他线上 2M/5M 的近节点连候选都进不去）。
    */
   function schedule(
     rows: NodeRow[],
@@ -1249,12 +1261,22 @@ describe('权重优先调度 selectRelays / scheduleRelays', () => {
     assert.deepEqual(pick('auto', [{ nodeId: 'busy', ms: 1 }, { nodeId: 'idle', ms: 900 }]), ['idle']);
   });
 
+  test('延迟优先同样作用在服务层：同一区域里近的那台当选', () => {
+    const rows = [rowOf('far', 'cn-east', { weight: 900 }), rowOf('near', 'cn-east', { weight: 1 })];
+    const pick = schedule(rows);
+    assert.deepEqual(
+      pick('cn-east', [{ nodeId: 'far', ms: 80 }, { nodeId: 'near', ms: 9 }], 1),
+      ['near'],
+      '外区域/带宽这些硬条件不变，但区域内的排序已经是延迟优先（生产就取 1 台）',
+    );
+  });
+
   /**
-   * ⚠️ 这条是本轮"旧客户端行为变化"的**证据**：不传提示时不再是改造前的纯 relayScore 排序，
-   * 而是"权重优先 → 同权重按 relayScore"。
-   * 例子：c（weight 100、用了 400/500 人）以前排 b（weight 90、几乎全空）之后，现在排它前面。
+   * 不传提示（老客户端 / 探测失败）时的结果：**回到纯 relayScore 排序**
+   * （= 2026-09-29 改造前的行为；2026-10-03 把延迟提成主键后，权重退回打分因子）。
+   * 例：b（weight 90、几乎全空，打分 89.1）赢 c（weight 100、用了 400/500 人，打分 20）。
    */
-  test('不传提示（老客户端）：权重优先 → 同权重才按 relayScore（**与改造前不同**）', () => {
+  test('不传提示（老客户端）：回到 relayScore 排序（权重只是打分因子）', () => {
     const rows = [
       rowOf('a', 'cn-east', { weight: 10 }), // 打分 9.9
       rowOf('b', 'cn-east', { weight: 90 }), // 打分 89.1
@@ -1265,14 +1287,17 @@ describe('权重优先调度 selectRelays / scheduleRelays', () => {
       .sort((x, y) => relayScore(y, 0) - relayScore(x, 0) || x.peers - y.peers)
       .slice(0, 2)
       .map((row) => row.id);
-    assert.deepEqual(legacy, ['b', 'c'], '改造前：weight 只是打分因子，b（更空）赢 c（权重更高）');
+    assert.deepEqual(legacy, ['b', 'c'], '没有提示时：更空的 b 赢权重更高但快满的 c');
     const pick = schedule(rows);
-    assert.deepEqual(pick('auto'), ['c', 'd'], '现在：权重 100 的两台先排，同权重内 c 比 d 空');
-    assert.deepEqual(pick('auto', []), ['c', 'd']);
-    assert.deepEqual(pick('cn-east'), ['c', 'd']);
-    // 同权重的两台之间仍然完全按打分（= 改造前那一步没变）
-    const sameWeight = [rowOf('x', 'cn-east', { weight: 50 }), rowOf('y', 'cn-east', { weight: 50, peers: 400 })];
-    assert.deepEqual(schedule(sameWeight)('auto'), ['x', 'y']);
+    assert.deepEqual(pick('auto'), ['b', 'c']);
+    assert.deepEqual(pick('auto', []), ['b', 'c']);
+    assert.deepEqual(pick('cn-east'), ['b', 'c']);
+    // 有提示时同样是"谁近谁先"，与打分无关（打分低的近节点照样赢）
+    assert.deepEqual(
+      pick('auto', [{ nodeId: 'c', ms: 5 }, { nodeId: 'b', ms: 100 }]),
+      ['c', 'b'],
+      '给了提示就按提示的延迟排（哪怕 c 更挤）',
+    );
   });
 
   test('parseLatencyHints：坏形状一律丢弃，重复 id 取最小值，条数封顶', () => {
@@ -1520,6 +1545,10 @@ describe('房间中继：单节点模型', () => {
       endpoint: '',
       status: 'online',
       weight: 100,
+      // 人数余量：`hasHeadroom` 会看 peers < capacity_peers，缺了它两台都会被判"没余量"、
+      // 提示随即失效（延迟提示只在真有余量的节点上算数）
+      capacity_peers: 500,
+      peers: 0,
       capacity_bps: 100_000_000,
       assist_only: 0,
       disabled: 0,
@@ -1529,29 +1558,53 @@ describe('房间中继：单节点模型', () => {
   });
 
   test('只给一台：无论候选多少，结果长度恒为 1', () => {
-    const ids = pickRoomRelays([cand('a'), cand('b')], [cand('a'), cand('b')], [], 1, 10_000_000, 'cn-east');
+    const ids = pickRoomRelays([cand('a'), cand('b')], [cand('a'), cand('b')], [], 1, 'cn-east');
     assert.equal(ids.length, 1);
   });
 
-  test('权重优先：权重高的那台当选（权重一致才比延迟）', () => {
-    const ids = pickRoomRelays(
-      [cand('light', { weight: 1 }), cand('heavy', { weight: 500 })],
-      [],
-      [],
-      1,
-      10_000_000,
-      'cn-east',
+  test('**延迟优先**：近的那台当选，权重高的远节点抢不走（2026-10-03 改口径）', () => {
+    const far = cand('far', { weight: 500 });
+    const near = cand('near', { weight: 1 });
+    const hints = [
+      { nodeId: 'far', ms: 90 },
+      { nodeId: 'near', ms: 12 },
+    ];
+    const ids = pickRoomRelays([far, near], [far, near], hints, 1, 'cn-east');
+    assert.deepEqual(ids, ['near'], '延迟是主键：权重高但远 90ms 的那台不再直接赢');
+    // 权重退成"延迟与空余都并列时"的兜底：两台延迟一样 → 权重高的赢
+    assert.deepEqual(
+      pickRoomRelays(
+        [far, near],
+        [far, near],
+        [
+          { nodeId: 'far', ms: 20 },
+          { nodeId: 'near', ms: 20 },
+        ],
+        1,
+        'cn-east',
+      ),
+      ['far'],
+      '同延迟同空余 → 权重兜底',
     );
-    assert.deepEqual(ids, ['heavy']);
   });
 
-  test('capacity_bps = 0（控制台没填 = 不限）算大带宽档，不会被当作小管子漏掉', () => {
-    const ids = pickRoomRelays([cand('unlimited', { capacity_bps: 0 })], [], [], 1, 10_000_000, 'cn-east');
+  test('**没有大带宽档门槛了**：2 Mbps 的近节点照样能被选中（用户实测的那台河北就是因为这道门槛）', () => {
+    const bigFar = cand('big-far', { capacity_bps: 200_000_000 });
+    const smallNear = cand('small-near', { capacity_bps: 2_000_000 });
+    const hints = [
+      { nodeId: 'big-far', ms: 45 },
+      { nodeId: 'small-near', ms: 8 },
+    ];
+    assert.deepEqual(pickRoomRelays([smallNear], [smallNear, bigFar], hints, 1, 'cn-east'), ['small-near']);
+  });
+
+  test('capacity_bps = 0（控制台没填 = 不限）照样能当房间中继', () => {
+    const ids = pickRoomRelays([cand('unlimited', { capacity_bps: 0 })], [], [], 1, 'cn-east');
     assert.deepEqual(ids, ['unlimited']);
   });
 
   test('本区域一台都挑不出来 → 从全局池跨区兜底（否则那个区域完全建不了房）', () => {
-    const ids = pickRoomRelays([], [cand('far', { region: 'cn-north' })], [], 1, 10_000_000, 'cn-east');
+    const ids = pickRoomRelays([], [cand('far', { region: 'cn-north' })], [], 1, 'cn-east');
     assert.deepEqual(ids, ['far']);
   });
 
@@ -1561,14 +1614,13 @@ describe('房间中继：单节点模型', () => {
       [cand('local'), cand('far', { region: 'cn-north' })],
       [],
       1,
-      10_000_000,
       'cn-east',
     );
     assert.deepEqual(ids, ['local']);
   });
 
   test('一台候选都没有 → 空数组（调用方据此报"当前没有可用的中继节点"）', () => {
-    assert.deepEqual(pickRoomRelays([], [], [], 1, 10_000_000, 'cn-east'), []);
+    assert.deepEqual(pickRoomRelays([], [], [], 1, 'cn-east'), []);
   });
 });
 
@@ -1940,7 +1992,7 @@ describe('主控对外地址 masterOrigin（签发节点命令）', () => {
  * 小带宽节点"到线不再接新房间"由**服务层**的候选过滤负责（`shedUtilFor` 算出的
  * `shedUtil` 会被硬条件挡掉，见 `RoomService.scheduleRelays`），模块级的
  * `pickRoomRelays` 只负责在**已经过滤过的候选**里排序。
- * 这里钉住模块层的可观测行为：候选里权重高的那台（大管子）当选，一台候选也没有时返回空数组。
+ * 这里钉住模块层的可观测行为：唯一的候选当选、一台候选也没有时返回空数组。
  */
 describe('单节点调度：候选过滤后的排序', () => {
   const cand = (id: string, weight: number): RelayCandidate => ({
@@ -1958,11 +2010,11 @@ describe('单节点调度：候选过滤后的排序', () => {
     utilization: 0,
   });
 
-  test('权重高的那台当选（小管子被服务层挡掉后，这里只剩大管子）', () => {
-    assert.deepEqual(pickRoomRelays([cand('big', 500)], [cand('big', 500)], [], 1, 5_000_000, 'cn-east'), ['big']);
+  test('服务层过滤后剩下的那台当选（这里不做任何二次筛选）', () => {
+    assert.deepEqual(pickRoomRelays([cand('only', 500)], [cand('only', 500)], [], 1, 'cn-east'), ['only']);
   });
 
   test('候选全被过滤掉 → 空数组（调用方报"当前没有可用的中继节点"）', () => {
-    assert.deepEqual(pickRoomRelays([], [], [], 1, 5_000_000, 'cn-east'), []);
+    assert.deepEqual(pickRoomRelays([], [], [], 1, 'cn-east'), []);
   });
 });

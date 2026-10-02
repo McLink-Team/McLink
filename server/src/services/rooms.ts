@@ -272,51 +272,41 @@ interface RankedCandidate {
   candidate: RelayCandidate;
   /** 键 0：真有余量（还能接新房间） */
   headroom: boolean;
-  /** 键 ①：运营方权重 */
+  /** 键 ③（延迟与带宽都并列时才看）：运营方权重 */
   weight: number;
-  /** 键 ②：实测延迟 ms；`+∞` = 没有提示（延迟未知，不优待） */
+  /** 键 ①：实测延迟 ms；`+∞` = 没有提示（延迟未知，排在最后） */
   ms: number;
-  /** 键 ③（只在延迟并列带内比）：空余带宽 `1 − utilization`，越大越优先 */
+  /** 键 ②（只在延迟并列带内比）：空余带宽 `1 − utilization`，越大越优先 */
   bwFree: number;
 }
 
 /**
- * 从候选池里挑中继节点（纯函数，便于单测）：**权重优先，权重相同才比延迟**。
+ * 从候选池里挑中继节点（纯函数，便于单测）：**延迟优先，延迟同档再看空余带宽**。
  *
  * 排序键（依次比较，前一条能分出胜负就不看后面）：
  *   0. **真有余量**（`hasHeadroom`）的排前面 —— 硬条件的延伸，不是偏好（理由见该函数注释）。
  *      真的一个有余量的候选都没有时（`scheduleRelays` 的带宽回退分支），它们之间照旧按 ①–⑤ 排。
- *   ① `weight` 降序 —— **主键**
- *   ② 权重相同才比延迟：有提示且真有余量的按 ms 升序；没有提示的排在后面
- *      （没提示 = 延迟未知，不优待；沿用改造前"有提示的排在没提示的之前"的相对关系）
- *   ③ **延迟落在并列带内（区间极差 ≤ `LATENCY_TIE_BAND_MS`）时，先比空余带宽**
+ *   ① 有提示且真有余量的按 `ms` 升序 —— **主键**（"谁离建房这个人近就用谁"）；
+ *      没有提示的排在最后（没提示 = 延迟未知，不优待）
+ *   ② **延迟落在并列带内（区间极差 ≤ `LATENCY_TIE_BAND_MS`）时，先比空余带宽**
  *      `1 − utilization` 降序 —— "延迟在 5ms 之内就别纠结那几毫秒，挑带宽最空的"。
  *      `utilization` 是调用方采样好传进来的（见 `RelayCandidate`），这里不重新采一次。
- *   ④ 仍相同 → `relayScore` 降序（= weight × min(人数余量, 带宽余量) − 降级罚分；
- *      权重在这一步已经相等，所以它实际比的是"哪台更空、有没有降级"）
- *   ⑤ 仍相同 → `peers` 升序（改造前就有的收尾判据，保证同分结果稳定）
+ *   ③ 仍相同 → `relayScore` 降序（= weight × min(人数余量, 带宽余量) − 降级罚分）——
+ *      这一步才轮到**权重**：它是运营方的意图，用来在"远近与空余都一样"时定胜负
+ *   ④ 仍相同 → `peers` 升序（改造前就有的收尾判据，保证同分结果稳定）
  *
- * "主中继 + 兜底中继"就是**一次取前两名**：同一个函数、同一套规则、同一份候选池，
- * 只是 `max = 2`（见 `RoomService.create`）。所以兜底不是"另一套降级规则"，
- * 而是"这套规则下的第二名"；两个名次天然不重复（同一个节点在候选池里只出现一次）。
- * 每次票据请求都重新算一遍（`utilization` 也是实时采样），于是"这台满了就先挑另一台"
- * 会在下一张票据里自动生效 —— 不需要任何"浮动切换"状态机。
+ * ⚠️ 2026-10-03 用户改口径：**权重不再是主键**（原来是"权重优先、同权重才比延迟"）。
+ * 理由是他线上实测到的现象：只有 200 Mbps 那台被选中，而 2/5 Mbps 的近节点连候选都进不去
+ * （那是"大带宽档门槛"干的，已随这次一起删掉）；他要的是"**就直接延迟优先**"——
+ * 建房的人测出来哪台最近就用哪台，权重只当最后的兜底。
+ * 代价照实说：一台运营方并不想用的节点，只要离建房的人近就会拿到这个房间。
  *
- * 为什么权重是主键、延迟只是次键（用户拍板的语义）：
- *   · `weight` 是运营方在控制台里写下的**意图**（专线/贵节点调高、临时顶不住的调低），
- *     它必须能压过"几毫秒的体感差异"，否则权重就形同虚设；
- *   · 延迟只用来在**同一档位**里挑更近的那台，这正是"权重一致时比延迟"的含义。
- *   反过来的"延迟优先"会让一台运营方并不想用的节点仅凭几毫秒优势抢走流量。
- *
- * 硬条件一条都不放松：候选池由调用方按状态/禁用/权重/带宽/区域筛好，本函数既不放松也不新增 ——
- * 提示里出现池外节点（被停用、权重 0、离线、别区域…）时那条提示自然无效，
+ * 硬条件一条都不放松：候选池由调用方按状态/禁用/权重/带宽/区域/卸荷线筛好，本函数既不放松也不新增 ——
+ * 提示里出现池外节点（被停用、权重 0、离线、别区域、已过卸荷线…）时那条提示自然无效，
  * 拼接过的 nodeId 也拉不进任何东西。
  *
- * ⚠️ **老客户端（不发 `latencyHints`）的选择结果也会变**：改造前是纯 `relayScore` 排序
- * （weight 只是打分里的一个因子），现在是"权重 → 打分"。于是"权重更低但更空的节点"
- * 不再能越过权重更高的节点。例：权重 100、已用 400/500 人（打分 20）的节点，
- * 以前输给权重 90、几乎全空（打分 89.1）的节点，现在它赢。
- * 这是用户明确要的语义（权重说了算），不是副作用；权重相同时行为与改造前逐位一致。
+ * ⚠️ **老客户端（不发 `latencyHints`）**：一律落在 `ms = +∞` 那一队，顺序 = 权重 → 打分 →
+ * peers，与"权重优先"时代的相对关系一致（只是权重从主键退成兜底）。
  */
 export function selectRelays(
   candidates: readonly RelayCandidate[],
@@ -336,10 +326,10 @@ export function selectRelays(
   }
 
   const score = (candidate: RelayCandidate): number => relayScore(candidate.row, candidate.utilization);
-  /** 键 ④⑤：分数降序，同分看 peer 少的（改造前就在用的比较规则） */
+  /** 键 ③④：分数降序，同分看 peer 少的（改造前就在用的比较规则） */
   const byScore = (a: RelayCandidate, b: RelayCandidate): number => score(b) - score(a) || a.row.peers - b.row.peers;
   /**
-   * 键 ③④：**档内决胜** —— 先比空余带宽降序，再回到 byScore。
+   * 键 ②③：**档内决胜** —— 先比空余带宽降序，再回到 byScore（其中含权重）。
    *
    * 为什么带宽在档内排第一：延迟已经落进 5ms 的并列带（`LATENCY_TIE_BAND_MS`），
    * 那几毫秒是测量噪声级别的差别，不值得纠结；而"这台还剩多少带宽"是实打实的事实
@@ -361,24 +351,23 @@ export function selectRelays(
   }));
 
   /**
-   * 第一趟：键 0 → ① → ②（+ 一个稳定的收尾键）。
+   * 第一趟：键 0 → ①（+ 一个稳定的收尾键）。
    *
-   * 这一趟只负责把**档序**排出来：同权重、同余量的节点按 ms 升序，好让第二趟切"连续区间"。
-   * 收尾键仍是老的 `byScore`，所以**没上报延迟的那一队（ms = +∞）内部顺序与改造前逐位一致**
-   * （它们不参与档内决胜）；有提示的档会在第二趟被 byBand 重排，这里排成什么不影响结果。
-   * sort 是稳定的：完全并列的候选保持调用方给的顺序（`listSchedulable` 本来就是 weight desc）。
+   * 这一趟只负责把**档序**排出来：同余量的节点按 ms 升序，好让第二趟切"连续区间"。
+   * 收尾键是 `byScore`（权重 → 空余 → peers），所以**没上报延迟的那一队（ms = +∞）**
+   * 内部就是"权重高者优先"；有提示的档会在第二趟被 byBand 重排，这里排成什么不影响结果。
+   * sort 是稳定的：完全并列的候选保持调用方给的顺序。
    */
   ranked.sort(
     (a, b) =>
       Number(b.headroom) - Number(a.headroom) ||
-      b.weight - a.weight ||
       // 两边都没提示时 `+∞ - +∞ = NaN`，而 NaN 在比较器里的行为是实现定义的 → 显式判等
       (a.ms === b.ms ? 0 : a.ms - b.ms) ||
       byScore(a.candidate, b.candidate),
   );
 
   /**
-   * 第二趟：只在**键 0 与权重都相同**的连续区间内做"延迟并列带"。
+   * 第二趟：只在**键 0（有没有余量）相同**的连续区间内做"延迟并列带"。
    *
    * 为什么按"连续区间"而不是两两比较来判定并列：`|a-b| ≤ 带子` 不满足传递性
    * （0ms/4ms/8ms 里首尾相差 8ms 却各自与前一个"并列"），拿它当比较器会让排序结果
@@ -393,11 +382,11 @@ export function selectRelays(
   for (let start = 0; start < ranked.length; ) {
     const head = ranked[start];
     if (!head) break;
-    // 切出「同余量 + 同权重」的连续区间：跨区间的胜负在第一趟就已经定了，延迟不参与
+    // 切出「同余量」的连续区间：跨区间的胜负在第一趟就已经定了（有余量的整体在前）
     let stop = start + 1;
     while (stop < ranked.length) {
       const next = ranked[stop];
-      if (!next || next.headroom !== head.headroom || next.weight !== head.weight) break;
+      if (!next || next.headroom !== head.headroom) break;
       stop += 1;
     }
 
@@ -563,28 +552,16 @@ export function memberRelayStale(
 }
 
 /**
- * 这一台是否属于「大带宽档」。
+ * 取房间的中继（单节点模型）：**延迟优先 → 延迟同档比空余带宽 → 卸荷线是硬条件**。
  *
- * 门槛是平台设置里的 `relayBigPipeBps`（默认 10 Mbps）；**`capacity_bps = 0`
- * （控制台里没填带宽上限）也算大档** —— 那个字段在界面上就是"不限"，
- * 把它当成小管子会让默认部署（没人填容量）全部落到"没有大档节点"。
- */
-export function isBigPipeNode(row: NodeRow, thresholdBps: number): boolean {
-  const capacity = row.capacity_bps ?? 0;
-  if (capacity === 0) return true;
-  return thresholdBps <= 0 || capacity >= thresholdBps;
-}
-
-/**
- * 中继槽（真正承载数据的那台）：**大带宽档 → 沿用 `selectRelays` 的权重优先规则**。
+ * ⚠️ 2026-10-03 用户删掉了这里原来的"大带宽档门槛"（`relayBigPipeBps` 那道过滤）：
+ * 他线上建房时明明有 2 Mbps / 5 Mbps 的近节点，房间却总落到 200 Mbps 的河北 ——
+ * 因为 2M/5M 都低于 10 Mbps 门槛，**连候选池都进不去**，等于"延迟优先"根本没机会生效。
+ * 现在只按 `selectRelays` 的规则挑（延迟优先，权重退到最后的兜底），
+ * 那道门槛只留在**卸荷线**上（判断"这台算不算小管子"，小管子 80% 卸荷）。
  *
- * 用户 2026-09-28 的两次口径最终收敛成这样：中继槽**也要权重参与**，只有权重一致时才走
- * 后续规则（延迟 → 5ms 档内比空余带宽 → relayScore → peers）。所以这里不再另写一套比较器，
- * 直接把候选池过滤成"大带宽档 + 能承载数据"，然后调用与槽 1 同一个 `selectRelays` ——
- * 排序规则只有一份，改一处两处都跟着变。
- *
- * 延迟用的是**建房那个客户端上报的 tcping**（`latencyHints`）：权重一致时它测的正是
- * "这台机器到我这条链路"，而中继槽就是给这个房间的人用的。
+ * 延迟用的是**建房那个客户端上报的 tcping**（`latencyHints`）：它测的正是
+ * "这台机器到我这条链路"，而房间的中继就是给这个房间的人用的。
  *
  * 模块级函数（不是类私有方法）是为了让单测能用假对象直接钉住这套规则
  * —— 见 `test/unit.test.ts` 的 `schedule()`。
@@ -593,20 +570,11 @@ export function pickRelayNode(
   pool: readonly RelayCandidate[],
   latencyHints: readonly RelayLatencyHint[],
   excludeId: string,
-  thresholdBps: number,
   zone = '',
 ): NodeRow | null {
   const rest = pool.filter((c) => c.row.id !== excludeId);
   if (rest.length === 0) return null;
-  const big = rest.filter((c) => isBigPipeNode(c.row, thresholdBps));
-  if (big.length === 0) {
-    log.warn('没有大带宽档的中继节点，中继槽只能从全部候选里挑（见设置「大带宽档门槛」）', {
-      zone,
-      candidates: rest.length,
-    });
-  }
-  const candidates = big.length > 0 ? big : rest;
-  return selectRelays(candidates, latencyHints, 1)[0] ?? null;
+  return selectRelays(rest, latencyHints, 1)[0] ?? null;
 }
 
 /**
@@ -630,23 +598,22 @@ export function pickRoomRelays(
   allPool: readonly RelayCandidate[],
   latencyHints: readonly RelayLatencyHint[],
   max: number,
-  thresholdBps: number,
   zone = '',
 ): string[] {
   if (max <= 0) return [];
   /*
    * 房间用的是单节点（调用方传 max = 1）。这里保留"多台"的分支是为了让**排序规则**
-   * 本身可测、也可复用（`test/unit.test.ts` 的「权重优先调度」一组就是按多台来断言排序的）
-   * —— 单纯按 `selectRelays` 的权重优先顺序取前 max 台，不再有"打洞/中继"的角色之分。
+   * 本身可测、也可复用（`test/unit.test.ts` 的「延迟优先调度」一组就是按多台来断言排序的）
+   * —— 单纯按 `selectRelays` 的顺序取前 max 台，不再有"打洞/中继"的角色之分。
    */
   if (max > 1) return selectRelays(zonePool, latencyHints, max).map((n) => n.id);
-  const local = zonePool.length > 0 ? pickRelayNode(zonePool, latencyHints, '', thresholdBps, zone) : null;
+  const local = zonePool.length > 0 ? pickRelayNode(zonePool, latencyHints, '', zone) : null;
   if (local) return [local.id];
   /*
    * 本区域一台都挑不出来（都过了卸荷线 / 被硬条件挡掉）→ 跨区兜底。
    * 不兜底的话，某个区域的小管子全到线时那个区域就完全建不了房。
    */
-  const cross = pickRelayNode(allPool, latencyHints, '', thresholdBps, zone);
+  const cross = pickRelayNode(allPool, latencyHints, '', zone);
   if (!cross) return [];
   log.warn('本区域没有可用的中继节点，已从其它区域调一台', { zone, candidates: allPool.length });
   return [cross.id];
@@ -1904,19 +1871,14 @@ export class RoomService {
     return this.pickRelays(inZone, pool, latencyHints, max, zone);
   }
 
-  /** 大带宽档门槛（字节/秒），见模块级 `isBigPipeNode` */
-  bigPipeThresholdBps(): number {
+  /** 小管子判定门槛（字节/秒）：低于它的节点按小管子卸荷（见 `shedUtilOf`）。
+   *  2026-10-03 起它**只**用于卸荷线，不再参与"挑哪台当中继"。 */
+  smallPipeThresholdBps(): number {
     return Math.max(0, this.settings.current.relayBigPipeBps);
-  }
-
-  /** 见模块级 `isBigPipeNode` */
-  isBigPipe(row: NodeRow): boolean {
-    return isBigPipeNode(row, this.bigPipeThresholdBps());
   }
 
   /**
    * 取中继：转发给模块级 `pickRoomRelays`（那里是纯函数，便于单测钉规则）。
-   * 这里只负责把平台设置里的门槛读出来。
    */
   pickRelays(
     zonePool: readonly RelayCandidate[],
@@ -1925,7 +1887,7 @@ export class RoomService {
     max: number,
     zone: string,
   ): string[] {
-    return pickRoomRelays(zonePool, allPool, latencyHints, max, this.bigPipeThresholdBps(), zone);
+    return pickRoomRelays(zonePool, allPool, latencyHints, max, zone);
   }
 
   /**
@@ -2090,7 +2052,7 @@ export class RoomService {
         const candidate = this.nodes
           .listSchedulable()
           .map((row) => ({ row, utilization: this.utilizationOf(row), shedUtil: this.shedUtilOf(row) }))
-          .filter((c) => c.row.id !== relayId && this.isBigPipe(c.row) && !this.isBandwidthBusy(c.row))
+          .filter((c) => c.row.id !== relayId && !this.isBandwidthBusy(c.row))
           .sort((a, b) => freeBandwidth(b.utilization) - freeBandwidth(a.utilization) || b.row.weight - a.row.weight)[0];
         const better = candidate !== undefined && freeBandwidth(candidate.utilization) > currentFree;
         /** 该做什么由纯函数决定（准备好过 / 冷却中都短路，见那里的注释） */
@@ -2220,7 +2182,7 @@ export class RoomService {
    * 口径与判定见 `node-utilization.ts` 的 `shedUtilFor`。
    */
   shedUtilOf(row: NodeRow): number {
-    return shedUtilFor(row.capacity_bps, this.bigPipeThresholdBps(), this.settings.current.relaySmallShedPercent);
+    return shedUtilFor(row.capacity_bps, this.smallPipeThresholdBps(), this.settings.current.relaySmallShedPercent);
   }
 
   /** 带宽是否已到"不再分配新房间"的程度（与 NodeService 的状态机用同一个阈值） */
