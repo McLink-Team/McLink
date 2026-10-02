@@ -292,6 +292,8 @@ async function main(): Promise<void> {
           type: 'room.relayHint',
           roomId: event.roomId,
           kind: event.kind,
+          currentLabel: event.currentLabel,
+          targetLabel: event.targetLabel ?? undefined,
           message: event.message,
         });
         const row = app.rooms.findById(event.roomId);
