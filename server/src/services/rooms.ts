@@ -1642,15 +1642,29 @@ export class RoomService {
     }> = [];
     for (const [roomId, r] of rate) {
       const total = r.rx + r.tx;
-      const over = total >= threshold;
-      // 有符号窗口计数：正 = 持续超载，负 = 持续空闲
-      const windows = this.#loadWindows.get(roomId) ?? 0;
-      const next = over ? Math.max(windows, 0) + 1 : Math.min(windows, 0) - 1;
-      this.#loadWindows.set(roomId, next);
 
       const row = this.rooms.findById(roomId);
       if (!row || row.status !== 'open') continue;
       const current = toRoom(row).relayNodeIds;
+
+      /*
+       * **每个房间的过载阈值 = min(平台门槛, 该房间中继那台自己的卸荷线)**。
+       *
+       * 为什么不能只看平台门槛：2 Mbps 的小管子永远到不了默认的 8 Mbps（现在兜底 2 Mbps），
+       * 于是房间**永远不会被判定过载**、换槽永不触发 —— 用户实测：手选一台 2 Mbps，
+       * 房间占满之后新进来的人还是拿同一台。按节点自己的线算（小管子 80% → 2 Mbps × 0.8
+       * = 1.6 Mbps）才会在该卸的时候卸。平台门槛仍然作为上限，避免大管子被过早换掉。
+       */
+      const relayRow = current[0] ? this.nodes.findById(current[0]) : null;
+      const relayCapBps = relayRow?.capacity_bps ?? 0;
+      const shedLine = relayCapBps > 0 ? relayCapBps * this.shedUtilOf(relayRow!) : Number.POSITIVE_INFINITY;
+      const roomThreshold = Math.max(1, Math.min(threshold, shedLine));
+      const over = total >= roomThreshold;
+
+      // 有符号窗口计数：正 = 持续超载，负 = 持续空闲
+      const windows = this.#loadWindows.get(roomId) ?? 0;
+      const next = over ? Math.max(windows, 0) + 1 : Math.min(windows, 0) - 1;
+      this.#loadWindows.set(roomId, next);
 
       if (next >= RELAY_SCALE_WINDOWS && !this.#scaled.has(roomId)) {
         /*
