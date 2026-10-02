@@ -492,6 +492,59 @@ export function roomTrafficThreshold(scaleMbps: number, capacityBps: number, she
 }
 
 /**
+ * 节点区域"离建房/房间这台机器有多近"的分档（纯函数，见 `pickSwitchTarget`）：
+ *   0 = 与当前中继同区域（玩家到它的路径特性最接近）
+ *   1 = 国内其它区域（`cn-*`）
+ *   2 = 香港（平台的"出海第一跳"，对国内玩家通常在 30–70ms）
+ *   3 = 其它海外
+ *
+ * 为什么要分档而不是只判"国内/海外"：没有测速数据时，至少别让"香港 200M"输给
+ * "日本 1G"或"德国 500M"这种纯按 id 字典序的收尾判据（用户实测被推到德国就是这个收尾）。
+ */
+export function regionTier(region: string, currentRegion: string): number {
+  if (currentRegion.length > 0 && region === currentRegion) return 0;
+  if (region.startsWith('cn-')) return 1;
+  if (region === 'hk') return 2;
+  return 3;
+}
+
+/**
+ * 换台目标的排序（纯函数，单测直接钉住）。
+ *
+ * 用户实测踩到的坑：房间用的华东-A 2 Mbps 到线了，平台**准备的新中继是德国 9929** ——
+ * 因为这里原来是"空余带宽 → 权重"排序，而所有节点都空着、权重都是 100 时，
+ * 结果退化成**数据库行序**（`listSchedulable()` 是 `order by weight desc`），德国恰好排第一。
+ * 玩家看到的就是"点一下切换到德国"。选路规则和建房那条一样，不能退化成行序。
+ *
+ * 现在的顺序：
+ *   ① **大管子优先**（换台的意义就是换到扛得住的管子；`capacity_bps = 0` 也算大管子）
+ *      —— 一台都没有时才放开给小管子；
+ *   ② 再按 `regionTier`：同区域 → 国内 → 香港 → 海外（同档内才比下面的数字）；
+ *   ③ 同档内：空余带宽降序 → 权重降序 → peers 升序 → id（保证稳定、可复现）。
+ *
+ * 调用方负责先过滤掉"当前那台"和"已经过了卸荷线的"，并自行判断结果是否真的更空。
+ */
+export function pickSwitchTarget(
+  currentRegion: string,
+  candidates: readonly RelayCandidate[],
+  bigPipeThresholdBps = 0,
+): NodeRow | null {
+  if (candidates.length === 0) return null;
+  const big = candidates.filter((c) => isBigPipeNode(c.row, bigPipeThresholdBps));
+  const pool = big.length > 0 ? big : candidates;
+  const best = Math.min(...pool.map((c) => regionTier(c.row.region, currentRegion)));
+  const tier = pool.filter((c) => regionTier(c.row.region, currentRegion) === best);
+  const ranked = [...tier].sort(
+    (a, b) =>
+      freeBandwidth(b.utilization) - freeBandwidth(a.utilization) ||
+      b.row.weight - a.row.weight ||
+      a.row.peers - b.row.peers ||
+      (a.row.id < b.row.id ? -1 : a.row.id > b.row.id ? 1 : 0),
+  );
+  return ranked[0]?.row ?? null;
+}
+
+/**
  * 「**节点整体**到线」的判定（纯函数，单测直接钉住）：**EWMA 或最近一次原始采样**任一越过卸荷线。
  *
  * 为什么两个都要看（用户 2026-10-03 问"超线一分钟就弹对吧"，发现只有 EWMA 太慢）：
@@ -2231,12 +2284,20 @@ export class RoomService {
         if (!relayId) continue;
         const currentRelay = this.nodes.findById(relayId);
         const currentFree = currentRelay ? freeBandwidth(this.utilizationOf(currentRelay)) : -1;
-        const candidate = this.nodes
-          .listSchedulable()
-          .map((row) => ({ row, utilization: this.utilizationOf(row), shedUtil: this.shedUtilOf(row) }))
-          .filter((c) => c.row.id !== relayId && !this.isBandwidthBusy(c.row))
-          .sort((a, b) => freeBandwidth(b.utilization) - freeBandwidth(a.utilization) || b.row.weight - a.row.weight)[0];
-        const better = candidate !== undefined && freeBandwidth(candidate.utilization) > currentFree;
+        /**
+         * 目标由纯函数挑（见 `pickSwitchTarget`）：大管子优先 → 同区域 → 国内 → 更空 → 权重。
+         * ⚠️ 这里以前是"空余带宽 → 权重"，同分时退化成数据库行序，用户就被推到了德国 9929。
+         */
+        const candidate = pickSwitchTarget(
+          currentRelay?.region ?? '',
+          this.nodes
+            .listSchedulable()
+            .map((row) => ({ row, utilization: this.utilizationOf(row), shedUtil: this.shedUtilOf(row) }))
+            .filter((c) => c.row.id !== relayId && !this.isBandwidthBusy(c.row)),
+          this.smallPipeThresholdBps(),
+        );
+        const candidateFree = candidate ? freeBandwidth(this.utilizationOf(candidate)) : -1;
+        const better = candidate !== null && candidateFree > currentFree;
         /** 该做什么由纯函数决定（准备好过 / 冷却中都短路，见那里的注释） */
         const action = relayLoadAction({
           better,
@@ -2282,7 +2343,7 @@ export class RoomService {
           continue;
         }
         if (!candidate) continue; // 类型收窄（action === 'switch' 时 better 为真，必然有 candidate）
-        this.#pendingRelay.set(roomId, candidate.row.id);
+        this.#pendingRelay.set(roomId, candidate.id);
         this.#scaled.set(roomId, { previous: current, rxBps: r.rx, txBps: r.tx, at: now });
         this.#loadWindows.set(roomId, 0);
         /**
@@ -2298,7 +2359,7 @@ export class RoomService {
          *
          * 同时写一条房间系统消息：聊天记录里留痕，事后追溯"这个房间被换过中继"。
          */
-        const targetName = candidate.row.name || candidate.row.id;
+        const targetName = candidate.name || candidate.id;
         const currentName = relayRow?.name ?? relayId;
         /**
          * 房间系统消息（聊天里留痕，也是老客户端唯一能看到的那份文本）。
@@ -2316,7 +2377,7 @@ export class RoomService {
           roomId,
           code: row.code,
           kind: 'switch',
-          to: candidate.row.id,
+          to: candidate.id,
           from: relayId,
           currentLabel: currentName,
           targetLabel: targetName,
