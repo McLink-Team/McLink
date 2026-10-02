@@ -284,6 +284,35 @@ try {
       autoIds.length === 1 && !autoIds.includes(hot.id),
       `房间中继=${JSON.stringify(autoIds)}（过线的 hot=${hot.id}）`,
     );
+
+    /*
+     * ⑦ **延迟优先 + 不再看"大带宽档"**（用户 2026-10-03 实测的那个 bug）：
+     *   把 b 设成 2 Mbps 的小管子（a 仍是不限），建房时"故意"说 b 只要 5ms、a 要 200ms ——
+     *   房间**必须**落在 b 上。换在旧版本里，b 因为低于「大带宽档门槛」（默认 10 Mbps）
+     *   连候选池都进不去，房间会跑到 a 上（用户线上就是这样"新建房间跑到 200 Mbps 的河北"）。
+     */
+    await api(`/admin/nodes/${b.id}`, { method: 'PATCH', token: admin.token, body: { capacityBps: 2_000_000 } });
+    // 管理员账号默认「最多同时 3 个房间」，先关掉最早那个再建（收尾还会再关一次，重复关闭无害）
+    await api(`/rooms/${r1.room.id}/close`, { method: 'POST', token: admin.token }).catch(() => {});
+    const r4 = await api('/rooms', {
+      method: 'POST',
+      token: admin.token,
+      body: {
+        name: `slot-near ${RUN}`,
+        zone: 'cn-east',
+        latencyHints: [
+          { nodeId: b.id, ms: 5 },
+          { nodeId: a.id, ms: 200 },
+        ],
+      },
+    });
+    createdRooms.push(r4.room.id);
+    const nearIds = r4.room.relayNodeIds ?? [];
+    check(
+      '⑦ 延迟优先：2 Mbps 的近节点照样当选（旧版的"大带宽档门槛"会把它整个筛掉）',
+      nearIds[0] === b.id,
+      `房间中继=${JSON.stringify(nearIds)}（提示：b=5ms / a=200ms）`,
+    );
   }
 }
  catch (err) {
