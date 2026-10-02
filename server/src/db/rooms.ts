@@ -36,6 +36,8 @@ export interface MemberRow {
   role: string;
   status: string;
   virtual_ip: string | null;
+  /** 成员级中继分配（NULL = 用房间默认，见 V25 迁移） */
+  relay_node_id: string | null;
   seat: number | null;
   device_name: string | null;
   latency_ms: number | null;
@@ -113,6 +115,8 @@ export function toMember(row: MemberRow): RoomMember {
     role: row.role as MemberRole,
     status: row.status as MemberStatus,
     virtualIp: row.virtual_ip,
+    /** 成员级中继分配：NULL = 用房间默认（票据层兜底） */
+    relayNodeId: row.relay_node_id,
     deviceName: row.device_name,
     latencyMs: row.latency_ms,
     p2p: toBool(row.p2p),
@@ -518,17 +522,20 @@ export class RoomRepo {
     virtualIp: string | null;
     seat: number | null;
     deviceName?: string | null;
+    /** 成员级中继分配（加入时由调度挑，见 docs/relay-assignment.md） */
+    relayNodeId?: string | null;
   }): MemberRow {
     this.db.run(
       `insert into room_members (room_id, user_id, role, status, virtual_ip, seat, device_name,
-        latency_ms, p2p, rx_bps, tx_bps, joined_at, last_seen_at)
-       values (?, ?, ?, ?, ?, ?, ?, null, 0, 0, 0, ?, null)
+        relay_node_id, latency_ms, p2p, rx_bps, tx_bps, joined_at, last_seen_at)
+       values (?, ?, ?, ?, ?, ?, ?, ?, null, 0, 0, 0, ?, null)
        on conflict(room_id, user_id) do update set
          role = excluded.role,
          status = excluded.status,
          virtual_ip = excluded.virtual_ip,
          seat = excluded.seat,
          device_name = coalesce(excluded.device_name, room_members.device_name),
+         relay_node_id = excluded.relay_node_id,
          joined_at = excluded.joined_at,
          last_seen_at = null`,
       input.roomId,
@@ -538,6 +545,7 @@ export class RoomRepo {
       input.virtualIp,
       input.seat,
       input.deviceName ?? null,
+      input.relayNodeId ?? null,
       nowIso(),
     );
     const row = this.findMember(input.roomId, input.userId);
@@ -547,6 +555,24 @@ export class RoomRepo {
 
   updateMemberStatus(roomId: string, userId: string, status: MemberStatus): void {
     this.db.run('update room_members set status = ? where room_id = ? and user_id = ?', status, roomId, userId);
+  }
+
+  /**
+   * 改某个成员的**中继分配**（`docs/relay-assignment.md`：成员票据只下发这一台）。
+   * 传 null 表示退回"用房间默认"。
+   */
+  setMemberRelay(roomId: string, userId: string, nodeId: string | null): void {
+    this.db.run('update room_members set relay_node_id = ? where room_id = ? and user_id = ?', nodeId, roomId, userId);
+  }
+
+  /** 该房间里被分配到某台节点的成员（换槽/节点不可用时用） */
+  listMembersByRelay(roomId: string, nodeId: string): MemberRow[] {
+    return this.db.all<MemberRow>(
+      'select * from room_members where room_id = ? and relay_node_id = ? and status = ?',
+      roomId,
+      nodeId,
+      'active',
+    );
   }
 
   updateMemberHeartbeat(

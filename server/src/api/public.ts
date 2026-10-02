@@ -184,16 +184,11 @@ export function registerPublicRoutes(router: Router, app: App): void {
           capacity: n.capacity_peers,
           status: n.status,
           /**
-           * 「只协助打洞」：建房页的**手动选择**要用它把话说明白 ——
-           * 这种节点不承载房间数据（生成配置写 `disable_relay_data`），
-           * 玩家挑它时它会落**打洞槽**，中继由平台另补一台
-           * （见 services/rooms.ts 的 `assignRelaySlots`）。
-           *
-           * ⚠️ 这里是 `app.nodes`（**仓储**，NodeRow 行对象，字段是 snake_case），
-           * 不是 `app.nodeService` 的 `RelayNode` —— 所以取 `n.assist_only` 而不是
-           * `n.assistOnly`（同一个 map 里 `n.capacity_peers` / `n.disabled` 也是同理）。
+           * ⚠️ 单节点模型（2026-09-30 起）下**不再下发 `assistOnly`**：
+           * 「只协助打洞」那套语义已经废弃（所有节点都允许中继，房间只下发一台中继，
+           * 小管子靠卸荷阈值停止接新房间 —— 见 `docs/relay-assignment.md`）。
+           * 继续下发只会让老客户端把房间页写成「只协助打洞（不承载流量）」，那是错的。
            */
-          assistOnly: n.assist_only === 1,
         })),
     };
   }, { auth: true });

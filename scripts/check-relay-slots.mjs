@@ -124,6 +124,25 @@ try {
     (r2.nodeSelection?.rejected ?? []).some((x) => x.id === a.id),
     JSON.stringify(r2.nodeSelection?.rejected),
   );
+
+  /*
+   * ③ 票据按角色给中继集合（docs/relay-assignment.md）：
+   *   · 房主 → **全部**可调度节点（每台都有一条直达房主的链路，成员分配怎么变都不用动房主）；
+   *   · 成员 → **只有分配给他的那一台**（分配写回 room_members.relay_node_id）。
+   * 这个脚本里的账号是建房者 = 房主，所以这里断言"房主拿到多台"这一半；
+   * 成员侧要用第二个账号在开发主控上验（见文档的验收标准）。
+   */
+  const ticket = await api(`/rooms/${r2.room.id}/ticket`, { token: admin.token });
+  const hostRelays = ticket.relays ?? [];
+  check(
+    '③ 房主票据包含**全部**可调度节点（不只房间默认那一台）',
+    hostRelays.length >= 2,
+    `relays=${JSON.stringify(hostRelays.map((r) => r.label))}`,
+  );
+  check(
+    '③ 房主票据里仍有 latency_first',
+    String(ticket.configToml ?? '').includes('latency_first = true'),
+  );
 }
  catch (err) {
   fail += 1;

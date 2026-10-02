@@ -1140,7 +1140,26 @@ export class RoomService {
     }
 
     const room = toRoom(row);
-    const relayRows = this.nodes.findByIds(room.relayNodeIds);
+    const isHost = room.hostUserId === userId;
+    /*
+     * 中继集合**按角色**决定（`docs/relay-assignment.md`）：
+     *   · 房主 → **全部可调度节点**：每台都有一条直达房主的链路，成员分配怎么变都不用动房主；
+     *   · 成员 → **只有分配给他的那一台**：到房主的路只有一条，不依赖 EasyTier 那个靠不住的
+     *     avoid-relay 惩罚（复现见 `scripts/repro-easytier-avoid-relay.mjs`）。
+     *
+     * 成员分配在**第一次拉票据时**定下来并写回 `room_members.relay_node_id` ✓：
+     * 这样三条加入路径都不用各自接一遍调度，而且已经在房里的老成员下次拉票据也会自动补上分配。
+     * 分配失败（比如一台都不可调度）时退回房间默认（`room.relayNodeIds[0]`）—— 也就是旧行为。
+     */
+    let assignedRelayId = member.relay_node_id ?? null;
+    if (!isHost && !assignedRelayId) {
+      assignedRelayId = this.scheduleRelays(row.zone, [], 1)[0] ?? room.relayNodeIds[0] ?? null;
+      if (assignedRelayId) this.rooms.setMemberRelay(roomId, userId, assignedRelayId);
+    }
+    const assignedIds = isHost
+      ? this.nodes.listSchedulable().map((n) => n.id)
+      : [assignedRelayId].filter((id): id is string => Boolean(id));
+    const relayRows = this.nodes.findByIds(assignedIds);
     /*
      * 下发给客户端的端口必须是**链接端口**，不是节点本机的运行端口：
      * 节点在 NAT / 端口映射后面时（本机 11010、对外 21010），
@@ -1179,7 +1198,6 @@ export class RoomService {
     const virtualIp = member.virtual_ip ?? hostIpCidr(room.subnetSlot);
     const hostMember = this.rooms.findMember(roomId, room.hostUserId);
     const hostVirtualIp = (hostMember?.virtual_ip ?? hostIpCidr(room.subnetSlot)).replace(/\/\d+$/, '');
-    const isHost = room.hostUserId === userId;
 
     /*
      * 客户端启动时至少要有 1 个中继入口，否则无法加入虚拟网络。
