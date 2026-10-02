@@ -98,8 +98,7 @@ try {
       nodes.find((n) => n.id === b.id)?.assistOnly === true,
     JSON.stringify(nodes.filter((n) => [a.id, b.id].includes(n.id)).map((n) => [n.name, n.assistOnly])),
   );
-
-  // ① 手选一台"能承载数据"的节点 → 它必须当中继（下标 1），打洞槽由平台补
+  // ① 手选一台 → 它就是房间唯一的节点（单节点模型：不再有"打洞槽/中继槽"之分）
   const r1 = await api('/rooms', {
     method: 'POST',
     token: admin.token,
@@ -107,35 +106,26 @@ try {
   });
   createdRooms.push(r1.room.id);
   const ids1 = r1.room.relayNodeIds ?? [];
-  check('① 手选"能承载数据"的节点落在 relayNodeIds[1]（下标 0 才是打洞节点）', ids1[1] === a.id, JSON.stringify(ids1));
+  check('① 手选的节点就是房间唯一的中继（数组长度为 1）', ids1.length === 1 && ids1[0] === a.id, JSON.stringify(ids1));
   check('① nodeSelection.roles 告诉界面谁是中继', r1.nodeSelection?.roles?.relay === a.id, JSON.stringify(r1.nodeSelection?.roles));
-  check('① 打洞槽由平台补了另一台（不会重复占两槽）', Boolean(ids1[0]) && ids1[0] !== a.id, String(ids1[0]));
+  check('① 单节点模型下没有"打洞节点"角色', r1.nodeSelection?.roles?.punch === null, JSON.stringify(r1.nodeSelection?.roles?.punch));
 
-  // ② 手选一台"只协助打洞"的节点 → 它必须落打洞槽，中继槽仍得是能承载数据的节点
+  // ② 手选两台 → 只认第一台，其余如实进 rejected
   const r2 = await api('/rooms', {
     method: 'POST',
     token: admin.token,
-    body: { name: `slot-b ${RUN}`, zone: 'cn-east', nodeIds: [b.id] },
+    body: { name: `slot-b ${RUN}`, zone: 'cn-east', nodeIds: [b.id, a.id] },
   });
   createdRooms.push(r2.room.id);
   const ids2 = r2.room.relayNodeIds ?? [];
-  check('② 手选"只协助打洞"的节点落 relayNodeIds[0]（打洞槽）', ids2[0] === b.id, JSON.stringify(ids2));
-  check('② 中继槽仍是能承载数据的节点（不会把 assist 补进中继槽）', Boolean(ids2[1]) && ids2[1] !== b.id, String(ids2[1]));
-
-  /*
-   * ③ 票据里必须带 `latency_first = true`。
-   *
-   * 这是个**看起来无关、实际决定生死**的开关：标了「只协助打洞」的节点靠 AVOID_RELAY_COST
-   * 被挤出候选，而那个代价只在 LeastCost 策略下参与比较；缺失时 EasyTier 走默认的
-   * LeastHop（按跳数筛），惩罚被绕过 —— 实测两端全部走了那台只打洞的节点、房间不通。
-   */
-  const ticket = await api(`/rooms/${r1.room.id}/ticket`, { token: admin.token });
+  check('② 多选只认第一台（单节点）', ids2.length === 1 && ids2[0] === b.id, JSON.stringify(ids2));
   check(
-    '③ 客户端票据里带 latency_first（否则"只协助打洞"会被选路绕过）',
-    String(ticket.configToml ?? '').includes('latency_first = true'),
-    `ticket 字段：${Object.keys(ticket ?? {}).join(',')}`,
+    '② 多余的节点如实记进 rejected（界面要能说清）',
+    (r2.nodeSelection?.rejected ?? []).some((x) => x.id === a.id),
+    JSON.stringify(r2.nodeSelection?.rejected),
   );
-} catch (err) {
+}
+ catch (err) {
   fail += 1;
   console.log(`  [FAIL] 运行中断：${err?.message ?? err}`);
 } finally {

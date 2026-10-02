@@ -98,7 +98,7 @@ check(
   `${beforeAssist} → ${afterAssist}`,
 );
 const assistConfig = await api('/agent/config', { token: nodeToken });
-check('配置里写上了 disable_relay_data', String(assistConfig.configToml ?? '').includes('disable_relay_data = true'));
+check('单节点模型：配置里**不再**写 disable_relay_data（所有节点都允许中继）', !String(assistConfig.configToml ?? '').includes('disable_relay_data'));
 /*
  * `latency_first = true`：「只协助打洞」的 AVOID_RELAY_COST 惩罚**只在 LeastCost 策略下参与比较**，
  * 默认的 LeastHop（按跳数）会绕过它 —— 实测两端都走了那台标了只打洞的节点、数据被丢掉。
@@ -123,7 +123,6 @@ const hbStale = await hb({ peers: 0, rooms: 0, rxBps: 0, txBps: 0, appliedConfig
 check(
   '**节点版本落后时，心跳响应里带着新配置**（agent 靠它写盘并重启核心）',
   String(hbStale.configToml ?? '').includes(`hostname = "cfgrev-renamed-${RUN}"`) &&
-    String(hbStale.configToml ?? '').includes('disable_relay_data = true'),
   `configRevision=${hbStale.configRevision}`,
 );
 const hbFresh = await hb({ peers: 0, rooms: 0, rxBps: 0, txBps: 0, appliedConfigRevision: revNow });
