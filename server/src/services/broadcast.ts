@@ -22,6 +22,18 @@
  */
 
 import { DEFAULT_BROADCAST_AUDIENCE, type BroadcastAudience } from '@mclink/shared';
+import { htmlToText } from '../mail/smtp.ts';
+
+/** HTML 正文里插入站点名/地址/退订链接时转义，避免一封信里的引号把后面整段吃掉 */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+/** 属性值（href）用：和文本转义同一套即可（我们只插自己生成的 URL） */
+const escapeAttr = escapeHtml;
 
 export interface BroadcastCounts {
   /** 可发送：有邮箱 + 已验证 + 未封禁 */
@@ -68,7 +80,13 @@ export interface BroadcastPreview extends BroadcastCounts {
 
 export interface BroadcastDeps {
   mailer: {
-    sendAnnouncement(to: string, subject: string, text: string): Promise<{ ok: boolean; error: string | null }>;
+    /** `html` 非空时发 multipart/alternative（纯文本 + HTML 两份）；`text` 始终是兜底正文 */
+    sendAnnouncement(
+      to: string,
+      subject: string,
+      text: string,
+      html?: string | null,
+    ): Promise<{ ok: boolean; error: string | null }>;
   };
   users: {
     /** **不受 list() 分页上限影响**：群发要的是全量收件人 */
@@ -146,24 +164,38 @@ export class BroadcastService {
     return true;
   }
 
-  #normalize(input: { subject?: unknown; body?: unknown }): { subject: string; body: string } {
+  #normalize(input: { subject?: unknown; body?: unknown; html?: unknown }): {
+    subject: string;
+    body: string;
+    html: boolean;
+  } {
     // 主题里的换行会被部分客户端当成头注入的迹象，直接压平
     const subject = String(input.subject ?? '').replace(/[\r\n]+/g, ' ').trim();
     const body = String(input.body ?? '').replace(/\r\n/g, '\n').trim();
+    const html = input.html === true;
     if (subject.length === 0) throw new Error('主题不能为空');
     if (body.length === 0) throw new Error('正文不能为空');
     if (subject.length > SUBJECT_MAX) throw new Error(`主题最长 ${SUBJECT_MAX} 字`);
     if (body.length > BODY_MAX) throw new Error(`正文最长 ${BODY_MAX} 字`);
-    return { subject, body };
+    return { subject, body, html };
   }
 
   /**
    * 登记并启动一次群发，**立刻返回**（发送在后台）。
    * 返回 null = 已有任务在跑，界面要提示等上一次结束（绝不排队，避免误点多次）。
+   *
+   * ⚠️ `html: true` 时 `body` 被当作 **HTML 源码**（见 `#run` 的组信）：
+   * 纯文本那一份由 `htmlToText` 自动生成，两份额外都会追加站点署名与退订链接。
    */
-  start(input: { subject?: unknown; body?: unknown; actor?: string; audience?: BroadcastAudience }): BroadcastReport | null {
+  start(input: {
+    subject?: unknown;
+    body?: unknown;
+    html?: unknown;
+    actor?: string;
+    audience?: BroadcastAudience;
+  }): BroadcastReport | null {
     if (this.#running !== null) return null;
-    const { subject, body } = this.#normalize(input);
+    const { subject, body, html } = this.#normalize(input);
     const audience = input.audience ?? DEFAULT_BROADCAST_AUDIENCE;
 
     const siteName = this.#deps.settings.current.siteName || 'McLink 联机';
@@ -206,10 +238,12 @@ export class BroadcastService {
         activeWithinDays: audience.activeWithinDays,
         usernames: audience.usernames,
         missingUsernames: picked.missingUsernames,
+        /** `html` = 正文按 HTML 发（同时自动生成纯文本兜底） */
+        format: html ? 'html' : 'text',
       },
     });
 
-    void this.#run(recipients, subject, body, siteName, report);
+    void this.#run(recipients, subject, body, html, siteName, report);
     return report;
   }
 
@@ -217,6 +251,7 @@ export class BroadcastService {
     recipients: Array<{ id: string; email: string; displayName: string }>,
     subject: string,
     body: string,
+    html: boolean,
     siteName: string,
     report: BroadcastReport,
   ): Promise<void> {
@@ -234,8 +269,21 @@ export class BroadcastService {
             const tail = this.#deps.publicBaseUrl
               ? `${siteName}\n${this.#deps.publicBaseUrl}`
               : siteName;
-            const text = `${body}\n\n——\n${tail}\n不想再收到公告邮件：${unsub}`;
-            const res = await this.#deps.mailer.sendAnnouncement(r.email, subject, text);
+            const text = `${html ? htmlToText(body) : body}\n\n——\n${tail}\n不想再收到公告邮件：${unsub}`;
+            /**
+             * HTML 模式：正文按 HTML 发，**同时**带一份纯文本兜底（`buildMessage` 组 multipart）。
+             * 退订链接在 HTML 里做成可点的 `<a>`，并保留一行裸地址（有些客户端会拦链接）。
+             */
+            const htmlBody = html
+              ? `${body}\n<hr style="border:none;border-top:1px solid #ddd;margin:20px 0">\n` +
+                `<p style="color:#888;font-size:12px;line-height:1.7">${escapeHtml(siteName)}<br>` +
+                (this.#deps.publicBaseUrl
+                  ? `<a href="${escapeAttr(this.#deps.publicBaseUrl)}">${escapeHtml(this.#deps.publicBaseUrl)}</a><br>`
+                  : '') +
+                `不想再收到公告邮件：<a href="${escapeAttr(unsub)}">点这里退订</a><br>` +
+                `<span style="word-break:break-all">${escapeHtml(unsub)}</span></p>`
+              : null;
+            const res = await this.#deps.mailer.sendAnnouncement(r.email, subject, text, htmlBody);
             return { to: r.email, ok: res.ok, error: res.error };
           }),
         );

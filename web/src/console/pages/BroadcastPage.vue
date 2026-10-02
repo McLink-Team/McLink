@@ -54,6 +54,14 @@ const loading = ref(true);
 const loadError = ref<string | null>(null);
 const subject = ref('');
 const body = ref('');
+/**
+ * 正文是不是 **HTML**。
+ *
+ * 关着（默认）：正文按纯文本发，换行原样保留 —— 写公告最省事的方式。
+ * 开着：正文被当成 HTML 源码发给收件人（主控会**同时**生成一份纯文本兜底，
+ * 见 `server/src/services/broadcast.ts` 与 `mail/smtp.ts` 的 multipart/alternative）。
+ */
+const htmlMode = ref(false);
 const busy = ref(false);
 const actionError = ref<string | null>(null);
 let timer: number | null = null;
@@ -134,6 +142,7 @@ async function send(): Promise<void> {
     await api.post(Routes.adminBroadcast, {
       subject: subject.value,
       body: body.value,
+      html: htmlMode.value,
       roles: roles.value,
       activeDays: activeDays.value === '' ? null : Number(activeDays.value),
       usernames: manualMode.value ? usernamesText.value.trim() : '',
@@ -170,6 +179,22 @@ onUnmounted(() => {
 });
 
 const report = computed(() => data.value?.lastRun ?? null);
+/**
+ * HTML 预览用的正文。
+ *
+ * 直接把管理员敲的内容塞进 `v-html` —— 这段内容就是**他即将发出去的邮件本身**
+ * （收件人看到的也是它），所以这里不存在"把不可信输入渲染进控制台"的问题。
+ * 预览里额外补上服务端会自动追加的那段尾巴，让"发出去长什么样"一眼可见。
+ */
+const previewHtml = computed(() => {
+  const name = '站点名';
+  return (
+    `${body.value || '<p style="color:#999">（正文还是空的）</p>'}\n` +
+    '<hr style="border:none;border-top:1px solid #ddd;margin:20px 0">\n' +
+    `<p style="color:#888;font-size:12px;line-height:1.7">${name}<br>` +
+    '<a href="#">站点地址</a><br>不想再收到公告邮件：<a href="#">点这里退订</a></p>'
+  );
+});
 const canSend = computed(
   () => !busy.value && data.value !== null && !data.value.running && data.value.selected > 0,
 );
@@ -311,15 +336,48 @@ const percent = computed(() => {
           </div>
           <div class="field">
             <label class="label" for="bc-body">正文</label>
+            <!--
+              ⚠️ 这里以前写的是 `class="input"` —— 而 `.input` 是**固定 37px 高**的输入框样式，
+              于是 rows="8" 被压成一行（用户实测："正文编辑框永远只有一行"）。
+              多行输入要用 `.textarea`（height:auto + min-height，可纵向拖拽）。
+            -->
             <textarea
               id="bc-body"
               v-model="body"
-              class="input"
-              rows="8"
+              class="textarea"
+              :class="{ 'broadcast-code': htmlMode }"
+              rows="14"
               maxlength="4000"
-              placeholder="正文……"
+              :placeholder="
+                htmlMode
+                  ? '写 HTML，例如：<p>你好，</p><p>McLink 1.1.0 已发布，<a href=&quot;https://cnnic.link/download&quot;>去下载</a></p>'
+                  : '正文……（换行会原样保留）'
+              "
             />
+            <div class="broadcast-format">
+              <label class="broadcast-check">
+                <input v-model="htmlMode" type="checkbox" />
+                <span>按 <b>HTML</b> 发送</span>
+              </label>
+              <span class="hint">
+                勾上后正文按 HTML 渲染（可以放标题、加粗、链接、图片、表格）；主控会**同时**附一份纯文本兜底，
+                给不支持 HTML 的客户端。不勾就是纯文本，换行原样保留。
+              </span>
+            </div>
+            <p class="hint">
+              正文 {{ body.length }} / 4000 字；主题 {{ subject.length }} / 80 字。
+              邮件末尾会自动附上站点名、站点地址与退订链接，正文里不用自己写。
+            </p>
           </div>
+
+          <!-- 预览：HTML 模式渲染出来，纯文本模式按 <pre> 显示（换行/空格与收到的信一致） -->
+          <details class="broadcast-preview">
+            <summary>预览正文</summary>
+            <!-- eslint-disable-next-line vue/no-v-html -- 内容就是管理员自己刚敲的正文，
+                 与将要发出去的邮件完全一致；这里渲染它正是为了让管理员看清结果 -->
+            <div v-if="htmlMode" class="broadcast-render" v-html="previewHtml" />
+            <pre v-else class="broadcast-plain">{{ body || '（正文还是空的）' }}</pre>
+          </details>
 
           <p v-if="actionError" class="notice-body">{{ actionError }}</p>
 
@@ -418,5 +476,70 @@ const percent = computed(() => {
 /* 失败原因：地址一行、原因一行，块之间留一点缝 */
 .broadcast-error + .broadcast-error {
   margin-top: var(--s-2);
+}
+
+/* ------------------------------------------------ 撰写：格式开关与预览 */
+
+/**
+ * 写 HTML 时用等宽字体：标签对齐后一眼能看出层级，中文正文则保持默认字体更好看。
+ * ⚠️ 正文框必须是 `.textarea`（不能用 `.input`）—— `.input` 是固定 37px 高的单行样式，
+ * 会把多行输入压成一行（用户实测踩过）。
+ */
+.broadcast-code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: var(--fs-xs);
+  line-height: 1.7;
+}
+
+.broadcast-format {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-2) var(--s-3);
+  margin-top: var(--s-2);
+}
+.broadcast-check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--fs-sm);
+  color: var(--paper);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.broadcast-check input {
+  accent-color: var(--signal);
+}
+
+.broadcast-preview {
+  margin-top: var(--s-2);
+}
+.broadcast-preview > summary {
+  cursor: pointer;
+  font-size: var(--fs-sm);
+  color: var(--paper-dim);
+}
+.broadcast-render,
+.broadcast-plain {
+  margin-top: var(--s-3);
+  padding: var(--s-4);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r-sm);
+  background: #fff; /* 邮件正文多是白底深字写的，预览就按收件人的底看 */
+  color: #1a1a1a;
+  font-size: var(--fs-sm);
+  line-height: 1.7;
+  max-height: 420px;
+  overflow: auto;
+}
+.broadcast-render :deep(img) {
+  max-width: 100%;
+}
+.broadcast-plain {
+  background: var(--ink-800);
+  color: var(--paper);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
 }
 </style>

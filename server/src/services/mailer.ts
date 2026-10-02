@@ -104,11 +104,20 @@ export class MailerService {
   /**
    * 群发公告用：与验证码/测试邮件共用同一套投递与错误处理（含 SMTP transcript），
    * 只是 kind 不同 —— 邮件历史里能一眼分清哪些是群发。
+   *
+   * `html` 非空时发 multipart/alternative（纯文本 + HTML 两份，见 `buildMessage`）；
+   * `text` 仍然是必填的兜底正文。
    */
-  async sendAnnouncement(to: string, subject: string, text: string): Promise<MailAttempt> {
-    return this.#send('announce', to, subject, text);
+  async sendAnnouncement(to: string, subject: string, text: string, html?: string | null): Promise<MailAttempt> {
+    return this.#send('announce', to, subject, text, html);
   }
-  async #send(kind: 'verify' | 'test' | 'announce', to: string, subject: string, text: string): Promise<MailAttempt> {
+  async #send(
+    kind: 'verify' | 'test' | 'announce',
+    to: string,
+    subject: string,
+    text: string,
+    html?: string | null,
+  ): Promise<MailAttempt> {
     const s = this.settings.current;
     const from = resolveFrom(s.smtpFrom, s.smtpUser);
     const attempt: MailAttempt = {
@@ -138,7 +147,7 @@ export class MailerService {
     };
 
     try {
-      const result = await sendMail(config, { to, subject, text });
+      const result = await sendMail(config, { to, subject, text, html });
       attempt.ok = true;
       log.info('邮件已投递', { kind, to, host: config.host });
       this.#push(attempt);

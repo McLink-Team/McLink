@@ -27,6 +27,7 @@ import { isLoopbackOrigin, masterOrigin } from '../src/api/shell.ts';
 import { effectiveTrustedProxies } from '../src/services/settings.ts';
 import {
   buildMessage,
+  htmlToText,
   encodeHeader,
   maskAuthLine,
   parseCapabilities,
@@ -714,6 +715,53 @@ describe('SMTP 组信（中文邮件最容易坏的两个地方）', () => {  co
   test('发件人显示名走编码，裸地址不带尖括号', () => {
     const bare = buildMessage({ ...config, fromName: undefined }, { to: 'a@b.com', subject: 'x', text: 'y' });
     assert.match(bare, /^From: no-reply@cnnic\.link\r\n/);
+  });
+
+  test('HTML 正文发 multipart/alternative：纯文本在前、HTML 在后，两段都可解回原文', () => {
+    const message = buildMessage(config, {
+      to: 'player@example.com',
+      subject: 'McLink 1.1.0 更新',
+      text: '你好，\n这是一封公告。\n\n——\n不想再收到公告邮件：https://cnnic.link/u/abc',
+      html: '<p>你好，</p><p>这是一封<b>公告</b>。</p>',
+    });
+    assert.match(message, /Content-Type: multipart\/alternative; boundary="[^"]+"/);
+    const boundary = /boundary="([^"]+)"/.exec(message)?.[1] ?? '';
+    assert.ok(boundary.length > 0);
+    // 结构：两个 part + 结束标记；纯文本必须在前（RFC 2046：越靠后越接近原始内容）
+    const parts = message.split(`--${boundary}`);
+    assert.equal(parts.length, 4, '应有 引导段 + text + html + 结束段');
+    assert.match(parts[1] ?? '', /Content-Type: text\/plain; charset=UTF-8/);
+    assert.match(parts[2] ?? '', /Content-Type: text\/html; charset=UTF-8/);
+    assert.match(message, new RegExp(`--${boundary}--`));
+    // 两段都是 base64，都不能出现裸中文
+    for (const part of [parts[1] ?? '', parts[2] ?? '']) {
+      const body = part.split('\r\n\r\n').slice(1).join('\r\n\r\n').trim();
+      assert.ok(!/[\u4e00-\u9fa5]/.test(body), 'base64 段里不该出现裸中文');
+      const decoded = Buffer.from(body.replace(/\r\n/g, ''), 'base64').toString('utf8');
+      assert.match(decoded, /你好/);
+      for (const line of body.split('\r\n')) assert.ok(line.length <= 76);
+    }
+    // 没有 html 时保持原来的单段纯文本（老行为不变）
+    const plain = buildMessage(config, { to: 'a@b.com', subject: 'x', text: 'y' });
+    assert.match(plain, /Content-Type: text\/plain; charset=UTF-8/);
+    assert.ok(!plain.includes('multipart'), '没有 html 就不该出现 multipart');
+    // 空/纯空白的 html 也走纯文本（界面上勾了 HTML 却没写东西时不该发出一个空 part）
+    const blank = buildMessage(config, { to: 'a@b.com', subject: 'x', text: 'y', html: '   ' });
+    assert.ok(!blank.includes('multipart'));
+  });
+
+  test('htmlToText：给 HTML 邮件配的纯文本兜底（标签去掉、链接留地址、换行保留）', () => {
+    const text = htmlToText(
+      '<h1>更新公告</h1><p>第一行<br>第二行</p><ul><li>一条</li><li>两条</li></ul>' +
+        '<p>去 <a href="https://cnnic.link/download">下载页</a> 看看 &amp; 反馈</p><script>bad()</script>',
+    );
+    assert.ok(!text.includes('<'), '不该留下任何标签');
+    assert.ok(!text.includes('bad()'), '脚本内容要丢掉');
+    assert.match(text, /更新公告/);
+    assert.match(text, /第一行\n第二行/, 'br 要变成换行');
+    assert.match(text, /· 一条/);
+    assert.match(text, /下载页（https:\/\/cnnic\.link\/download）/, '链接要连同地址一起留下');
+    assert.match(text, /& 反馈/, '实体要解码');
   });
 
   test('EHLO 能力解析：多行响应、带参数与不带参数', () => {
