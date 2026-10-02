@@ -460,6 +460,63 @@ export function nextRoomExpiry(current: string | null, nowMs: number, ttlMs: num
 export const RELAY_SCALE_WINDOWS = 6;
 
 /**
+ * 「节点负载到线、但暂时没得换」这条通知的**冷却时间**。
+ *
+ * 这是纯打扰信息（既没有切换、也不需要玩家做什么），所以同一房间 10 分钟内最多响一次 ——
+ * 玩家正打着游戏，每 3 分钟"叮咚"一下只会让人烦躁。真正的切换建议（`kind: 'switch'`）
+ * 不受这个冷却限制：那条 `#scaled` 只在一次切换准备好之后才会置位，不会重复响。
+ */
+export const RELAY_NOTICE_COOLDOWN_MS = 10 * 60_000;
+
+/**
+ * 房间"到线"之后该做什么（纯函数，单测直接钉住）。
+ *
+ * 三种结果：
+ *   · `switch` —— 确实存在更空闲的节点 → 准备切换（等房主点）；
+ *   · `notice` —— 没得换，但离上次打扰已经超过冷却时间 → 只通知玩家（说明卡是节点负载）；
+ *   · `skip`   —— 已经准备好过一次（`prepared`），或者刚通知过（冷却内）→ 什么都不做。
+ *
+ * 用纯函数是因为这里的组合最容易写歪：`prepared` 与冷却时间两条短路条件少一条，
+ * 结果就是"每 3 分钟叮咚一次"或者"准备好了却反复准备"。
+ */
+export function relayLoadAction(input: {
+  /** 有没有"确实更空"的可换节点 */
+  better: boolean;
+  /** 已经准备好过一次切换了吗（`#scaled` 里有这个房间） */
+  prepared: boolean;
+  /** 上一次"到线了但没得换"的通知时间（0 = 从没通知过） */
+  lastNoticeAt: number;
+  now: number;
+}): 'switch' | 'notice' | 'skip' {
+  if (input.prepared) return 'skip';
+  if (input.better) return 'switch';
+  return input.now - input.lastNoticeAt >= RELAY_NOTICE_COOLDOWN_MS ? 'notice' : 'skip';
+}
+
+/**
+ * 这名成员的票据中继是不是**已经落后于房间当前的中继**了（纯函数，单测直接钉住）。
+ *
+ * 用在心跳里：单节点模型下"换中继"＝整房搬走，房主点完「现在切换」之后，
+ * 其他成员还连在旧节点上（旧节点已经没有到房主的路）—— 主控不主动踢他们，
+ * 但每次心跳都如实告诉他们"该重连了"，客户端据此弹横幅 + 响一声。
+ *
+ * 三个"不算"：
+ *   · 房主：他的票据就是房间当前中继，永远一致；
+ *   · 还没分配过（`null`）：老成员/刚审批通过，下一次拉票据会自动补上，不是"变了"；
+ *   · 房间当前没有中继（空数组）：那是另一种故障，不该说成"换过了"。
+ */
+export function memberRelayStale(
+  roomRelayIds: readonly string[],
+  memberRelayId: string | null,
+  isHost: boolean,
+): boolean {
+  if (isHost) return false;
+  if (!memberRelayId) return false;
+  if (roomRelayIds.length === 0) return false;
+  return !roomRelayIds.includes(memberRelayId);
+}
+
+/**
  * 这一台是否属于「大带宽档」。
  *
  * 门槛是平台设置里的 `relayBigPipeBps`（默认 10 Mbps）；**`capacity_bps = 0`
@@ -549,20 +606,32 @@ export function pickRoomRelays(
   return [cross.id];
 }
 
-/** 房主票据里最多下发几台中继（成员从这几台里按负载抽，见 `docs/relay-assignment.md`） */
-export const RELAY_SET_SIZE = 3;
+/**
+ * 房主票据里下发几台中继 —— **1 台**（单节点模型，2026-10-03 用户拍板回归）。
+ *
+ * 为什么从"最多 3 台"退回 1 台（当时实测发现的洞）：
+ *   · 票据里的 `[[peer]]` 只是**初始引导节点**，不是"只许连这些"的白名单；
+ *   · EasyTier 是张网状网：成员连上自己那台之后，会通过它学到整个房间的路由表，
+ *     而房主同时连着那 3 台 —— 于是成员照样能和**另外两台**建立直连，并按代价最小选路，
+ *     数据完全可能走那两台（用户安卓端实测：成员同时握着到 3 台的直连，见
+ *     `docs/relay-assignment.md` 的"为什么会学到另外两台"）；
+ *   · 想让"只走分给自己那台"成立，代价机制（`avoid_relay_data`）粒度是**节点级全局**、
+ *     且在我们这种"代转外来网络的 public server"形态下**时灵时不灵**（复现见
+ *     `scripts/repro-easytier-avoid-relay.mjs`），靠不住。
+ * 只有房间里**只有一台**中继时，上述路径问题才从结构上消失：没有第二台可被误选。
+ * 代价（明确接受）：一台节点忙了，房间只能整体搬走（见 `promoteOverloadedRooms` 的通知），
+ * 不能像"≤3 台"那样把新成员摊到别的节点上。
+ */
+export const RELAY_SET_SIZE = 1;
 
 /**
- * 组出房间的中继集合（**最多 `size` 台**，默认 3 —— 用户 2026-09-30 定的模型）。
+ * 组出房间的中继集合（**最多 `size` 台**，生产用 1 —— 见 `RELAY_SET_SIZE`）。
  *
- * 规则：手选的第一台优先，剩下的由自动调度补齐（同一套排序：权重 → 延迟 → 空余带宽）；
- * 去重、截断到 `size`；没进集合的手选节点如实记进 `rejected` 让界面说清楚。
+ * 规则：手选的第一台优先，剩下的由自动调度补齐；去重、截断到 `size`；
+ * 没进集合的手选节点如实记进 `rejected` 让界面说清楚。
  *
- * 为什么是"一组几台"而不是"一台"或"全部"：
- *   · 房主把这几台**都**连上 → 每台都有一条直达房主的链路 ✓；
- *   · 成员从这几台里按负载抽一台 → 路径恒为 `成员 → 它那台 → 房主`（两跳）✓，
- *     既不依赖 EasyTier 那个靠不住的 avoid-relay 惩罚，也不需要节点之间互为 peer ✓；
- *   · 台数固定，房主的隧道数不会随成员增多而膨胀 ✓。
+ * 单节点模型下这里就是"手选第一台，其余如实告诉用户被忽略"；
+ * 保留 `size` 参数是为了单测能按多台钉住排序规则本身（那也是 `pickRoomRelays` 的用法）。
  *
  * 纯函数，单测直接钉住（`test/unit.test.ts`）。
  */
@@ -625,13 +694,25 @@ export function pickRoomRelay(
  */
 export const MEMBER_RELAY_TIE_BAND_MS = 10;
 
+/**
+ * 「卡」折成延迟的**默认汇率**（ms / 100% 利用率）—— 平台设置 `relayLoadPenaltyMs` 可覆盖。
+ *
+ * 为什么需要它（用户 2026-10-02 追问："他客户端学到的是握手延迟，根本不知道谁卡了"）：
+ * 成员的 tcping 只证明"路不远"，证明不了"那台不忙" —— 一台跑到 80% 的中继握手照样 5ms。
+ * 真正知道谁卡的是主控自己（节点心跳 rx/tx ÷ capacity_bps 的 EWMA 利用率），
+ * 所以把利用率按这个汇率折进成本：**40 = 跑满等于远了 40ms**（80% 等于 32ms）。
+ * 于是 20ms 的空管子赢过 5ms 但 80% 忙的管子（5+32=37 > 20），
+ * 而两台都空着时**仍然是纯延迟优先**（口径不变）。
+ */
+export const MEMBER_RELAY_LOAD_MS = 40;
+
 /** `pickMemberRelay` 的结果：选中的那台 + 两个"解释性"标志（调用方据此记日志） */
 export interface MemberRelayPick {
   /** 选中的中继 id；候选为空时为 null */
   id: string | null;
   /** 候选**全部**过了卸荷线，这次是兜底（"不能没人可分"，调用方记一条 warn） */
   allShed: boolean;
-  /** 这次真的用上了这名成员上报的延迟；false = 只按"最空的"选（没有提示 / 提示全是池外节点） */
+  /** 这次真的用上了这名成员上报的延迟；false = 只按"谁更空/更不忙"选 */
   usedHints: boolean;
 }
 
@@ -640,22 +721,28 @@ export interface MemberRelayPick {
  *
  *   ① **硬过滤**：利用率已经**到达卸荷线**（`utilization >= shedUtil`，小管子 80%、其余 90%）
  *      的中继直接排除 —— "到卸载线的就排出去"。这是硬条件，延迟再好也不破例；
- *   ② **延迟优先**：剩下的按**这名成员自己上报的 tcping**（加入请求里的 `latencyHints`）排队；
- *   ③ **10ms 以内算同一档**（`MEMBER_RELAY_TIE_BAND_MS`）→ 档内取**空余带宽最大**的那台；
+ *   ② **成本 = 延迟 + 汇率 × 利用率**（`loadPenaltyMs`，默认 40）：这才是"快不快"的完整口径 ——
+ *      成员的 tcping 只说得出"路远不远"，说不出"那台卡不卡"，而主控从节点心跳里知道；
+ *   ③ **10ms 以内算同一档**（`MEMBER_RELAY_TIE_BAND_MS`，按**成本**切）→ 档内取**空余带宽最大**的那台；
  *   ④ **没有延迟数据的中继排在最后**：只要有候选带提示，就在带提示的那批里选
  *      （"没测到"不是"延迟 0" —— 与 `selectRelays` 的语义一致）。
  *
  * 全过线时的兜底：**只有**这时才把过了线的候选放回来，按"最空的"选并置 `allShed` ——
  * 屋里一台都没得选时，给一个刚过线的中继，也比让成员没有票据、直接进不去房间好。
  *
- * 与 `selectRelays`（房间选中继）的区别只有一个：那一套是**权重优先**（运营方的意图优先，
- * 延迟只在同权重内比较），这里是**延迟优先**（成员体感优先，空余带宽只在同档内决胜）。
+ * 与 `selectRelays`（房间选中继）的区别仍然只有一个：那一套是**权重优先**（运营方的意图优先，
+ * 延迟只在同权重内比较）；这里是**延迟（含拥堵折价）优先**。
  * 之所以能这么分：房间选中继决定了整个房间走哪台，值得听运营方的；成员分中继只是
  * "在房间里已经定好的那几台之间摊开"，成员自己的体感才是唯一该优化的东西。
+ *
+ * ⚠️ `utilization` 只有在节点声明了 `capacity_bps` 时才非 0（没填 = 不限，算不出来），
+ * 所以**没填容量的节点不吃这个折价** —— 想让它生效就得在控制台给节点填带宽上限。
  */
 export function pickMemberRelay(
   candidates: readonly RelayCandidate[],
   hints: readonly RelayLatencyHint[] | null | undefined,
+  /** 「卡」折成延迟的汇率（ms / 100% 利用率）；平台设置 `relayLoadPenaltyMs`，0 = 关掉 */
+  loadPenaltyMs = MEMBER_RELAY_LOAD_MS,
 ): MemberRelayPick {
   if (candidates.length === 0) return { id: null, allShed: false, usedHints: false };
 
@@ -668,12 +755,21 @@ export function pickMemberRelay(
     if (prev === undefined || hint.ms < prev) hintMs.set(hint.nodeId, hint.ms);
   }
 
+  /**
+   * 这台此刻的"有效延迟"：握手延迟 + 拥堵折价。
+   *
+   * 折价用的就是卸荷线同一个量（`utilization`），所以口径只有一份：
+   * 越接近卸荷线，折价越大（40% 忙 = 远了 16ms，80% = 32ms），到线就整个排除。
+   */
+  const rate = Number.isFinite(loadPenaltyMs) && loadPenaltyMs > 0 ? loadPenaltyMs : 0;
+  const costOf = (c: RelayCandidate): number => rate * Math.min(1, Math.max(0, c.utilization));
+
   /* ① 卸荷线：`>=` 是"到达即不再接新负载"，与 NodeService 的状态判定同一条线 */
   const below = candidates.filter((c) => c.utilization < (c.shedUtil ?? UTIL_SHED));
   const allShed = below.length === 0;
 
   /**
-   * ②④ 延迟优先：只在"带提示"的那批里挑；一台都没提示时才整池参与。
+   * ②④ 延迟（含折价）优先：只在"带提示"的那批里挑；一台都没提示时才整池参与。
    *
    * ⚠️ 全过线（`allShed`）时**不看延迟** —— 那时已经没有"没到线的"可选，延迟不再是判据，
    * 只看谁还剩一点（延迟好的那台恰好也最满，正是最不该再塞人的情况）。这也让
@@ -687,10 +783,12 @@ export function pickMemberRelay(
     const hinted = pool.filter((c) => hintMs.has(c.row.id));
     usedHints = hinted.length > 0;
     if (usedHints) {
+      /** 成本 = 成员测到的握手延迟 + 这台此刻的拥堵折价 */
+      const cost = (c: RelayCandidate): number => hintMs.get(c.row.id)! + costOf(c);
       let best = Number.POSITIVE_INFINITY;
-      for (const c of hinted) best = Math.min(best, hintMs.get(c.row.id)!);
-      /* ③ 区间极差 ≤ 10ms 的连续一段 = 同一档 */
-      pool = hinted.filter((c) => hintMs.get(c.row.id)! - best <= MEMBER_RELAY_TIE_BAND_MS);
+      for (const c of hinted) best = Math.min(best, cost(c));
+      /* ③ 区间极差 ≤ 10ms 的连续一段 = 同一档（按成本切） */
+      pool = hinted.filter((c) => cost(c) - best <= MEMBER_RELAY_TIE_BAND_MS);
     }
   }
 
@@ -742,6 +840,22 @@ export class RoomService {
    */
   readonly #joinHints = new Map<string, { hints: RelayLatencyHint[]; at: number }>();
   static readonly #HINTS_TTL_MS = 30 * 60_000;
+
+  /**
+   * 「已经挑好、但还没生效」的新中继（`roomId → nodeId`）。
+   *
+   * 为什么要有这层待生效状态（单节点模型的关键安全点）：房间里只有一台中继，
+   * 换台 ＝ **整房搬走**。房主不先搬，成员先搬过去就找不到房主（那台节点上没有到房主的路），
+   * 房间直接散架。所以过载时只**准备**目标并通知玩家，真正的落库发生在
+   * **房主下一次拉票据**（他点「现在切换」或退出重进）那一刻；在此之前所有人的票据
+   * 拿到的仍是旧中继，谁先重连都不会把自己弄丢。
+   *
+   * 内存态：主控重启就丢（房间短命，过载窗口计数同样是内存态，代价可忽略）。
+   */
+  readonly #pendingRelay = new Map<string, string>();
+
+  /** 上一条"节点负载高、暂时没得换"的通知时间（同一房间 10 分钟内不重复打扰） */
+  readonly #noticedAt = new Map<string, number>();
 
   constructor(
     config: ServerConfig,
@@ -1303,7 +1417,7 @@ export class RoomService {
      */
     latencyHints?: readonly RelayLatencyHint[] | null,
   ): RoomTicket {
-    const row = this.getRow(roomId);
+    let row = this.getRow(roomId);
     const member = this.rooms.findMember(roomId, userId);
     if (!member || member.status === 'kicked') {
       throw HttpError.forbidden('你不在该房间中');
@@ -1312,14 +1426,24 @@ export class RoomService {
       throw HttpError.forbidden('等待房主审批');
     }
 
+    /*
+     * 房主拉票据 = **换中继的唯一生效点**（见 `#pendingRelay` 的注释）：
+     * 先落库，再把成员的分配合清掉（他们下次拉票据/重连时自动分到新那台），
+     * 并在房间里留一条系统消息 —— 其他人看到就知道该重连了。
+     * 成员拉票据**不会**触发它：成员先搬过去会找不到房主，房间就散架了。
+     */
+    if (row.host_user_id === userId && this.#applyPendingRelay(roomId)) {
+      row = this.getRow(roomId);
+    }
+
     const room = toRoom(row);
     const isHost = room.hostUserId === userId;
     /*
      * 中继集合**按角色**决定（`docs/relay-assignment.md`）：
-     *   · 房主 → **全部可调度节点**：每台都有一条直达房主的链路，成员分配怎么变都不用动房主；
-     *   · 成员 → **只有分配给他的那一台**：到房主的路只有一条，不依赖 EasyTier 那个靠不住的
-     *     avoid-relay 惩罚（复现见 `scripts/repro-easytier-avoid-relay.mjs`）。
-     *
+     *   · 房主 → 房间的中继集合；
+     *   · 成员 → 只有分配给他的那一台。
+     * 单节点模型（`RELAY_SET_SIZE = 1`）下两者其实是同一台 —— 保留这个分叉是因为
+     * "成员只连自己那台"这条不变式仍然由它保证（哪天集合重新变多台也不用改这里）。
      * 成员分配在**第一次拉票据时**定下来并写回 `room_members.relay_node_id` ✓：
      * 这样三条加入路径都不用各自接一遍调度，而且已经在房里的老成员下次拉票据也会自动补上分配。
      * 分配失败（比如一台都不可调度）时退回房间默认（`room.relayNodeIds[0]`）—— 也就是旧行为。
@@ -1327,12 +1451,16 @@ export class RoomService {
     let assignedRelayId = member.relay_node_id ?? null;
     if (!isHost) {
       /*
-       * 成员：在房间的中继集合（最多 3 台，见 `RELAY_SET_SIZE`）里挑一台并**固定**下来。
+       * 成员：在房间的中继集合里挑一台并**固定**下来。
        * 口径（用户 2026-10-02 定，`docs/relay-assignment.md`）：
        *   ① 已经**到达卸荷线**的中继直接排除（小管子 80%、其余 90%）；
-       *   ② 剩下的**按这名成员自己上报的 tcping 延迟优先**（join 请求里的 `latencyHints`）；
-       *   ③ 延迟相差 ≤ 10ms 视为同一档，档内取空余带宽最大的那台；
+       *   ② 剩下的按"成本 = 该成员自己上报的 tcping 延迟 + 负载折价"排队；
+       *   ③ 相差 ≤ 10ms 视为同一档，档内取空余带宽最大的那台；
        *   ④ 没有延迟数据的中继排在最后。规则本体在纯函数 `pickMemberRelay` 里（有单测）。
+       *
+       * ⚠️ 单节点模型（`RELAY_SET_SIZE = 1`）下池子里只有一台，②③④ 自然用不上 ——
+       * 那套排序是为"集合重新变多台"准备的（也是单测钉着的规则）。这里保留它，是因为
+       * "分到的那台还在不在池子里"这个判断与重分逻辑与台数无关。
        *
        * 已经在房的成员**不再改分配**：换中继要断一次线，而卸荷线约束的是"接新负载"，
        * 已经在上面跑的成员不该被赶走（与节点侧"这条线只挡新房间"的口径一致）。
@@ -1347,7 +1475,11 @@ export class RoomService {
         // 显式的提示优先；没有就用 join 时暂存的那一份（取走即删）
         const remembered = this.#takeHints(roomId, userId);
         const hints = latencyHints && latencyHints.length > 0 ? latencyHints : remembered;
-        const pick = pickMemberRelay(candidates, hints);
+        /*
+         * 汇率（「卡」折成延迟）跟随平台设置：成员测到的握手延迟 + 汇率 × 该节点利用率。
+         * 成员客户端测不出"卡"，负载只有主控知道（节点心跳的 EWMA），这一项就是把它接进来。
+         */
+        const pick = pickMemberRelay(candidates, hints, this.settings.current.relayLoadPenaltyMs);
         assignedRelayId = pick.id ?? pool[0] ?? null;
         if (pick.allShed) {
           log.warn('房间的中继都过了卸荷线，这名成员只能分到最空的那台', {
@@ -1362,6 +1494,12 @@ export class RoomService {
           user: userId,
           relay: assignedRelayId,
           byLatency: pick.usedHints,
+          // 把候选的实际读数记下来，事后能复盘"为什么分给了它"
+          candidates: candidates.map((c) => ({
+            id: c.row.id,
+            ms: hints.find((h) => h.nodeId === c.row.id)?.ms ?? null,
+            util: Number(c.utilization.toFixed(3)),
+          })),
         });
       }
     }
@@ -1574,11 +1712,11 @@ export class RoomService {
       /** 客户端当前已应用的 ACL 版本；与房间当前版本一致时就不必再下发 ACL */
       aclRevision?: number;
     },
-  ): { kicked: boolean; aclToml: string | null; aclRevision: number } {
+  ): { kicked: boolean; aclToml: string | null; aclRevision: number; relayChanged: boolean } {
     const member = this.rooms.findMember(roomId, userId);
-    if (!member) return { kicked: true, aclToml: null, aclRevision: 0 };
+    if (!member) return { kicked: true, aclToml: null, aclRevision: 0, relayChanged: false };
     if (member.status === 'kicked') {
-      return { kicked: true, aclToml: null, aclRevision: 0 };
+      return { kicked: true, aclToml: null, aclRevision: 0, relayChanged: false };
     }
 
     // 挑一条链路作为该成员的「体感延迟 + 链路类型」：判定逻辑在 resolveMemberLink（有单测）。
@@ -1628,7 +1766,19 @@ export class RoomService {
       kicked: false,
       aclToml: needsAcl ? this.aclToml(roomId) : null,
       aclRevision: revision,
+      relayChanged: this.#relayChangedFor(row, member, isHostOfRoom === true),
     };
+  }
+
+  /**
+   * 这名成员的票据中继**已经和房间现在的中继不一致**了吗（要重连才能用上新的）。
+   *
+   * 判定本体是纯函数 `memberRelayStale`（有单测：房主/未分配/房间没中继三种"不算"）。
+   * 这里只负责把房间行解出来喂进去。
+   */
+  #relayChangedFor(row: JoinedRoomRow | undefined, member: MemberRow, isHost: boolean): boolean {
+    if (!row) return false;
+    return memberRelayStale(toRoom(row).relayNodeIds, member.relay_node_id ?? null, isHost);
   }
 
   /* ------------------------------------------------------------ 调度 */
@@ -1641,7 +1791,8 @@ export class RoomService {
    * **权重降序 → 权重相同才比延迟 → 延迟并列带（区间极差 ≤5ms）内先比空余带宽
    * → relayScore → peers**（见那里的注释）。
    *
-   * `max = 2` 时返回的就是「主中继 + 兜底中继」两个**不同**节点（一次取前两名）。
+   * `max = 2` 时返回的就是两个**不同**节点（一次取前两名）；生产用的是 `RELAY_SET_SIZE = 1`
+   * （单节点模型，见那里的注释），多台分支只留给单测钉排序规则。
    *
    * `latencyHints` 缺省（老客户端 / 改区域触发的重调度）＝ 权重优先、同权重再按 relayScore；
    * 注意这**不再**等于改造前的纯 relayScore 排序（权重成了第一判据，见 `selectRelays`）。
@@ -1651,7 +1802,7 @@ export class RoomService {
    * ⚠️ 这里**不缓存**任何"谁被选中"的状态：每次调用都重新采样 `utilization` 并重新排序，
    * 所以"某台满了就换一台"是天然的浮动切换（下一张票据自动生效），不需要状态机。
    */
-  scheduleRelays(zone: string, latencyHints: readonly RelayLatencyHint[] = [], max = 2): string[] {
+  scheduleRelays(zone: string, latencyHints: readonly RelayLatencyHint[] = [], max = RELAY_SET_SIZE): string[] {
     const all = this.nodes.listSchedulable();
     if (all.length === 0) return [];
     /**
@@ -1776,7 +1927,19 @@ export class RoomService {
   promoteOverloadedRooms(
     samples: ReadonlyArray<{ networkName: string; rxBps: number; txBps: number }>,
     now = Date.now(),
-  ): Array<{ roomId: string; code: string; to: string; from: string; rxBps: number; txBps: number; message: string }> {
+  ): Array<{
+    roomId: string;
+    code: string;
+    /** `switch` = 已准备好更空闲的中继（等房主点切换）；`notice` = 到线了但没得换，只通知 */
+    kind: 'switch' | 'notice';
+    to: string;
+    from: string;
+    /** 那台节点**整体**的利用率（0–1），日志与文案都用它 */
+    nodeUtil: number;
+    rxBps: number;
+    txBps: number;
+    message: string;
+  }> {
     const threshold = Math.max(0, this.settings.current.relayScaleMbps) * 1_000_000;
     if (threshold <= 0) return [];
 
@@ -1794,8 +1957,10 @@ export class RoomService {
     const promoted: Array<{
       roomId: string;
       code: string;
+      kind: 'switch' | 'notice';
       to: string;
       from: string;
+      nodeUtil: number;
       rxBps: number;
       txBps: number;
       /** 给玩家的建议文案（客户端复用消息通知弹出来，切不切由玩家决定） */
@@ -1820,18 +1985,29 @@ export class RoomService {
       const relayCapBps = relayRow?.capacity_bps ?? 0;
       const shedLine = relayCapBps > 0 ? relayCapBps * this.shedUtilOf(relayRow!) : Number.POSITIVE_INFINITY;
       const roomThreshold = Math.max(1, Math.min(threshold, shedLine));
-      const over = total >= roomThreshold;
+      /**
+       * **两种"到线"都算过载**（用户 2026-10-03 的口径：「节点负载到了就通知」）：
+       *   ① 这个房间自己跑出来的量 ≥ 房间阈值（原来的判据，按房间流量算）；
+       *   ② 那台节点**整体**的利用率 ≥ 它自己的卸荷线 —— 上面还跑着别的房间，
+       *      节点快满了，这个房间也该准备搬（单节点模型里"搬"＝整房换台）。
+       * ② 用的就是调度、卸荷线共用的那个 EWMA 利用率（节点心跳算出来），不是这个房间的读数。
+       */
+      const nodeUtil = relayRow ? this.utilizationOf(relayRow) : 0;
+      const nodeShed = relayRow ? this.shedUtilOf(relayRow) : UTIL_SHED;
+      const nodeBusy = relayRow !== null && nodeUtil >= nodeShed;
+      const over = total >= roomThreshold || nodeBusy;
 
       // 有符号窗口计数：正 = 持续超载，负 = 持续空闲
       const windows = this.#loadWindows.get(roomId) ?? 0;
       const next = over ? Math.max(windows, 0) + 1 : Math.min(windows, 0) - 1;
       this.#loadWindows.set(roomId, next);
 
-      if (next >= RELAY_SCALE_WINDOWS && !this.#scaled.has(roomId)) {
+      if (next >= RELAY_SCALE_WINDOWS) {
         /*
-         * 单节点模型：房间只有一台中继，过载时把它换成"更空的大管子"。
-         * 换完**只影响后续进房的人**（票据每次都现算）；已经在房间里的人这一局不变。
-         * 只在确实存在更空的候选时才换，避免为了动作而动作。
+         * 单节点模型：房间只有一台中继，过载时**整房搬到更空的大管子**。
+         * 注意这里只"准备"目标（`#pendingRelay`），真正的落库发生在房主下一次拉票据 ——
+         * 成员先搬过去会找不到房主（见 `#pendingRelay` 的注释）。
+         * 只在确实存在更空的候选时才搬，避免为了动作而动作。
          */
         const [relayId] = current;
         if (!relayId) continue;
@@ -1842,15 +2018,50 @@ export class RoomService {
           .map((row) => ({ row, utilization: this.utilizationOf(row), shedUtil: this.shedUtilOf(row) }))
           .filter((c) => c.row.id !== relayId && this.isBigPipe(c.row) && !this.isBandwidthBusy(c.row))
           .sort((a, b) => freeBandwidth(b.utilization) - freeBandwidth(a.utilization) || b.row.weight - a.row.weight)[0];
-        if (!candidate) {
-          log.warn('房间中继过载，但没有更空的大带宽节点可换（见设置「大带宽档门槛」）', { room: roomId, code: row.code });
+        const better = candidate !== undefined && freeBandwidth(candidate.utilization) > currentFree;
+        /** 该做什么由纯函数决定（准备好过 / 冷却中都短路，见那里的注释） */
+        const action = relayLoadAction({
+          better,
+          prepared: this.#scaled.has(roomId),
+          lastNoticeAt: this.#noticedAt.get(roomId) ?? 0,
+          now,
+        });
+        if (action === 'skip') continue;
+        if (action === 'notice') {
+          /*
+           * **没有更好的节点可换**，但节点确实到线了 —— 也要告诉玩家（用户明确要的：
+           * "节点负载到了就客户端响一下"）。内容说实话：这台忙了、暂时没得换，
+           * 让他们知道卡是节点负载而不是自己网络的问题。
+           */
+          this.#noticedAt.set(roomId, now);
+          this.#loadWindows.set(roomId, 0);
+          const percent = Math.round(Math.max(nodeUtil, relayCapBps > 0 ? total / relayCapBps : 0) * 100);
+          const message =
+            `平台提示：这个房间用的中继节点「${relayRow?.name ?? relayId}」负载已经到线（约 ${percent}%），` +
+            '可能会开始卡顿。目前没有更空闲的节点可以换，先忍一下；' +
+            '稍后可以在房间页点「重连」再看一次，或让房主换个区域重新建房。';
+          this.systemMessage(roomId, message);
+          log.warn('房间中继节点负载到线，但没有更空的大带宽节点可换（已通知玩家）', {
+            room: roomId,
+            code: row.code,
+            node: relayId,
+            utilization: Number(nodeUtil.toFixed(3)),
+          });
+          promoted.push({
+            roomId,
+            code: row.code,
+            kind: 'notice',
+            to: relayId,
+            from: relayId,
+            nodeUtil,
+            rxBps: r.rx,
+            txBps: r.tx,
+            message,
+          });
           continue;
         }
-        if (freeBandwidth(candidate.utilization) <= currentFree) {
-          log.warn('房间中继过载，但当前中继已是最空的大带宽节点', { room: roomId, code: row.code });
-          continue;
-        }
-        this.rooms.setRelayNodeIds(roomId, [candidate.row.id]);
+        if (!candidate) continue; // 类型收窄（action === 'switch' 时 better 为真，必然有 candidate）
+        this.#pendingRelay.set(roomId, candidate.row.id);
         this.#scaled.set(roomId, { previous: current, rxBps: r.rx, txBps: r.tx, at: now });
         this.#loadWindows.set(roomId, 0);
         /**
@@ -1859,20 +2070,27 @@ export class RoomService {
          * 为什么要人工确认：换中继要重建隧道、卡顿几秒，而玩家可能正在联机的关键时刻
          * （打 BOSS、比赛最后一把）。所以主控只把"有更空闲的中继可用"这条信息推出去，
          * 切不切由玩家自己决定 —— 客户端收到 `room.relayHint` 后复用消息通知那条链路
-         * 弹提示，玩家点了才走 `reenterRoom()`（那条路径不调 leave，房主也不会关房）。
+         * 弹提示（新版客户端还会响一声），房主点了才走 `reenterRoom()`。
+         *
+         * ⚠️ 单节点模型下**必须先房主**：真正的切换在房主拉票据那一刻生效，
+         * 成员早点点「重连」也只会拿到旧中继（不会把自己弄丢，见 `#pendingRelay`）。
          *
          * 同时写一条房间系统消息：聊天记录里留痕，事后追溯"这个房间被换过中继"。
          */
+        const targetName = candidate.row.name || candidate.row.id;
         const message =
-          '平台提示：这个房间的中继有点挤，已经为你准备了更空闲的中继。' +
-          '想切换的话回到首页在「最近进入」里点一下这个房间（会卡顿几秒）；' +
+          `平台提示：这个房间的中继节点「${relayRow?.name ?? relayId}」负载到线了，` +
+          `已经准备好更空闲的「${targetName}」。` +
+          '房主点下面的「现在切换」即可（几秒断线），其他成员等房主切完之后点「重连」；' +
           '请不要点「退出房间」—— 房主退出会关闭房间。不切换也不影响继续联机。';
         this.systemMessage(roomId, message);
         promoted.push({
           roomId,
           code: row.code,
+          kind: 'switch',
           to: candidate.row.id,
           from: relayId,
+          nodeUtil,
           rxBps: r.rx,
           txBps: r.tx,
           message,
@@ -1883,10 +2101,16 @@ export class RoomService {
       // 回落：降到阈值以下并且之前提升过 → 还原成原来的顺序（只在没人重进时悄悄发生）
       if (next <= -RELAY_SCALE_WINDOWS && this.#scaled.has(roomId)) {
         const state = this.#scaled.get(roomId)!;
-        this.rooms.setRelayNodeIds(roomId, state.previous);
+        // 还没来得及搬（房主还没拉票据）就直接取消这次准备，别把房间搬走
+        if (this.#pendingRelay.has(roomId)) {
+          this.#pendingRelay.delete(roomId);
+          log.info('房间中继负载回落，已取消准备好的切换', { room: roomId, code: row.code });
+        } else {
+          this.rooms.setRelayNodeIds(roomId, state.previous);
+          log.info('房间中继已回到原顺序（流量回落）', { room: roomId, code: row.code });
+        }
         this.#scaled.delete(roomId);
         this.#loadWindows.set(roomId, 0);
-        log.info('房间中继已回到原顺序（流量回落）', { room: roomId, code: row.code });
       }
     }
     return promoted;
@@ -1939,6 +2163,44 @@ export class RoomService {
     if (!found) return [];
     this.#joinHints.delete(key);
     return Date.now() - found.at > RoomService.#HINTS_TTL_MS ? [] : found.hints;
+  }
+
+  /**
+   * 把"准备好的新中继"落库（房主拉票据时调用）。返回是否真的换了。
+   *
+   * 三件事必须一起做：
+   *   1. `room.relayNodeIds` 换成新的 —— 之后所有票据都拿新那台；
+   *   2. **清掉所有成员的分配合**（`relay_node_id`）—— 否则成员下次拉票据时
+   *      "分到的那台还在集合里吗"那一判断会失败重分，虽然也能修好，但会先发一张
+   *      指向旧中继的票据（那一瞬间他是连不上的）；清掉更直接；
+   *   3. 房间里写一条系统消息 —— 聊天里留痕，其他人看到就知道要重连（客户端还会响一声）。
+   *
+   * 节点已经不在了（被删/停用）就放弃这次切换并清掉待生效状态：宁可继续用旧的，
+   * 也不能把整房搬到一个不存在的节点上。
+   */
+  #applyPendingRelay(roomId: string): boolean {
+    const target = this.#pendingRelay.get(roomId);
+    if (!target) return false;
+    this.#pendingRelay.delete(roomId);
+    if (!this.nodes.findById(target)) {
+      log.warn('准备切换的中继节点已不存在，放弃这次切换', { room: roomId, node: target });
+      return false;
+    }
+    const row = this.rooms.findById(roomId);
+    if (!row || row.status !== 'open') return false;
+    const previous = toRoom(row).relayNodeIds;
+    if (previous.length === 1 && previous[0] === target) return false;
+    this.rooms.setRelayNodeIds(roomId, [target]);
+    this.rooms.clearMemberRelays(roomId);
+    const name = this.nodes.findById(target)?.name ?? target;
+    this.systemMessage(
+      roomId,
+      `房主已把中继切换到「${name}」。其他成员请点房间页上的提示重连一次（会卡顿几秒），` +
+        '没重连的人暂时连不上房间。',
+    );
+    log.info('房间中继已切换（房主拉票据时生效）', { room: roomId, code: row.code, from: previous.join(','), to: target });
+    notifyChanged(this.events, roomId);
+    return true;
   }
 
   #uniqueCode(): string {

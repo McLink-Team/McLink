@@ -21,7 +21,7 @@ import { computed, onMounted, ref } from 'vue';
 import { REGIONS, regionLabel, Routes, type RegionDef, type Room } from '@mclink/shared';
 import { copyText } from '../lib/clipboard.ts';
 import { api, friendlyError } from '../lib/api.ts';
-import { clientState, joinRoom, relayLatencyHints, waitForRelayProbe } from '../lib/store.ts';
+import { clientState, ensureFreshRelayHints, joinRoom } from '../lib/store.ts';
 
 const props = withDefaults(defineProps<{ canJoin?: boolean }>(), { canJoin: true });
 
@@ -82,10 +82,11 @@ async function doJoin(room: Room, pw?: string): Promise<void> {
   busyId.value = room.id;
   error.value = '';
   try {
-    // 与建房/输码进房同一条规则：进房前对"正在跑的测速"做一次**有界等待**
-    //（最多 RELAY_PROBE_WAIT_MS），好让主控按本机延迟给这名成员分中继。
-    // 探测失败或超时照常进房 —— 测速永远挡不住进房，见 store.ts 的 waitForRelayProbe。
-    if (relayLatencyHints().length === 0) await waitForRelayProbe();
+    // 与建房/输码进房同一条规则：进房前保证手上有一份**不太旧**的测速结果
+    //（没有/超过保鲜期就测一轮，最多等 RELAY_PROBE_WAIT_MS），好让主控按本机延迟
+    // 加负载折价给这名成员分中继。探测失败或超时照常进房 —— 测速永远挡不住进房，
+    // 见 store.ts 的 ensureFreshRelayHints。
+    await ensureFreshRelayHints();
     await joinRoom(room.code, pw);
     password.value = '';
   } catch (err) {

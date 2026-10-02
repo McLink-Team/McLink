@@ -59,7 +59,7 @@ interface RoomDetail {
 }
 
 /**
- * 成员票据里那台中继的名字（房主 = 整个集合，成员 = 分到的那一台）。
+ * 成员票据里那台中继的名字（单节点模型：房主与成员都是同一台）。
  *
  * 数据来自 `room_members.relay_node_id`（V25 迁移起落库，见 docs/relay-assignment.md）：
  * 它是**这名成员真正连的那台**，排障时比"房间的调度名单"更直接 ——
@@ -69,6 +69,7 @@ interface RoomDetail {
 function memberRelayLabel(m: RoomMember): string {
   if (m.role === 'host') {
     const count = (detail.value?.scheduledRelays ?? []).length;
+    if (count === 1) return '这一台（房主也连它）';
     return count > 0 ? `全部 ${count} 台（房主都连）` : '全部（房主都连）';
   }
   const id = m.relayNodeId ?? null;

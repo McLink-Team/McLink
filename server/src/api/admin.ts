@@ -702,6 +702,8 @@ export function registerAdminRoutes(router: Router, app: App): void {
       'relayBigPipeBps',
       'relayScaleMbps',
       'relaySmallShedPercent',
+      // 「卡」折成延迟的汇率（ms / 100% 利用率，0 = 关掉）；上限 1000 够用了
+      'relayLoadPenaltyMs',
     ] as const) {
       if (key in body) {
         const value = optInt(body, key, 0, 100_000_000);

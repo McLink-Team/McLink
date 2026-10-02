@@ -26,6 +26,7 @@ import {
   setNotifySink,
   type NotifyPayload,
 } from './notify.ts';
+import { setSoundEnabledProbe } from './notice-sound.ts';
 
 interface NotifyTestHooks {
   /** 喂一条形状与 WS 下发**完全一致**的原始事件：走 store 里同一个 handleServerEvent */
@@ -55,6 +56,11 @@ export function setupNotifications(): void {
       return session && session.room.id === roomId ? session.room.name : '';
     },
   });
+  /**
+   * 提示音跟随**同一个**开关（设置页的「有人发消息时提醒我」）：
+   * 玩家关掉提醒就是不想被打扰，再单独弹一个"提示音"开关只会让人多猜一层。
+   */
+  setSoundEnabledProbe(() => messagesEnabled());
   if (window.mclink?.testHooks !== true) return;
 
   const hooks: NotifyTestHooks = {

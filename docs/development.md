@@ -466,8 +466,9 @@ sudo bash "$PWD/deploy/install-server.sh" --skip-install --skip-web   # 无新�
 pnpm dev:server                                # 另开一个终端保持运行（默认 8787）
 
 node scripts/check-node-config-revision.mjs    # 配置版本 +1 / 心跳下发配置（11 项）
-node scripts/check-relay-slots.mjs             # 房主票据=整个集合、成员只拿1台且按延迟优先（13 项；
-                                               #   自造节点 + 临时账号，跑完清理/封禁）
+node scripts/check-relay-slots.mjs             # 单节点票据（房主=成员=同一台）+ 分配落库 +
+                                               #   心跳 relayChanged + 卸荷线（15 项；自造节点 +
+                                               #   临时账号，跑完清理/封禁）
 node scripts/check-node-cmd-origin.mjs         # 签发节点命令里的主控地址（4 项；自造请求头）
 node scripts/check-trusted-proxies.mjs         # 控制台里的可信代理真的生效（7 项；看审计行 ip）
 node scripts/repro-easytier-avoid-relay.mjs    # 复现 EasyTier 的 avoid-relay 失效（四实例本地拓扑，见 §10.5）
@@ -480,10 +481,13 @@ node scripts/fetch-client-artifacts.mjs --help # 一键收产物：改名 + 算 
 `MCLINK_MASTER`（或 `MCLINK_PORT`）覆盖；它们会在开发库里留下一次性注册密钥（未使用），
 `check-relay-slots.mjs` 还会多留一个**已封禁**的临时账号（接口没有删用户的路径）。
 
-`check-relay-slots.mjs` 的 ④ 组是**成员侧**的活体断言（2026-10-02 加）：注册一个临时账号，
-带"故意偏心"的延迟提示进房，验"只拿 1 台 + 拿的是最近那台 + 分配已固定 + 写回了
-`relay_node_id`"。"过卸荷线就排除"那条 live 里构造不出来（要等 EWMA 收敛 3 分钟），
-由单测 `pickMemberRelay` 钉住。若主控开了「必须验证邮箱」，这一组会如实报 SKIP 而不是 FAIL。
+`check-relay-slots.mjs` 的 ④ 组是**成员侧**的活体断言（2026-10-02 加，10-03 按单节点模型重写）：
+注册一个临时账号进房，验"成员票据只有 1 台、且**与房主那台是同一台**、分配已固定、写回了
+`relay_node_id`"；⑤ 验正常态下心跳的 `relayChanged === false`；⑥ 验**自动调度**不会把已过卸荷线的
+节点分给新房间（造法：容量写 1 Mbps、首帧心跳就报 1 Mbps，EWMA 首样本即 100%）。
+换台那条链路的"正例"（房主点切换后成员心跳变 `true`）要真的触发一次过载（6 个 30 秒窗口），
+live 脚本里等不起，由单测 `relayLoadAction` + `memberRelayStale` 钉住判定本身。
+若主控开了「必须验证邮箱」，④ 组会如实报 SKIP 而不是 FAIL。
 
 ---
 

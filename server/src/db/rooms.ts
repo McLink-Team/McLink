@@ -575,6 +575,17 @@ export class RoomRepo {
     );
   }
 
+  /**
+   * 清掉整个房间的成员中继分配（房间换中继时用，见 `RoomService.#applyPendingRelay`）。
+   *
+   * 为什么整房清：单节点模型里房间换台 = 所有人都得跟着搬，留着旧分配只会让
+   * 下一个人先拿到一张指向旧节点的票据（那一瞬间连不上）；清掉之后每个人
+   * 下次拉票据/重连时自动分到新那台。
+   */
+  clearMemberRelays(roomId: string): number {
+    return Number(this.db.run('update room_members set relay_node_id = null where room_id = ?', roomId).changes);
+  }
+
   updateMemberHeartbeat(
     roomId: string,
     userId: string,
