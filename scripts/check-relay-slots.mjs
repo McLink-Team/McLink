@@ -87,15 +87,19 @@ try {
   const b = await makeNode(`slots-assist-${RUN}`, BASE_PORT + 1);
   made.push(a.id, b.id);
 
-  /** a = 能承载数据（当手选中继）；b = 只协助打洞（当打洞节点） */
+  /** a = 大管子；b = 小管子（单节点模型下 assist_only 已不再影响配置与调度，这里只用来造差异） */
   await api(`/admin/nodes/${b.id}`, { method: 'PATCH', token: admin.token, body: { assistOnly: true } });
   await api(`/admin/nodes/${a.id}`, { method: 'PATCH', token: admin.token, body: { assistOnly: false, capacityBps: 0 } });
 
   const nodes = (await api('/nodes', { token: admin.token })).nodes;
+  /*
+   * 单节点模型（2026-09-30 起）下 `/nodes` **不再下发 `assistOnly`** ——
+   * 「只协助打洞」那套语义已废弃（所有节点都允许中继）。继续下发只会让老客户端把房间页
+   * 写成「只协助打洞（不承载流量）」，那是错的（见 docs/relay-assignment.md）。
+   */
   check(
-    '客户端节点列表带 assistOnly（手动选择要靠它提示玩家）',
-    nodes.filter((n) => [a.id, b.id].includes(n.id)).every((n) => typeof n.assistOnly === 'boolean') &&
-      nodes.find((n) => n.id === b.id)?.assistOnly === true,
+    '客户端节点列表**不再**下发 assistOnly（该语义已废弃）',
+    nodes.filter((n) => [a.id, b.id].includes(n.id)).every((n) => n.assistOnly === undefined),
     JSON.stringify(nodes.filter((n) => [a.id, b.id].includes(n.id)).map((n) => [n.name, n.assistOnly])),
   );
   // ① 手选一台 → 它就是房间唯一的节点（单节点模型：不再有"打洞槽/中继槽"之分）
