@@ -21,6 +21,8 @@ import {
   createRoom,
   ensureFreshRelayHints,
   ensureRelayProbe,
+  RELAY_PROBE_WAIT_CREATE_MS,
+  RELAY_PROBE_WAIT_JOIN_MS,
   joinRoom,
   loadRooms,
   openUpdatePage,
@@ -192,15 +194,12 @@ async function doJoin(): Promise<void> {
   busy.value = true;
   try {
     /**
-     * 进房请求里也带 `latencyHints` —— 主控用它决定**这名成员被分到哪台中继**
-     * （有效延迟 = 握手延迟 + 负载折价，见 server 的 `pickMemberRelay`）。
-     *
-     * 这里调 `ensureFreshRelayHints()`：有缓存且没过期就立刻返回；没有/过期了才测一轮，
-     * 且**最多等 `RELAY_PROBE_WAIT_MS`**（探测失败、超时都照常进房）。
-     * 换句话说：**测速永远挡不住进房**，但"拿一份十年前的数"或"手速快过测速就发空提示"
-     * 都不再是默认路径。
+     * 进房请求里也带 `latencyHints`（主控用它决定这名成员被分到哪台中继）。
+     * 单节点模型下一个房间只有一台中继，进房的提示基本不影响结果，所以这里只等
+     * `RELAY_PROBE_WAIT_JOIN_MS`（1.2 秒）—— **测速永远挡不住进房**。
+     * 建房那条走的是更长的 `RELAY_PROBE_WAIT_CREATE_MS`（4 秒，见 doCreate）。
      */
-    await ensureFreshRelayHints();
+    await ensureFreshRelayHints(RELAY_PROBE_WAIT_JOIN_MS);
     await joinRoom(value, joinPassword.value || undefined);
     code.value = '';
     joinPassword.value = '';
@@ -222,16 +221,15 @@ async function doCreate(): Promise<void> {
     /**
      * ⚠️ 「手速快过测速」的修法：建房按钮**不禁用**（弱网/节点全不可达时禁用会让人永远建不了房），
      * 所以玩家完全可能在 tcping 还在跑的时候就点提交 —— 那一刻延迟提示是空数组，
-     * 主控那侧的延迟键失效，直接退化成"权重 × 余量"排序。
+     * 主控那侧的延迟键失效，直接退化成"谁大谁空谁赢"的排序（用户实测：被推到德国 9929）。
      *
-     * `ensureFreshRelayHints()`（见 store.ts）把这件事收成一条：
-     *   · 有缓存且没过保鲜期（10 分钟）→ 立刻返回，不多花一毫秒；
-     *   · 没缓存 / 过期了 → 测一轮并**有界等待**（最多 `RELAY_PROBE_WAIT_MS`）；
-     *   · 超时或探测失败 → 照常发请求（空提示也能建房，只是主控按负载排）。
-     * 换句话说：探测**永远不会**挡住建房，但"拿一份很旧的数"或"跑到一半就发空提示"
-     * 都不再是默认路径。
+     * `ensureFreshRelayHints(RELAY_PROBE_WAIT_CREATE_MS)`（见 store.ts）把这件事收成一条：
+     *   · 有缓存、有能用的数、也没过保鲜期（10 分钟）→ 立刻返回，不多花一毫秒；
+     *   · 没缓存 / 全是 null / 过期了 → 测一轮并**有界等待**（建房最多 4 秒，
+     *     一次探测最坏就是 3 次握手 × 1.2 秒超时；选中继是给整个房间选的，值得等）；
+     *   · 超时或探测失败 → 照常发请求（空提示也能建房，只是主控少了"距离"这一半依据）。
      */
-    await ensureFreshRelayHints();
+    if (relayLatencyHints().length === 0) await ensureFreshRelayHints(RELAY_PROBE_WAIT_CREATE_MS);
     await createRoom({
       name: form.value.name.trim(),
       zone: form.value.zone,

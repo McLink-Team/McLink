@@ -485,19 +485,38 @@ export function probeRelayNodes(): Promise<void> {
 }
 
 /**
- * 「有数据就别再测」的后台探测：应用初始化（bootstrap）与登录成功后各调一次。
+ * 「有数据就别再测」的后台探测：应用初始化（bootstrap）、登录成功、注册成功后各调一次。
  *
- * 只在**完全没有缓存**时发起：列表拉到了就一直用（见 relayLatencyHints 的"过时不影响可用性"），
- * 免得每次登录都白跑一轮 tcping；真的想重测就是建房页那颗「重新测速」（probeRelayNodes）。
+ * ⚠️ 2026-10-03 修正：判据从"列表拉到了吗"改成"**手上有没有能用的延迟**"。
+ * 原来只 `relayNodes.length > 0` 就返回，于是"列表拉到了、但一台都没测到"（节点的链接端口
+ * 从玩家网络里不可达）会被当成"已经有数据"，整场会话都不再重试 —— 建房时上报空提示，
+ * 主控按 relayScore 排，玩家被推到海外节点（用户实测："延迟优先怎么给我推了个德国"）。
+ * 真的想手动重测仍然是建房页那颗「重新测速」（probeRelayNodes）。
  * 调用方**不要 await** —— 初始化不该被一轮 tcping 拖住，失败也静默。
  */
 export function ensureRelayProbe(): void {
-  if (state.relayNodes.length > 0 || probeInFlight) return;
+  if (probeInFlight) return;
+  if (state.relayNodes.length > 0 && relayLatencyUsable()) return;
   void probeRelayNodes();
 }
 
-/** 建房提交前最多等多久正在进行的探测（毫秒）；见 waitForRelayProbe */
-export const RELAY_PROBE_WAIT_MS = 1500;
+/**
+ * **建房**提交前最多等多久正在进行的探测（毫秒）。
+ *
+ * 3.8 秒是**最坏情况**：一次探测对每台节点连打 3 次 TCP 握手、单次超时 1.2 秒
+ * （见 `client/electron/tcping.cjs` 的 TCPING_TIMEOUT_MS × TCPING_ATTEMPTS）；
+ * 只有"有节点三次都没握手成功"时才会等满。建房是给**整个房间**选中继、选中就粘住了，
+ * 值得多等一会儿 —— 用户实测踩过"只等 1.5 秒就发空提示 → 被推到德国节点"。
+ */
+export const RELAY_PROBE_WAIT_CREATE_MS = 4000;
+
+/**
+ * **进房**时最多等多久。
+ *
+ * 比建房短：单节点模型下一个房间只有一台中继，进房的提示只影响"这台分给谁"的排序
+ * （现在压根没得挑），不值得让玩家多等几秒。
+ */
+export const RELAY_PROBE_WAIT_JOIN_MS = 1200;
 
 /**
  * 有界等待正在进行的那次探测。
@@ -505,13 +524,13 @@ export const RELAY_PROBE_WAIT_MS = 1500;
  * 为什么需要它：tcping 是异步的，而建房按钮**不禁用**（弱网下禁用会让人永远建不了房），
  * 所以"手速快过测速"是真实会发生的 —— 那一刻 `relayLatencyHints()` 是空数组，
  * 主控那侧的延迟键随即失效（退化成"权重 × 余量"排序），正是本轮要修掉的退化路径。
- * 于是"探测还在跑"时先等一小会儿（最多 `RELAY_PROBE_WAIT_MS`）再取提示。
+ * 于是"探测还在跑"时先等一小会儿（最多 `timeoutMs`）再取提示。
  *
  * ⚠️ 边界（硬要求）：**探测失败/超时绝不能挡住建房** ——
  * 没有在跑的探测立刻返回 false；在跑的探测最多等这么久；等不到就照常发请求
  * （空提示照样能建房，只是主控按负载排）。这个函数**不抛异常**。
  */
-export async function waitForRelayProbe(timeoutMs = RELAY_PROBE_WAIT_MS): Promise<boolean> {
+export async function waitForRelayProbe(timeoutMs = RELAY_PROBE_WAIT_CREATE_MS): Promise<boolean> {
   const inFlight = probeInFlight;
   if (!inFlight || !(timeoutMs > 0)) return false;
   let timer: number | undefined;
@@ -542,9 +561,27 @@ export async function waitForRelayProbe(timeoutMs = RELAY_PROBE_WAIT_MS): Promis
  */
 export const RELAY_LATENCY_TTL_MS = 10 * 60_000;
 
-/** 手上的延迟缓存是不是过时/没有（没有缓存也算过时） */
+/**
+ * 手上有没有**能用的**延迟数据（只要有一台测到就算有）。
+ *
+ * 为什么单独一个函数（用户实测踩到的坑）：`relayLatency` 里可能**全是 `null`** ——
+ * 列表拉到了、握手却一台都没成功（中继的链接端口从玩家网络里不可达）。
+ * 那种情况下"有缓存"是假象，必须当成"没有数据"，否则整场会话都不会再重测。
+ */
+export function relayLatencyUsable(): boolean {
+  return Object.values(state.relayLatency).some((v) => typeof v === 'number' && Number.isFinite(v));
+}
+
+/**
+ * 手上的延迟缓存是不是过时/没有（没有缓存、或**一台都没测到**都算过时）。
+ *
+ * ⚠️ 2026-10-03 加了 `!relayLatencyUsable()` 这一条：以前只看 `lastProbedAt`，
+ * 于是"探测跑完了但全是 null"会被当成新鲜数据、10 分钟内都不再重测 ——
+ * 建房时上报空提示 → 主控按 relayScore 排 → 玩家被推到海外节点。
+ */
 export function relayLatencyStale(ttlMs = RELAY_LATENCY_TTL_MS): boolean {
   if (state.relayNodes.length === 0) return true;
+  if (!relayLatencyUsable()) return true;
   const at = state.relayProbe.lastProbedAt;
   if (!at) return true;
   const ms = Date.parse(at);
@@ -555,14 +592,15 @@ export function relayLatencyStale(ttlMs = RELAY_LATENCY_TTL_MS): boolean {
  * 建房/进房前调它：**保证手上有一份不太旧的延迟**（有界等待，绝不抛错、绝不挡住建房）。
  *
  * 三条路径：
- *   1. 有缓存且没过期 → 立刻返回（不多花一毫秒）；
- *   2. 没缓存 / 过期了 → 发起一次探测（已有在跑的会复用），最多等 `RELAY_PROBE_WAIT_MS`；
+ *   1. 有缓存、**有能用的数**、也没过期 → 立刻返回（不多花一毫秒）；
+ *   2. 没缓存 / 全是 null / 过期了 → 发起一次探测（已有在跑的会复用），
+ *      最多等 `timeoutMs`（建房 4 秒、进房 1.2 秒，见那两个常量）；
  *   3. 探测失败或超时 → 照常往下走（空提示/旧提示照样能建房进房，只是主控少了"距离"这一半依据）。
  */
-export async function ensureFreshRelayHints(): Promise<void> {
+export async function ensureFreshRelayHints(timeoutMs = RELAY_PROBE_WAIT_CREATE_MS): Promise<void> {
   if (!relayLatencyStale()) return;
   void probeRelayNodes();
-  await waitForRelayProbe();
+  await waitForRelayProbe(timeoutMs);
 }
 
 /* ------------------------------------------------------------ 新版本发现 */
