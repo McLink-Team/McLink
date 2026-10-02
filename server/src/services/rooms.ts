@@ -917,6 +917,23 @@ export class RoomService {
   /** 上一条"节点负载高、暂时没得换"的通知时间（同一房间 10 分钟内不重复打扰） */
   readonly #noticedAt = new Map<string, number>();
 
+  /**
+   * 排查用的日志节流（`房间:原因 → 上次打印时间`）。
+   *
+   * 过载判定 30 秒跑一轮，把"为什么没弹"每次都打出来会刷屏；但**完全不打**又让线上
+   * 只能靠猜（用户实测踩过：节点 30%、线设 1%，日志里一个字都没有）。
+   * 所以按"同一房间同一原因 10 分钟一条"记 info。
+   */
+  readonly #diagAt = new Map<string, number>();
+
+  #diagAllowed(roomId: string, reason: string, cooldownMs = RELAY_NOTICE_COOLDOWN_MS): boolean {
+    const key = `${roomId}:${reason}`;
+    const now = Date.now();
+    if (now - (this.#diagAt.get(key) ?? 0) < cooldownMs) return false;
+    this.#diagAt.set(key, now);
+    return true;
+  }
+
   constructor(
     config: ServerConfig,
     rooms: RoomRepo,
@@ -2040,9 +2057,21 @@ export class RoomService {
        * **全是 p2p 直连的房间不打扰**（用户 2026-10-03 的规则，见 `roomUsesRelay`）：
        * 成员与房主直连时流量根本不经过中继，中继忙不忙与他们无关 ——
        * 既不发系统消息，也不推横幅、不响提示音。
+       *
+       * 这里记 info（不是 debug）：用户实测"节点 30%、线设 1% 却不弹"时，
+       * 最常见的原因就是这个闸门（房间里没有成员、或成员全都直连房主）——
+       * 默认日志级别下 debug 看不见，等于没有线索。同一房间 10 分钟一条。
        */
-      if (!roomUsesRelay(this.rooms.listMembers(roomId))) {
-        log.debug('房间的成员都直连房主（p2p），中继负载与它无关，不通知', { room: roomId, code: row.code });
+      const members = this.rooms.listMembers(roomId);
+      if (!roomUsesRelay(members)) {
+        if (this.#diagAllowed(roomId, 'p2p')) {
+          log.info('中继到线判定：房间里没人真的走中继（全员 p2p 直连或没有成员），按规则不通知', {
+            room: roomId,
+            code: row.code,
+            members: members.filter((m) => m.status === 'active' && m.role !== 'host').length,
+            allP2p: members.length > 0 && members.filter((m) => m.status === 'active' && m.role !== 'host').every((m) => m.p2p === 1),
+          });
+        }
         continue;
       }
 
@@ -2083,6 +2112,23 @@ export class RoomService {
       this.#loadWindows.set(roomId, next);
       const busyNext = advanceLoadWindows(this.#nodeWindows.get(roomId) ?? 0, nodeBusy);
       this.#nodeWindows.set(roomId, busyNext);
+
+      /**
+       * **到线了但还在数窗口**时也留一条痕（同一房间 10 分钟一次）。
+       *
+       * 用户实测"节点 30%、卸荷线设成 1%，却一点动静没有"，而当时主控日志里什么都没有 ——
+       * 只能靠猜是没到窗口、还是压根没进这个循环。现在这两种情况都能从日志里读出来。
+       */
+      if (nodeBusy && busyNext < RELAY_NODE_BUSY_WINDOWS && this.#diagAllowed(roomId, 'counting')) {
+        log.info('中继到线：正在累计窗口（还没到就会弹）', {
+          room: roomId,
+          code: row.code,
+          node: relayRow?.name ?? relayRow?.id ?? '(无)',
+          nodeUtil: Number(nodeUtil.toFixed(3)),
+          shedUtil: nodeShed,
+          windows: `${busyNext}/${RELAY_NODE_BUSY_WINDOWS}`,
+        });
+      }
 
       if (next >= RELAY_SCALE_WINDOWS || busyNext >= RELAY_NODE_BUSY_WINDOWS) {
         /*
@@ -2206,6 +2252,33 @@ export class RoomService {
         this.#scaled.delete(roomId);
         this.#loadWindows.set(roomId, 0);
         this.#nodeWindows.set(roomId, 0);
+      }
+    }
+
+    /**
+     * **反向排查**：房间用的那台节点已经到线，但这一轮**没有任何节点上报在转发它** ——
+     * 那条房间永远进不了上面的循环，于是"为什么节点 30% 了却不弹"永远查不到。
+     * 这里补一条 info（同房间 10 分钟一次）：说明负载没算到这个房间头上
+     * （常见于：成员都直连房主、房间其实没流量、或节点心跳里没有这个网络）。
+     */
+    const hotNodes = new Map<string, number>();
+    for (const node of this.nodes.listSchedulable()) {
+      const cap = node.capacity_bps ?? 0;
+      const raw = cap > 0 ? Math.min(1, Math.max(node.rx_bps, node.tx_bps) / cap) : 0;
+      const util = this.utilizationOf(node);
+      if (nodeAtShedLine(util, raw, this.shedUtilOf(node))) hotNodes.set(node.id, Math.max(util, raw));
+    }
+    if (hotNodes.size > 0) {
+      for (const room of this.rooms.listAll({ status: 'open', limit: 200 }).rows) {
+        if (rate.has(room.id)) continue;
+        const relayId = toRoom(room).relayNodeIds.find((id) => hotNodes.has(id));
+        if (!relayId || !this.#diagAllowed(room.id, 'nosample')) continue;
+        log.info('中继到线判定：房间的中继已到线，但没有任何节点上报在转发这个房间（流量没走中继？）', {
+          room: room.id,
+          code: room.code,
+          node: this.nodes.findById(relayId)?.name ?? relayId,
+          nodeUtil: Number((hotNodes.get(relayId) ?? 0).toFixed(3)),
+        });
       }
     }
     return promoted;
