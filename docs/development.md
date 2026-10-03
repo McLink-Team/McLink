@@ -388,16 +388,29 @@ pnpm verify:lockfile     # 退出码 0 = lockfile 与所有 package.json 一致
 
 ## 10. 远端、网络与部署（运维笔记）
 
-### 10.1 远端：GitHub 是主远端
+### 10.1 远端：一个公开主仓库 + 一个私有备份
 
 | 远端名 | 地址 | 用途 |
 | --- | --- | --- |
-| `origin` | `https://github.com/McLink-Team/McLink`（私有） | **主远端**：`git push` / `git pull` 都走它 |
-| `gitlab` | `git@gitlab.com:example/legacy-backup.git` | 历史备份，**不再推**（GitLab CI 额度已用完） |
+| `origin` | `https://github.com/McLink-Team/McLink`（**公开**） | **主远端**：`git push` / `git pull` 都走它；CI 也在这个仓库出包 |
+| `private` | `https://github.com/example/backup`（**私有**） | 私有备份/存档。开源前的旧历史只在这里；**不要**把它当发布入口 |
+| `gitlab` | `git@gitlab.com:example/legacy-backup.git` | 更早的历史备份，**不再推**（GitLab CI 额度已用完） |
+
+**两个远端用两个账号**（`origin` 是 `McLink-Team`，`private` 是 `example`），
+而 git 的凭据助手是按**主机**存的 —— 所以本机把私有仓库那一个账号的凭据写在
+**远端 URL 里**（只在本机 `.git/config`，不入库）：
+
+```bash
+git remote set-url private "https://example:<token>@github.com/example/backup.git"
+```
+
+⚠️ 这是**本机凭据**：换机器、把仓库目录拷给别人之前记得清掉
+（`git remote set-url private https://github.com/example/backup.git`）。
+更干净的替代是给私有仓库配一把 **deploy key**（SSH，写权限），
+但国内网络下 SSH 常被挡、而 HTTPS 走代理是通的，所以这里选了 HTTPS。
 
 推 `v*` 标签**不会**触发构建：`.github/workflows/build-clients.yml` 只留了
-`workflow_dispatch`（要出 mac 包就去 Actions →「构建客户端」→ Run workflow）。
-私有仓库额度与产物大小限制见 `docs/build-clients.md`。
+`workflow_dispatch`（要出包就去 Actions →「构建客户端」→ Run workflow）。
 
 ### 10.2 国内网络：GitHub 要挂代理（本机用 7890）
 
