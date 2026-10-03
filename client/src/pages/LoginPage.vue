@@ -155,8 +155,8 @@ async function submit(): Promise<void> {
         <button class="btn btn-primary login-submit" type="button" @click="applyMaster">连上这台主控</button>
         <div v-if="masterMessage" class="hint">{{ masterMessage }}</div>
         <p class="hint center">
-          只想和同一局域网的朋友联机、不想搭主控？这版还不支持免主控直连，
-          请看仓库 README 里"自建实例"那一节（一台便宜云服务器就够）。
+          只想和固定几个朋友开黑、不想搭主控？往下看<strong>「本地联机」</strong> ——
+          填一个中继节点地址就能直接开，不需要注册，也不需要主控。
         </p>
       </template>
 
