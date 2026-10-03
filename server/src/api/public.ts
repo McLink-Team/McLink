@@ -62,6 +62,19 @@ export function registerPublicRoutes(router: Router, app: App): void {
       uptimeSeconds: Math.floor((Date.now() - app.startedAt) / 1000),
       registrationOpen: s.registrationOpen,
       /**
+       * 注册模式与"本实例是否还对公众开放"。
+       *
+       * 都是**公开**信息（落地页与注册页要用）：
+       *   · `registrationMode` —— 注册页据此决定"要不要填邀请码"；
+       *   · `publicServiceOpen` / `publicServiceClosedAt` —— 落地页据此切换成"已停止对外服务"的姿态；
+       *   · `repoUrl` —— 关掉服务后引导大家去看源码/自建。
+       * 不含任何账号或 SMTP 信息。
+       */
+      registrationMode: s.registrationMode,
+      publicServiceOpen: s.publicServiceOpen,
+      publicServiceClosedAt: s.publicServiceClosedAt,
+      repoUrl: s.repoUrl,
+      /**
        * 是否要求验证邮箱才能建房/进房。
        * 客户端/网页靠它决定"注册后要不要显示验证码界面"——所以必须是公开信息，
        * 但**不能**顺带泄露 SMTP 配置。

@@ -115,6 +115,12 @@ const form = reactive({
   clientSha256: '',
   announcement: '',
   registrationOpen: true,
+  /** 注册模式（权威值；`registrationOpen` 由它派生，见服务端 admin.ts） */
+  registrationMode: 'open' as 'open' | 'invite' | 'closed',
+  /** 本实例是否还对公众开放（关掉后落地页变成"已停止对外服务"） */
+  publicServiceOpen: true,
+  publicServiceClosedAt: '',
+  repoUrl: '',
   quotaUnlimited: true,
   quotaGb: '100',
   defaultMaxRooms: '3',
@@ -152,6 +158,14 @@ function fillFrom(value: SettingsView): void {
   form.clientSha256 = value.clientSha256 ?? '';
   form.announcement = value.announcement ?? '';
   form.registrationOpen = value.registrationOpen;
+  /*
+   * 注册模式：老主控（字段缺失）按布尔值反推 —— 开着就是 open，关着就是 closed。
+   * 「仅邀请码」这一档只在装了 1.1.0+ 的主控上存在，缺失时不能瞎猜成 invite。
+   */
+  form.registrationMode = value.registrationMode ?? (value.registrationOpen ? 'open' : 'closed');
+  form.publicServiceOpen = value.publicServiceOpen !== false;
+  form.publicServiceClosedAt = value.publicServiceClosedAt ?? '';
+  form.repoUrl = value.repoUrl ?? '';
   form.quotaUnlimited = value.defaultQuotaBytes === null;
   form.quotaGb = value.defaultQuotaBytes === null ? '100' : (value.defaultQuotaBytes / 1024 ** 3).toFixed(2);
   form.defaultMaxRooms = String(value.defaultMaxRooms);
@@ -214,7 +228,11 @@ async function save(): Promise<void> {
       clientVersion: form.clientVersion.trim(),
       clientSha256: form.clientSha256.trim().length > 0 ? form.clientSha256.trim() : null,
       announcement: form.announcement.trim().length > 0 ? form.announcement.trim() : null,
-      registrationOpen: form.registrationOpen,
+      // 注册模式是权威值（服务端据此派生 registrationOpen，老客户端读那个布尔值）
+      registrationMode: form.registrationMode,
+      publicServiceOpen: form.publicServiceOpen,
+      publicServiceClosedAt: form.publicServiceClosedAt.trim(),
+      repoUrl: form.repoUrl.trim(),
       defaultQuotaBytes: form.quotaUnlimited ? null : Math.max(0, Math.round(toFloat(form.quotaGb, 0) * 1024 ** 3)),
       defaultMaxRooms: Math.max(0, toInt(form.defaultMaxRooms, 3)),
       defaultMaxPlayers: Math.max(2, toInt(form.defaultMaxPlayers, 8)),
@@ -347,15 +365,49 @@ const envWhitelist = computed(() => asPatternList(env.value?.relayNetworkWhiteli
             <span class="hint">非空时会在落地页顶部显示一条公告。</span>
           </div>
         </div>
-        <label class="switch switch-row">
-          <input v-model="form.registrationOpen" type="checkbox" />
-          <span>开放自助注册（关闭后仅管理员可开号；首个账号始终可注册）</span>
+        <label class="field">
+          <span class="label">注册模式</span>
+          <select v-model="form.registrationMode" class="select">
+            <option value="open">开放注册（谁都能注册）</option>
+            <option value="invite">仅邀请码（私有实例推荐）</option>
+            <option value="closed">完全关闭（只能管理员开号）</option>
+          </select>
+          <span class="hint">
+            选「仅邀请码」后，注册必须带一个有效邀请码 —— 在左侧「邀请注册」页生成并发给朋友。
+            三种模式都会同步到老客户端读的 <span class="mono">registrationOpen</span>
+            （开放/邀请 = 开，关闭 = 关），所以<strong>不需要玩家升级客户端</strong>。
+            注册开关还受环境变量
+            <span class="mono">MCLINK_REGISTRATION_OPEN</span> 约束（当前环境值：
+            {{ env?.registrationOpen ? '开放' : '关闭' }}）。
+          </span>
         </label>
-        <p class="hint hint-measure">
-          注册开关同时受环境变量
-          <span class="mono">MCLINK_REGISTRATION_OPEN</span> 约束：环境变量关闭时，这里的开关不会覆盖它（当前环境值：
-          {{ env?.registrationOpen ? '开放' : '关闭' }}）。
-        </p>
+
+        <label class="switch switch-row">
+          <input v-model="form.publicServiceOpen" type="checkbox" />
+          <span>本实例对公众开放（关掉后落地页不再招徕使用者，改为"已停止对外服务"的说明）</span>
+        </label>
+        <div class="grid-2">
+          <label class="field">
+            <span class="label">停止对外服务的日期</span>
+            <input
+              v-model="form.publicServiceClosedAt"
+              class="input"
+              maxlength="10"
+              placeholder="2026-10-07（可留空）"
+            />
+            <span class="hint">只用于落地页与公告文案（格式 YYYY-MM-DD），不参与任何功能判定。</span>
+          </label>
+          <label class="field">
+            <span class="label">项目仓库地址</span>
+            <input
+              v-model="form.repoUrl"
+              class="input"
+              maxlength="300"
+              placeholder="https://github.com/example/backup"
+            />
+            <span class="hint">停止服务后落地页引导大家去看源码 / 自建实例的地址。</span>
+          </label>
+        </div>
 
       <!-- 邮件服务（SMTP） -->
       <section class="console-section">

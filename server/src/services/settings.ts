@@ -44,6 +44,10 @@ export const DEFAULT_SETTINGS: PlatformSettings = {
    */
   relayLoadPenaltyMs: 40,
   registrationOpen: true,
+  registrationMode: 'open',
+  publicServiceOpen: true,
+  publicServiceClosedAt: null,
+  repoUrl: 'https://github.com/example/backup',
   relayPort: 11010,
   announcement: null,
 

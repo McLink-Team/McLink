@@ -21,6 +21,14 @@ interface MetaInfo {
   siteTagline: string;
   version: string;
   registrationOpen: boolean;
+  /** 注册模式：open / invite（要邀请码）/ closed */
+  registrationMode?: 'open' | 'invite' | 'closed';
+  /** 本实例是否还对公众开放。false → 落地页切成"已停止对外服务"的姿态（见 serviceClosed） */
+  publicServiceOpen?: boolean;
+  /** 停止对外服务的日期（YYYY-MM-DD） */
+  publicServiceClosedAt?: string | null;
+  /** 项目仓库地址（已停止服务时引导大家去看源码 / 自建） */
+  repoUrl?: string;
   announcement: string | null;
   relayPort: number;
   easytierVersion: string | null;
@@ -82,6 +90,29 @@ let realtime: RealtimeClient | null = null;
 
 /** 平台公告（后台「平台设置」里配；为空则不显示公告条） */
 const announcement = computed(() => meta.value?.announcement ?? null);
+
+/**
+ * **本实例是不是已经不再对外提供服务**（2026-10-03 用户要求，为 2026-10-07 停止服务做准备）。
+ *
+ * 关掉之后落地页不再招徕使用者：不再展示"三步上手 / 功能清单 / 区域中继表 / FAQ"
+ * 这些面向新玩家的内容，改成一段事实说明 + 仓库地址 + 自建指引 + 控制台入口。
+ *
+ * 注意它**只是对外姿态**，不是安全开关：接口、客户端、既有房间照常可用；
+ * 真正挡住陌生人的是注册模式（`registrationMode = invite`）与账号本身。
+ * 默认（字段缺失 / 老主控）按"开放"处理 —— 老部署的页面不会因为这次改动突然变样。
+ */
+const serviceClosed = computed(() => meta.value?.publicServiceOpen === false);
+/** 停止服务的日期（没填就退回一句"已停止"，不编日期） */
+const closedAt = computed(() => meta.value?.publicServiceClosedAt ?? null);
+const closedAtLabel = computed(() => {
+  const raw = closedAt.value;
+  if (!raw) return null;
+  // 只做最朴素的 YYYY-MM-DD 展示：后端存的就是这个形状，不引入日期库
+  return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw.replace(/-/g, '.') : raw;
+});
+const repoUrl = computed(() => meta.value?.repoUrl ?? 'https://github.com/example/backup');
+/** 需要邀请码时，落地页给"受邀的人"留一个注册入口（其余人不必看到） */
+const inviteOnly = computed(() => meta.value?.registrationMode === 'invite');
 
 const stats = computed(() => meta.value?.stats ?? null);
 const primaryDownload = computed<DownloadArtifact | null>(() => {
@@ -185,7 +216,11 @@ const steps = [
           <span>McLink</span>
         </RouterLink>
 
-        <nav class="nav">
+        <!--
+          锚点导航只在"还在对外服务"时有意义：停止服务后那几段整段不渲染，
+          留着就是四个点了没反应的死链（截图里一眼能看出来，但用户不会去查 DOM）。
+        -->
+        <nav v-if="!serviceClosed" class="nav">
           <a href="#how">怎么用</a>
           <a href="#features">功能</a>
           <a href="#regions">区域</a>
@@ -195,8 +230,14 @@ const steps = [
         <div class="row" style="gap: var(--s-2)">
           <ThemeSwitch />
           <RouterLink to="/login" class="btn btn-ghost btn-sm">管理控制台</RouterLink>
-          <!-- 导航里不猜平台：直接进下载页，两种平台在那里各自一张卡 -->
-          <RouterLink to="/download" class="btn btn-primary btn-sm">下载客户端</RouterLink>
+          <!--
+            导航里不猜平台：直接进下载页，两种平台在那里各自一张卡。
+            停止服务后把它降级成普通按钮 —— 这一页的主操作是"看源码 / 自建"，
+            下载按钮再抢视觉重心就自相矛盾了（安装包仍然下得到，只是它得连你自己的主控）。
+          -->
+          <RouterLink to="/download" class="btn btn-sm" :class="serviceClosed ? '' : 'btn-primary'">
+            下载客户端
+          </RouterLink>
         </div>
       </div>
     </header>
@@ -212,8 +253,74 @@ const steps = [
       </div>
     </div>
 
+    <!-- ==================================================== 已停止对外服务
+         这是一套**替代性**的首屏：当主控不再对外提供服务时，落地页要做的不是营销，
+         而是三件事——说清现状（自某日起停止）、给出源码与自建入口、说明"受邀的人怎么进来"。
+         面向新玩家的那几段（三步、功能、区域表、FAQ）整段不渲染。 -->
+    <section v-if="serviceClosed" class="closed">
+      <div class="container-narrow">
+        <p class="closed-tag">本实例已停止对外服务</p>
+        <h1 class="closed-title">这个主控不再对外提供联机服务</h1>
+        <p class="closed-lead">
+          <template v-if="closedAtLabel">自 <strong>{{ closedAtLabel }}</strong> 起，</template>
+          本实例不再提供官方中继与公益转发服务器，也不再接受公开注册。
+          项目代码与客户端仍以开源方式维护，软件本体的功能与 bug 修复照常进行。
+        </p>
+        <p class="closed-lead">
+          想继续用这套联机工具，请<strong>自建一套实例</strong>（一台普通的云服务器就够），
+          或接入社区共建的节点。客户端仍然可以下载，但它需要连到<strong>你自己的主控</strong>才能建房。
+        </p>
+
+        <dl class="closed-facts">
+          <div v-if="closedAtLabel">
+            <dt>停止对外服务</dt>
+            <dd class="mono">{{ closedAtLabel }}</dd>
+          </div>
+          <div>
+            <dt>项目仓库</dt>
+            <dd><a :href="repoUrl" rel="noreferrer noopener" target="_blank">{{ repoUrl }}</a></dd>
+          </div>
+          <div>
+            <dt>当前注册模式</dt>
+            <dd>{{ inviteOnly ? '仅邀请码' : meta?.registrationOpen === false ? '已关闭' : '开放' }}</dd>
+          </div>
+          <div>
+            <dt>本机主控版本</dt>
+            <dd class="mono">v{{ meta?.version ?? '—' }}</dd>
+          </div>
+        </dl>
+
+        <div class="closed-actions">
+          <a :href="repoUrl" class="btn btn-primary btn-lg" rel="noreferrer noopener" target="_blank">
+            查看源码 / 自建实例
+          </a>
+          <!-- 受邀的人走这里：主控在邀请模式下给的就是这个入口（可以带 ?invite=码） -->
+          <RouterLink v-if="inviteOnly" to="/register" class="btn btn-lg">我有邀请码</RouterLink>
+          <RouterLink to="/login" class="btn btn-ghost btn-lg">管理控制台</RouterLink>
+        </div>
+
+        <details class="closed-how">
+          <summary>自建一套要做什么</summary>
+          <ol>
+            <li>
+              克隆仓库：<code class="mono">git clone {{ repoUrl }}.git</code>，
+              按 <code class="mono">docs/private-deployment.md</code> 装主控（一条安装脚本）。
+            </li>
+            <li>
+              注册你自己的中继节点：<code class="mono">pnpm run register:self-node</code>
+              （节点即转发服务器，一个房间一台，按延迟就近挑）。
+            </li>
+            <li>
+              把「注册模式」设成<b>仅邀请码</b>，在控制台生成邀请码发给朋友；
+              再把本页的「对外提供服务」关掉，落地页就会变成你现在看到的这个样子。
+            </li>
+          </ol>
+        </details>
+      </div>
+    </section>
+
     <!-- ------------------------------------------------------------ 首屏 -->
-    <section class="hero">
+    <section v-if="!serviceClosed" class="hero">
       <div class="container hero-grid">
         <div class="hero-copy">
           <h1 class="rise">
@@ -322,7 +429,7 @@ const steps = [
     </section>
 
     <!-- ------------------------------------------------------------ 三步 -->
-    <section id="how" class="section">
+    <section v-if="!serviceClosed" id="how" class="section">
       <div class="container">
         <div class="section-head">
           <h2>从下载到进服，三步</h2>
@@ -342,7 +449,7 @@ const steps = [
     </section>
 
     <!-- ------------------------------------------------------------ 功能 -->
-    <section id="features" class="section">
+    <section v-if="!serviceClosed" id="features" class="section">
       <div class="container">
         <div class="section-head">
           <h2>功能</h2>
@@ -392,7 +499,7 @@ const steps = [
     </section>
 
     <!-- ------------------------------------------- 单端口隔离（真正的差异点） -->
-    <section class="section">
+    <section v-if="!serviceClosed" class="section">
       <div class="container">
         <div class="section-head">
           <h2>为什么是一个端口</h2>
@@ -430,7 +537,7 @@ const steps = [
     </section>
 
     <!-- ------------------------------------------------------------ 区域 -->
-    <section id="regions" class="section">
+    <section v-if="!serviceClosed" id="regions" class="section">
       <div class="container">
         <div class="section-head">
           <h2>区域与可用中继</h2>
@@ -474,7 +581,7 @@ const steps = [
     </section>
 
     <!-- ------------------------------------------------------------ FAQ -->
-    <section id="faq" class="section">
+    <section v-if="!serviceClosed" id="faq" class="section">
       <div class="container-narrow">
         <h2 class="faq-title">常见问题</h2>
 
@@ -558,6 +665,91 @@ const steps = [
 .page {
   min-height: 100%;
   background: var(--ink-900);
+}
+
+/* ------------------------------------------------------ 已停止对外服务
+ * 这一屏不做营销：只用留白、发丝线与一个等宽标签把事实说清楚。
+ * 唯一的"强调色"给主操作（看源码 / 自建），因为停止服务之后那才是用户该走的路。 */
+.closed {
+  padding: clamp(var(--s-10), 12vh, calc(var(--s-12) * 2)) 0 var(--s-12);
+}
+.closed-tag {
+  display: inline-block;
+  margin: 0 0 var(--s-4);
+  padding: 2px var(--s-3);
+  border: 1px solid var(--rule-strong);
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.04em;
+  color: var(--paper-dim);
+}
+.closed-title {
+  margin: 0 0 var(--s-4);
+  font-size: clamp(1.6rem, 4vw, 2.4rem);
+  line-height: 1.25;
+}
+.closed-lead {
+  margin: 0 0 var(--s-3);
+  max-width: 62ch;
+  color: var(--paper-dim);
+  line-height: 1.85;
+}
+.closed-lead strong {
+  color: var(--paper);
+}
+.closed-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: var(--s-4) var(--s-6);
+  margin: var(--s-8) 0;
+  padding: var(--s-5) 0;
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+}
+.closed-facts dt {
+  margin-bottom: 2px;
+  font-size: var(--fs-xs);
+  color: var(--paper-faint);
+}
+.closed-facts dd {
+  margin: 0;
+  color: var(--paper);
+  overflow-wrap: anywhere;
+}
+.closed-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+  margin-bottom: var(--s-8);
+}
+.closed-how {
+  max-width: 66ch;
+  padding: var(--s-4) var(--s-5);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+  background: var(--ink-800);
+}
+.closed-how > summary {
+  cursor: pointer;
+  color: var(--paper);
+}
+.closed-how ol {
+  margin: var(--s-3) 0 0;
+  padding-left: 1.2em;
+  color: var(--paper-dim);
+  line-height: 1.85;
+}
+.closed-how li + li {
+  margin-top: var(--s-2);
+}
+.closed-how code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--paper);
+  background: var(--ink-700);
+  padding: 1px 4px;
+  border-radius: 3px;
 }
 
 /* ------------------------------------------------------------ 公告条

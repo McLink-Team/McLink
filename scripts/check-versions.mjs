@@ -91,6 +91,19 @@ if (fs.existsSync(path.join(REPO, gradleRel)) && version) {
   );
 }
 
+/* ---------------------------------------------------- 主控自身的版本常量 */
+/**
+ * `server/src/app.ts` 的 `APP_VERSION` 是主控对外宣称的版本
+ * （`/meta.version`、启动日志、落地页页脚、WS hello 都用它）。
+ * 1.1.0 发版时它漏改了 —— 页脚显示 1.0.9 而客户端是 1.1.0，玩家会以为版本对不上。
+ */
+const appVersionRel = 'server/src/app.ts';
+if (fs.existsSync(path.join(REPO, appVersionRel)) && version) {
+  const src = fs.readFileSync(path.join(REPO, appVersionRel), 'utf8');
+  const declared = /export const APP_VERSION = '([^']+)'/.exec(src)?.[1] ?? null;
+  check(`${appVersionRel} 的 APP_VERSION 与包版本一致`, declared === version, `APP_VERSION=${declared} package=${version}`);
+}
+
 /* ---------------------------------------------------- 发版说明 */
 if (version) {
   const notes = `docs/releases/${version}.md`;
