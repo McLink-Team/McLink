@@ -11,8 +11,9 @@ import { readFileSync } from 'node:fs';
  * `../../client/src`。所以这份配置干的事和 client/vite.config.ts 是同一件，
  * 只有三处必要差异：
  *   1. `root` 指到 web/（移动端自己的 index.html），产物进 dist/ 供 Capacitor 打包；
- *   2. 内置主控地址默认就是官方 `https://cnnic.link`（手机上没有"本地开发主控"这回事），
- *      但仍允许 VITE_MCLINK_MASTER 覆盖，方便连测试主控；
+ *   2. 主控地址**默认不内置**（2026-10-03 改）：官方停服后内置一个官方地址只会误导玩家，
+ *      首次启动由设置页/登录页引导玩家自己填；打包时仍可用 VITE_MCLINK_MASTER 指定默认值
+ *      （自建实例自己出包用）；
  *   3. 把 package.json 的版本号注入成编译期常量 —— Android 拿不到 Electron 的
  *      `app.getVersion()`，版本号只能从构建时带进来（否则外壳底部的版本永远空白）。
  */
@@ -20,8 +21,8 @@ const here = fileURLToPath(new URL('.', import.meta.url));
 const webRoot = fileURLToPath(new URL('./web', import.meta.url));
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string };
 
-/** 与 client/src/lib/api.ts 的 DEV_FALLBACK_MASTER 同形，但默认值换成线上主控 */
-const master = (process.env.VITE_MCLINK_MASTER ?? 'https://cnnic.link').trim().replace(/\/+$/, '');
+/** 打包时可指定默认主控；**留空 = 不内置**（首次启动引导玩家自己填，见 client 的 LoginPage） */
+const master = (process.env.VITE_MCLINK_MASTER ?? '').trim().replace(/\/+$/, '');
 
 /**
  * 两条路一起铺，且**写的是同一个值**，所以无论哪条生效结果都一样：

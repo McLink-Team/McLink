@@ -65,9 +65,9 @@ on:
   workflow_dispatch:
     inputs:
       master:
-        description: 内嵌进客户端的默认主控地址（玩家可在客户端里自己改）
+        description: 内嵌进客户端的默认主控地址（留空 = 不内置，玩家首次启动自己填）
         required: false
-        default: https://cnnic.link
+        default: ''
       windows:
         description: 顺便出 Windows 包（mac 包不需要它）
         type: boolean
@@ -126,7 +126,7 @@ jobs:
 
       - name: 打包
         env:
-          VITE_MCLINK_MASTER: ${{ inputs.master || 'https://cnnic.link' }}
+          VITE_MCLINK_MASTER: ${{ inputs.master }}
         run: pnpm --filter @mclink/client exec node scripts/dist.mjs --win nsis
 
       # 与 GitLab 的 build:windows 同一步骤：构建"看起来成功"但没产物时必须让 job 失败，
@@ -175,7 +175,7 @@ jobs:
       # 只出 zip：dmg 由下面的签名脚本在**签名之后**生成（electron-builder 的 dmg 里是未签名副本）
       - name: 打包 macOS（两个架构）
         env:
-          VITE_MCLINK_MASTER: ${{ inputs.master || 'https://cnnic.link' }}
+          VITE_MCLINK_MASTER: ${{ inputs.master }}
         run: pnpm --filter @mclink/client exec node scripts/dist.mjs --mac zip --arm64 --x64
 
       - name: 校验产物
@@ -271,9 +271,16 @@ jobs:
       - name: 生成图标
         run: pnpm icons
 
+      # gradlew 的可执行位在从 Windows 提交时常常丢掉（git 只在 100755 时保留）。
+      # 脚本已经改成用 sh 解释执行，这里再加一道保险，并对仓库状态做个自证。
+      - name: 确认 gradlew 可执行
+        run: |
+          chmod +x android/android/gradlew
+          ls -l android/android/gradlew
+
       - name: 打包 APK
         env:
-          VITE_MCLINK_MASTER: ${{ inputs.master || 'https://cnnic.link' }}
+          VITE_MCLINK_MASTER: ${{ inputs.master }}
         run: pnpm --filter @mclink/android apk
 
       - name: 校验产物并按发布名复制
@@ -310,7 +317,9 @@ jobs:
     needs: [windows, macos, android]
     # windows job 默认被跳过（`if: inputs.windows`），那时 needs 里它是 skipped ——
     # 所以这里只排除真正的失败/取消，不要求每个依赖都跑过。
-    if: ${{ always() && !failure() && !cancelled() && inputs.publish_release }}
+    # 一个平台失败**不该**把已经构建好的产物一起扣下：只要 dist 里有东西就发，
+    # 缺哪个平台在日志与资产列表里一眼能看出来（发布后补跑一次会追加/覆盖同一批资产）。
+    if: ${{ always() && !cancelled() && inputs.publish_release }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

@@ -27,13 +27,13 @@ if (res.status !== 0) {
 }
 
 /**
- * 主控地址是编译期常量（客户端不支持自建主控）。
- * 这里把最终生效值打印出来，避免"以为打的是线上包，实际指向 localhost"这类事故。
+ * 主控地址是编译期常量，但**允许为空**（2026-10-03 起）：为空 = 产物不内置任何主控，
+ * 首次启动引导玩家自己填。以前这里会警告"将使用本地开发地址 127.0.0.1:8787" ——
+ * 那条回退已经删掉了（一个忘设环境变量的正式包不该静默指向本机回环地址）。
  */
-const master = (process.env.VITE_MCLINK_MASTER ?? '').trim();
+const master = (process.env.VITE_MCLINK_MASTER ?? '').trim().replace(/\/+$/, '');
 if (master.length === 0) {
-  console.warn('[build] 未设置 VITE_MCLINK_MASTER，客户端将使用本地开发地址 http://127.0.0.1:8787');
-  console.warn('[build] 正式发包请设置：VITE_MCLINK_MASTER=https://你的主控域名 pnpm dist:client');
+  console.log('[build] 不内置主控地址：玩家首次启动时自己填（也可以在打包时用 VITE_MCLINK_MASTER 指定）');
 } else {
   console.log(`[build] 已内嵌主控地址：${master}`);
 }

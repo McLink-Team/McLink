@@ -436,6 +436,19 @@ export async function bootstrap(): Promise<void> {
     state.lastError = `初始化失败：${friendlyError(err)}`;
   }
 
+  /**
+   * ⚠️ 还没有主控地址时**不要**去请求任何接口（2026-10-03）。
+   *
+   * 这种情况下 `getToken()` 一定是空的（换主控会清登录态），所以原来这段本来就跳过；
+   * 但 `checkForUpdate()` 在上一段里是**无条件**发的 —— 它会拿到"还没有设置主控地址"的错，
+   * 界面上就会挂一条与玩家无关的报错。没有主控时干脆什么都不查：
+   * 首屏会引导玩家去填地址，填完自动重载（见 LoginPage 的 needsMaster）。
+   */
+  if (getMasterUrl().length === 0) {
+    state.ready = true;
+    return;
+  }
+
   if (getToken()) {
     try {
       await refreshUser();

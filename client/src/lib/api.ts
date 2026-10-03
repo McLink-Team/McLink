@@ -1,42 +1,45 @@
 /**
  * 客户端侧的 API 封装。
  *
- * 主控地址有两层：
- *   1. **打包时注入**的默认值（`VITE_MCLINK_MASTER`，见 client/.env.example 与 scripts/build.mjs），
- *      不注入时回退到本地开发地址；
- *   2. **玩家自己填的覆盖值**（`localStorage['mclink.master']`，设置页可改、可清空）。
+ * 主控地址有两层（**都可以为空** —— 2026-10-03 起不再强制内置）：
+ *   1. **打包时注入**的默认值（`VITE_MCLINK_MASTER`）：**现在允许留空**。
+ *      官方服务停止后，"内置一个官方地址"本身就成了误导 —— 官方不会提供服务，
+ *      而社区/自建实例的地址只有玩家自己知道。所以产物默认**不含**任何主控地址。
+ *   2. **玩家自己填的覆盖值**（`localStorage['mclink.master']`，登录页/设置页可改）。
  *
- * 第 2 层是 2026-10-03 加的：官方服务停止后，玩家要能连**自己的主控**或社区的实例，
- * 否则这版客户端就只能是废包。风险也如实写在界面上 ——
- * 连到别人的主控意味着**账号密码会交给那台机器**，所以设置页把这句话写在输入框旁边，
- * 并且切换主控时会**清掉本地登录态**（旧令牌对新主控无效，留着只会让人困惑）。
+ * 两层都没有时 `getMasterUrl()` 返回空串：界面要引导玩家去填（登录页首屏那块），
+ * 而所有 API 调用会**在发请求之前**就以一句可读的错误失败（见 `assertMaster`），
+ * 不会静默去连 `127.0.0.1`。
  *
- * 安全前提的变化：以前"票据只能来自官方主控"，现在"票据来自你自己选定的那台主控"——
- * 房间内的权限模型不变（票据仍然由主控签发），只是信任对象从平台变成了你填的那台机器。
+ * 安全前提：以前是"票据只能来自官方主控"，现在是"票据来自你自己填的那台主控"——
+ * 房间内的权限模型不变（票据仍由主控签发），只是信任对象变成了你填的那台机器。
+ * 所以界面里必须写明：**登录时账号密码会发给那台主控**。
  */
 import { API_PREFIX, type ApiError } from '@mclink/shared';
 
 const TOKEN_KEY = 'mclink.token';
 const DEVICE_KEY = 'mclink.device';
-/** 玩家自填的主控地址（空/无效 = 用打包时注入的默认值） */
+/** 玩家自填的主控地址（空/无效 = 没有主控，界面会引导去填） */
 const MASTER_KEY = 'mclink.master';
-/** 本地开发用回退地址；正式包一定会被 VITE_MCLINK_MASTER 覆盖 */
-const DEV_FALLBACK_MASTER = 'http://127.0.0.1:8787';
 
 function readEnvMaster(): string {
   const raw = import.meta.env.VITE_MCLINK_MASTER;
-  if (typeof raw === 'string' && raw.trim().length > 0) return raw.trim().replace(/\/+$/, '');
-  return DEV_FALLBACK_MASTER;
+  return typeof raw === 'string' ? raw.trim().replace(/\/+$/, '') : '';
 }
 
-/** 打包时注入的主控地址（**只读**：界面上显示"官方/默认地址"用的就是它） */
+/**
+ * 打包时注入的主控地址（**可能为空串** = 这个包没有内置任何主控）。
+ *
+ * ⚠️ 以前这里会在缺失时回退到 `http://127.0.0.1:8787`。那条回退是"开发方便、发布危险"：
+ * 一个忘了设环境变量的正式包会静默指向本机回环地址，玩家只会看到"连不上服务器"。
+ * 现在缺失就是缺失 —— 界面明确说"还没设置主控"，玩家自己填。
+ */
 export const MASTER_URL = readEnvMaster();
 
-/** 是否使用了开发回退地址（界面据此提示「当前连的是本地主控」） */
-export const USING_DEV_MASTER = !import.meta.env.VITE_MCLINK_MASTER;
+/** 这个包有没有内置主控地址（界面据此决定"留空"的文案与首屏引导） */
+export const HAS_BUILT_IN_MASTER = MASTER_URL.length > 0;
 
-/**
- * 地址归一化在 `master-url.ts`（纯函数、无 Vite 依赖，可离线校验：
+/** 地址归一化在 `master-url.ts`（纯函数、无 Vite 依赖，可离线校验：
  * `node client/scripts/verify-selfhost-fn.mjs`）。这里导入后**再用原路径导出一次**，
  * 界面按原路径引用即可（`export ... from` 不会把名字带进本模块作用域，
  * 而下面 setCustomMasterUrl 要用它 —— 所以是 import + export 两步）。
@@ -53,7 +56,7 @@ export function customMasterUrl(): string | null {
 /**
  * 设置/清除自填主控地址。**返回是否发生了改变**（调用方据此决定要不要清登录态）。
  *
- * 传空的/非法的值 = 清除覆盖，回到打包时注入的默认地址。
+ * 传空的/非法的值 = 清除覆盖，回到"这个包内置的地址"（可能也没有 → 那就没有主控）。
  */
 export function setCustomMasterUrl(raw: string | null): boolean {
   const before = getMasterUrl();
@@ -63,8 +66,25 @@ export function setCustomMasterUrl(raw: string | null): boolean {
   return getMasterUrl() !== before;
 }
 
+/** 当前要连的主控；**空串 = 还没有主控**（界面必须先引导玩家填一个） */
 export function getMasterUrl(): string {
   return customMasterUrl() ?? MASTER_URL;
+}
+
+/** 没有主控时统一用这句提示（界面与 API 层共用，避免两种说法） */
+export const NO_MASTER_MESSAGE = '还没有设置主控地址：请在「自建 / 社区节点」里填一个你自己的实例地址';
+
+/**
+ * 发请求前的兜底：没有主控就**根本不发**。
+ *
+ * 为什么要有它：所有调用点都假设"主控地址一定存在"（相对路径拼 base）。没有主控时
+ * `fetch('/api/v1/…')` 会打到 **WebView 自己的 origin**（Capacitor 下是 `https://localhost`），
+ * 拿到一个 HTML 404，最后报给玩家的是"主控没响应"——完全指错方向。
+ */
+function assertMaster(): string {
+  const master = getMasterUrl();
+  if (master.length === 0) throw new ApiRequestError(0, 'no_master', NO_MASTER_MESSAGE);
+  return master;
 }
 
 export class ApiRequestError extends Error {
@@ -119,7 +139,8 @@ export interface RequestOptions {
 }
 
 function buildUrl(path: string, query?: RequestOptions['query']): string {
-  const url = new URL(`${API_PREFIX}${path}`, getMasterUrl());
+  // `assertMaster()` 已经在 request() 里先跑过一次：这里直接用，保证绝不用空 base 拼 URL
+  const url = new URL(`${API_PREFIX}${path}`, assertMaster());
   if (query) {
     for (const [k, v] of Object.entries(query)) {
       if (v === undefined || v === null || v === '') continue;
@@ -137,6 +158,8 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   const method = options.method ?? 'GET';
   /** 报错时带上请求本身，否则界面上只有一句"主控没响应"，谁也说不清是哪个接口 */
   const where = `${method} ${API_PREFIX}${path}`;
+  // 没有主控就别发请求（否则会打到 WebView 自己的 origin，报出一句指错方向的错）
+  assertMaster();
 
   let res: Response;
   try {

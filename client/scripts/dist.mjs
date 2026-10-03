@@ -15,19 +15,24 @@ const isWin = process.platform === 'win32';
 const args = process.argv.slice(2);
 
 /**
- * 主控地址是编译期嵌入的，且平台不开放自建主控。
- * 因此打正式包时必须显式提供 VITE_MCLINK_MASTER，否则会打出指向 localhost 的安装包
- * —— 玩家装上必然连不上，而且属于"看起来没问题"的坏法。
+ * 主控地址是编译期嵌入的，但**现在是可选的**（2026-10-03 改）。
+ *
+ * 以前这里"缺少 VITE_MCLINK_MASTER 就直接失败"，理由是"正式安装包必须内嵌官方主控地址"。
+ * 官方停服之后这条前提反了：内置一个官方地址才会误导玩家（那台机器不再提供服务），
+ * 而社区/自建实例的地址只有玩家自己知道。
+ *
+ * 现在的口径：
+ *   · 给了 VITE_MCLINK_MASTER  → 嵌进去当默认值（自建实例自己出包时用）；
+ *   · 没给                      → 产物**不含任何主控地址**，首次启动引导玩家自己填
+ *     （见 client/src/pages/LoginPage.vue 的 needsMaster 首屏）。
+ * 两种都是合法产物，所以不再退出。
  */
-const allowDevMaster = args.includes('--allow-dev-master');
-const master = (process.env.VITE_MCLINK_MASTER ?? '').trim();
-if (master.length === 0 && !allowDevMaster) {
-  console.error('[dist] 缺少 VITE_MCLINK_MASTER —— 正式安装包必须内嵌官方主控地址。');
-  console.error('[dist] 用法：VITE_MCLINK_MASTER=https://你的主控域名 pnpm dist:client');
-  console.error('[dist] 若只是本地验证打包流程，可加 --allow-dev-master 跳过该检查。');
-  process.exit(1);
-}
-console.log(master.length > 0 ? `[dist] 主控地址: ${master}` : '[dist] 警告：使用本地开发地址打包（仅供验证）');
+const master = (process.env.VITE_MCLINK_MASTER ?? '').trim().replace(/\/+$/, '');
+console.log(
+  master.length > 0
+    ? `[dist] 内置主控地址: ${master}`
+    : '[dist] 不内置主控地址：首次启动会引导玩家自己填（客户端「自建 / 社区节点」）',
+);
 process.env.VITE_MCLINK_MASTER = master;
 
 // 1) 先构建渲染进程 + 准备 vendor

@@ -35,8 +35,10 @@ const KEEP = process.argv.includes('--keep');
 
 /** 手机视口：Pixel 7 的逻辑分辨率，也是这次布局设计的基准宽度 */
 const VIEWPORT = { width: 412, height: 915, scale: 2.625 };
-/** 内置主控地址：与 vite.config.ts 的默认值一致，可用环境变量覆盖 */
-const MASTER = (process.env.VITE_MCLINK_MASTER ?? 'https://cnnic.link').trim().replace(/\/+$/, '');
+/** 内置主控地址：与 vite.config.ts 的默认值一致（**默认不内置**），可用环境变量覆盖 */
+const MASTER = (process.env.VITE_MCLINK_MASTER ?? '').trim().replace(/\/+$/, '');
+/** 没有内置主控时，首屏应该是"填主控地址"那一步（不是登录表单） */
+const EXPECT_FIRST_RUN = MASTER.length === 0;
 
 const r = createReporter('smoke');
 
@@ -73,6 +75,7 @@ r.log('断言 1 —— 界面渲染（不是白屏）');
 const dom = await evaluate(`(() => {
   const q = (s) => document.querySelector(s);
   const app = q('#app');
+  const buttons = [...document.querySelectorAll('button')].map((b) => b.textContent.trim());
   return {
     appChildren: app ? app.children.length : -1,
     shell: !!q('.app-shell.mobile-shell'),
@@ -80,6 +83,8 @@ const dom = await evaluate(`(() => {
     tabs: [...document.querySelectorAll('.mobile-tab')].map((b) => b.textContent.trim()),
     loginCard: !!q('.login-card'),
     inputs: document.querySelectorAll('input').length,
+    buttons,
+    bodyText: (document.body.textContent ?? '').replace(/\\s+/g, ' '),
   };
 })()`);
 
@@ -87,8 +92,25 @@ r.check('#app 已挂载（有子节点）', dom.appChildren > 0, `children=${dom
 r.check('移动端外壳 .app-shell.mobile-shell 存在', dom.shell);
 r.check('底部导航 .mobile-tabbar 存在', dom.tabbar);
 r.check('底部导航是三项（联机/大厅/设置）', dom.tabs.length === 3, `实际：${JSON.stringify(dom.tabs)}`);
-r.check('登录卡已渲染（未登录首屏）', dom.loginCard);
-r.check('有输入框（用户名/密码/本机名称）', dom.inputs >= 3, `inputs=${dom.inputs}`);
+r.check('首屏卡片已渲染', dom.loginCard);
+/**
+ * 首屏有两种合法形态（2026-10-03 起）：
+ *   · **不内置主控**（现在出包的默认）→ 先让玩家填主控地址，登录表单不该出现；
+ *   · 内置了主控 → 直接是登录表单。
+ * 断言跟着构建配置走，而不是写死一种 —— 否则"没内置主控"的包会被误判为坏包。
+ */
+if (EXPECT_FIRST_RUN) {
+  r.check('无内置主控 → 首屏引导填主控地址', dom.bodyText.includes('主控地址'), dom.bodyText.slice(0, 120));
+  r.check(
+    '无内置主控 → 有「连上这台主控」按钮',
+    dom.buttons.some((b) => b.includes('连上这台主控')),
+    JSON.stringify(dom.buttons.slice(0, 4)),
+  );
+  r.check('无内置主控 → 不显示用户名/密码表单（避免点了必然失败）', !dom.bodyText.includes('用户名'), '');
+} else {
+  r.check('内置主控 → 直接是登录表单', dom.bodyText.includes('用户名'), '');
+  r.check('有输入框（用户名/密码/本机名称）', dom.inputs >= 3, `inputs=${dom.inputs}`);
+}
 
 /* ------------------------------------------------- 断言 2：布局真的是移动端 */
 
@@ -118,6 +140,16 @@ r.check('暖纸台令牌已生效（--ground 非空）', layout.ground.length > 
 
 /* --------------------------------------------------- 断言 3：能连上主控 */
 
+/**
+ * 这一条只在**构建时内置了主控**时才跑。
+ *
+ * 不内置主控现在是默认产物（官方停服），那时首屏引导玩家自己填地址 ——
+ * 没有"内置地址"可测，硬测会得到一个假失败。真实连通性由 `e2e-mobile.mjs` 负责：
+ * 它会起一个本地主控、把地址填进客户端再走完整条链。
+ */
+if (EXPECT_FIRST_RUN) {
+  r.log('断言 3 —— 跳过（本包不内置主控地址；连通性由 e2e-mobile.mjs 覆盖）');
+} else {
 r.log(`断言 3 —— 页面能连主控 ${MASTER}`);
 const net = await evaluate(`(async () => {
   try {
@@ -195,6 +227,7 @@ r.check(
   cors.acao === 'https://localhost' || cors.acao === '*',
   cors.error ?? `access-control-allow-origin=${cors.acao}`,
 );
+} // ← 结束"内置了主控才跑"的那一段
 
 /* ------------------------------------------------------------------ 截图 */
 /*

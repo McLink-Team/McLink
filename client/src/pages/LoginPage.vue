@@ -16,7 +16,7 @@
  */
 import { computed, onMounted, ref } from 'vue';
 import { clearAuthNotice, clientState, login, register, setDevice, setMasterUrl } from '../lib/store.ts';
-import { customMasterUrl, friendlyError, MASTER_URL } from '../lib/api.ts';
+import { customMasterUrl, friendlyError, HAS_BUILT_IN_MASTER, MASTER_URL } from '../lib/api.ts';
 import { emailProblem, displayNameProblem, passwordProblem } from '@mclink/shared';
 
 const mode = ref<'login' | 'register'>('login');
@@ -41,6 +41,12 @@ const masterOpen = ref(false);
 const masterInput = ref(customMasterUrl() ?? '');
 const masterMessage = ref('');
 const masterIsCustom = computed(() => customMasterUrl() !== null);
+/**
+ * **还没有主控**（包内没有内置、玩家也没填过）—— 这时登录表单是点不动的：
+ * 账号本来就存在于某台主控上，没有主控就没有账号可登。
+ * 于是首屏直接换成"填主控地址"这一步，而不是让玩家对着一个必然失败的按钮。
+ */
+const needsMaster = computed(() => clientState.masterUrl.length === 0);
 
 function applyMaster(): void {
   masterMessage.value = '';
@@ -119,8 +125,41 @@ async function submit(): Promise<void> {
   <div class="login">
     <div class="card login-card">
       <!-- 品牌印记不再重复：左上的图标栏里那个就是它（用户要求） -->
-      <p class="login-lede">登录后建房，或者用朋友的加入码进房</p>
+      <p class="login-lede">
+        {{ needsMaster ? '先填一个主控地址，才能登录' : '登录后建房，或者用朋友的加入码进房' }}
+      </p>
 
+      <!--
+        **还没有主控**时的首屏（2026-10-03）。
+        包内不再内置任何主控地址（官方停服，内置一个只会误导），所以第一次打开这一版客户端
+        必须让玩家先填一个 —— 否则登录按钮点了必然失败，而原因藏在"连不上服务器"后面。
+        这里把整张卡换成"填地址"这一步，填完自动重载进正常登录界面。
+      -->
+      <template v-if="needsMaster">
+        <div class="field">
+          <label class="label">主控地址</label>
+          <input
+            v-model="masterInput"
+            class="input"
+            spellcheck="false"
+            placeholder="https://mclink.example.com 或 http://192.168.1.10:8787"
+          />
+          <div class="hint">
+            这个版本<strong>没有内置</strong>任何主控地址：官方服务已停止，需要你自己有一套实例
+            （或使用朋友/社区提供的主控）。自建方式见项目仓库的
+            <span class="mono">docs/private-deployment.md</span>。
+            <strong>账号密码会发给这台主控</strong>，只填你信任的实例。
+          </div>
+        </div>
+        <button class="btn btn-primary login-submit" type="button" @click="applyMaster">连上这台主控</button>
+        <div v-if="masterMessage" class="hint">{{ masterMessage }}</div>
+        <p class="hint center">
+          只想和同一局域网的朋友联机、不想搭主控？这版还不支持免主控直连，
+          请看仓库 README 里"自建实例"那一节（一台便宜云服务器就够）。
+        </p>
+      </template>
+
+      <template v-else>
       <!--
         改密码成功后必须回到这一屏（服务端吊销了全部会话，见 store.ts 的 changePassword），
         所以"密码已更新，请重新登录"这句话只能挂在这里 —— 否则玩家莫名其妙被踢回登录页。
@@ -205,12 +244,13 @@ async function submit(): Promise<void> {
           v-model="masterInput"
           class="input"
           spellcheck="false"
-          :placeholder="`留空 = 用本包内置的 ${MASTER_URL}`"
+          :placeholder="HAS_BUILT_IN_MASTER ? `留空 = 用本包内置的 ${MASTER_URL}` : 'https://mclink.example.com'"
         />
         <div class="hint">
           自建实例就填你自己的地址（<span class="mono">https://mclink.example.com</span> 或
           <span class="mono">http://192.168.1.10:8787</span>）。换完会自动重载应用。
           <b>账号密码会发给这台主控</b>，只填你信任的实例。
+          <template v-if="!HAS_BUILT_IN_MASTER">本包<strong>没有内置</strong>任何主控地址，留空就回到"没有主控"。</template>
         </div>
         <div class="ops">
           <button class="btn btn-sm" type="button" @click="applyMaster">保存并重载</button>
@@ -225,6 +265,7 @@ async function submit(): Promise<void> {
         </div>
         <div v-if="masterMessage" class="hint">{{ masterMessage }}</div>
       </div>
+      </template>
     </div>
   </div>
 </template>
