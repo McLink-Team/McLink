@@ -219,19 +219,95 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # ------------------------------------------------------------------ Android
+  #
+  # 为什么把安卓也放进 CI（2026-10-03）：以前 APK 是在开发机上 `pnpm --filter @mclink/android apk`
+  # 出的，依赖那台机器上的 Android SDK —— 而开发机的 SDK 随硬盘一起没了之后，
+  # "出新包"就变成一件需要先装 1.5GB SDK 的事。GitHub 的 ubuntu runner 自带 Android SDK 与 JDK，
+  # 这条流水线因此比本地更可靠，也让"构建全部从仓库出"这句话成立。
+  #
+  # 产物名与下载页的识别规则对齐：`mclink-android-<版本>-debug.apk`
+  # （`server/src/api/public.ts` 按文件名判平台与版本）。
+  android:
+    name: Android APK（debug）
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      # Capacitor 7 的安卓工程要 JDK 21；runner 上默认那版不一定够
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      # runner 自带 SDK，但 platforms/build-tools 的具体版本不一定有；
+      # `android/scripts/build-apk.mjs` 会在缺组件时直接失败（而不是抛看不懂的 Gradle 错），
+      # 所以这里先按需补齐，再回显一遍让日志能自证。
+      - name: 补齐 Android SDK 组件
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "SDK=$SDK"
+          if [ ! -d "$SDK/platforms/android-35" ] || [ ! -d "$SDK/build-tools/35.0.0" ]; then
+            yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+            "$SDK/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
+          fi
+          ls "$SDK/platforms" "$SDK/build-tools"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+
+      - name: 生成图标
+        run: pnpm icons
+
+      - name: 打包 APK
+        env:
+          VITE_MCLINK_MASTER: ${{ inputs.master || 'https://cnnic.link' }}
+        run: pnpm --filter @mclink/android apk
+
+      - name: 校验产物并按发布名复制
+        run: |
+          set -euo pipefail
+          apk=android/android/app/build/outputs/apk/debug/app-debug.apk
+          test -f "$apk" || { echo "::error::没有产出 APK"; exit 1; }
+          v=$(node -p "require('./android/package.json').version")
+          out="android/android/app/build/outputs/apk/debug/mclink-android-${v}-debug.apk"
+          cp "$apk" "$out"
+          ls -lh "$out"
+          # 证据：版本号与 ABI（下载页与玩家都要能核对）
+          unzip -l "$out" | grep -E 'lib/.*\.so' || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mclink-android
+          path: android/android/app/build/outputs/apk/debug/mclink-android-*-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
   # ------------------------------------------------------------------ Release
   #
   # 把这次构建的产物挂到 GitHub Release（标签 `v<client/package.json 的版本>`）。
   #
-  # 为什么放在末尾单独一个 job：产物散在 windows / macos 两个 job 里，
+  # 为什么放在末尾单独一个 job：产物散在 windows / macos / android 三个 job 里，
   # 而 Release 要的是"一次性把全部资产挂上去"。用 `download-artifact` 收齐再发，
   # 顺序和数量都不用关心（少了哪个平台也能发，只是那个平台的资产不出现）。
   #
   # 幂等：同名 Release 已存在时**不重建**，只上传资产并 `--clobber` 覆盖同名文件 ——
-  # 重跑一次工作流（修了个小问题、或换了笔记文件）不会失败，也不会留下两个 v1.1.0。
+  # 重跑一次工作流（修了个小问题、或换了笔记文件）不会失败，也不会留下两个 v1.1.1。
   release:
     name: 发布 Release
-    needs: [windows, macos]
+    needs: [windows, macos, android]
     # windows job 默认被跳过（`if: inputs.windows`），那时 needs 里它是 skipped ——
     # 所以这里只排除真正的失败/取消，不要求每个依赖都跑过。
     if: ${{ always() && !failure() && !cancelled() && inputs.publish_release }}
