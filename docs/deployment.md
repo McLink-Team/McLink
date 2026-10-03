@@ -133,7 +133,7 @@ curl -s -r 0-1 https://cnnic.link/downloads/McLink-Setup-1.0.0-x64.exe | xxd | h
 
 ### 2.1.2 从 GitLab CI 直接拉产物到下载目录（备用路径）
 
-> **现状**：仓库主远端已改成 GitHub（`origin` = 私有仓库 `luo-die/mclink`），GitLab 只读保留、
+> **现状**：仓库主远端已改成 GitHub（`origin` = 私有仓库 `McLink-Team/McLink`），GitLab 只读保留、
 > 不再推 —— 所以这条路径只在「GitLab 侧还有 CI 产物」时有用。现在 mac 包由 **GitHub Actions**
 > 出，产物是从 run 页面下载的（没有对应的一键脚本），见 docs/build-clients.md 的 1.1 / 1.2。
 

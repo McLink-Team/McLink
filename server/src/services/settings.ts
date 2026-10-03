@@ -47,7 +47,7 @@ export const DEFAULT_SETTINGS: PlatformSettings = {
   registrationMode: 'open',
   publicServiceOpen: true,
   publicServiceClosedAt: null,
-  repoUrl: 'https://github.com/luo-die/mclink',
+  repoUrl: 'https://github.com/McLink-Team/McLink',
   relayPort: 11010,
   announcement: null,
 

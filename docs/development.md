@@ -392,7 +392,7 @@ pnpm verify:lockfile     # 退出码 0 = lockfile 与所有 package.json 一致
 
 | 远端名 | 地址 | 用途 |
 | --- | --- | --- |
-| `origin` | `https://github.com/luo-die/mclink`（私有） | **主远端**：`git push` / `git pull` 都走它 |
+| `origin` | `https://github.com/McLink-Team/McLink`（私有） | **主远端**：`git push` / `git pull` 都走它 |
 | `gitlab` | `git@gitlab.com:mc7984239/mc.git` | 历史备份，**不再推**（GitLab CI 额度已用完） |
 
 推 `v*` 标签**不会**触发构建：`.github/workflows/build-clients.yml` 只留了
@@ -404,8 +404,8 @@ pnpm verify:lockfile     # 退出码 0 = lockfile 与所有 package.json 一致
 不挂代理时的症状长这样（都是"连不上"，不是权限问题）：
 
 ```
-fatal: unable to access 'https://github.com/luo-die/mclink.git/': Recv failure: Connection was reset
-fatal: unable to access 'https://github.com/luo-die/mclink.git/':
+fatal: unable to access 'https://github.com/McLink-Team/McLink.git/': Recv failure: Connection was reset
+fatal: unable to access 'https://github.com/McLink-Team/McLink.git/':
        Failed to connect to github.com port 443 after 21055 ms
 ```
 

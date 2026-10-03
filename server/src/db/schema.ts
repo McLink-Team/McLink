@@ -745,7 +745,7 @@ update settings
    and json_extract(value, '$.publicServiceOpen') is null;
 
 update settings
-   set value = json_set(value, '$.repoUrl', 'https://github.com/luo-die/mclink'),
+   set value = json_set(value, '$.repoUrl', 'https://github.com/McLink-Team/McLink'),
        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
  where key = 'platform'
    and json_extract(value, '$.repoUrl') is null;

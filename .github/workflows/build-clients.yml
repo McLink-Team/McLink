@@ -22,7 +22,7 @@ name: 构建客户端（Windows / macOS）
 #
 # 怎么用
 # ------
-# 仓库：**https://github.com/luo-die/mclink**（私有）
+# 仓库：**https://github.com/McLink-Team/McLink**（私有）
 #
 #   git push                       # origin 已经是 GitHub，不用再加远端
 #   GitHub → Actions →「构建客户端」→ Run workflow
