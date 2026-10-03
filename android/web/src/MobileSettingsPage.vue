@@ -20,18 +20,30 @@
  * 版本号与三条已知边界（踢人可用但有 2 秒重启代价、带宽限速要重连、IPv6）放在最下面：
  * 和桌面外壳底部那行一样，是排查与"先说清楚"时才看的东西。
  *
- * ## 这里**没有**主控地址
+ * ## 这里**没有**主控地址 → 2026-10-03 起**加了回来**
  *
- * 早先这一页有一块只读的「主控」分区（地址 + 是不是本机开发主控）。删掉的理由：
- * 手机上没有"自建主控"这回事 —— 地址是编译期内置的，玩家既看不到也改不了，
- * 展示它只会让人以为"可以换一台服务器"，而我们并不支持那么做
- * （票据只能来自官方主控，见 client/src/lib/api.ts 的说明）。
- * 排查"连不上"要看的是网络，不是这一行；**不要把它加回来**。
+ * 早先这一页有一块只读的「主控」分区（地址 + 是不是本机开发主控）。当时删掉的理由是：
+ * 手机上没有"自建主控"这回事 —— 地址是编译期内置的，玩家既看不到也改不了。
+ *
+ * ⚠️ 官方服务停止后这条前提不成立了：玩家**必须**能连自己的主控/社区节点，
+ * 否则这一版安卓包连登录都做不了（详见 client/src/lib/api.ts 与 README 的"自建 / 社区节点"）。
+ * 所以这一页现在有一块**可编辑**的「自建 / 社区节点」：主控地址 + 中继节点，
+ * 与桌面端设置页那两个字段是同一套 store 逻辑（`setMasterUrl` / `setExtraPeers`），
+ * 只是布局按手机的单列重排。中继节点填的东西会经 `effectiveConfigToml()` 进入 VPN 配置。
  */
 import { computed, ref } from 'vue';
 import { displayNameProblem } from '@mclink/shared';
-import { clientState, logout, setDevice, updateDisplayName } from '../../../client/src/lib/store.ts';
-import { friendlyError } from '../../../client/src/lib/api.ts';
+import {
+  clientState,
+  countPeers,
+  inspectPeers,
+  logout,
+  setDevice,
+  setExtraPeers,
+  setMasterUrl,
+  updateDisplayName,
+} from '../../../client/src/lib/store.ts';
+import { customMasterUrl, friendlyError, MASTER_URL } from '../../../client/src/lib/api.ts';
 import { enableNotifications, notifyEnabled, setNotifyEnabled } from './message-notify.ts';
 
 const user = computed(() => clientState.user);
@@ -40,6 +52,44 @@ const device = ref(clientState.deviceName);
 const busy = ref(false);
 const saved = ref(false);
 const error = ref('');
+
+/* ------------------------------------------------- 自建 / 社区节点（2026-10-03） */
+
+/**
+ * 与桌面端同一套 store：主控地址换完**清登录态**（账号只存在于原来那台主控上），
+ * 中继节点追加进 VPN 配置、**重连房间才生效**。
+ *
+ * 手机上不给"社区节点列表"的外链跳转按钮 —— 那是浏览器的事，
+ * 直接把地址写出来让玩家自己复制（移动端点外链会跳出应用，反而更麻烦）。
+ */
+const masterInput = ref(customMasterUrl() ?? '');
+const masterMessage = ref('');
+const masterIsCustom = computed(() => customMasterUrl() !== null);
+const defaultMaster = MASTER_URL;
+
+const peersInput = ref(clientState.extraPeers);
+const peersMessage = ref('');
+const peerCount = computed(() => countPeers(peersInput.value));
+const peerBad = computed(() =>
+  inspectPeers(peersInput.value)
+    .filter((p) => p.uri === null)
+    .map((p) => p.raw),
+);
+
+function saveMaster(): void {
+  masterMessage.value = '';
+  const changed = setMasterUrl(masterInput.value);
+  masterInput.value = customMasterUrl() ?? '';
+  masterMessage.value = changed
+    ? `已切换到 ${clientState.masterUrl}，登录状态已清除，请重新登录。`
+    : `没变，仍是 ${clientState.masterUrl}`;
+}
+
+function savePeers(): void {
+  const count = setExtraPeers(peersInput.value);
+  peersMessage.value = count === 0 ? '已清空：只用主控下发的中继。' : `已保存 ${count} 个节点，重连房间后生效。`;
+  peersInput.value = clientState.extraPeers;
+}
 
 /* ------------------------------------------------------------------ 昵称 */
 
@@ -209,8 +259,81 @@ async function doLogout(): Promise<void> {
       </button>
     </section>
 
-    <!-- 新消息提醒。⚠️ 说明里必须写清楚"应用被杀掉之后收不到" —— 见 message-notify.ts 的硬限制 -->
+    <!--
+      自建 / 社区节点（2026-10-03）。
+      官方服务停止后，这一块决定"这版安卓包还能不能用"：主控换成自己的实例、
+      中继填社区/自建的节点。风险与桌面端同一句话：账号密码会发给那台主控。
+    -->
     <section class="card stack">
+      <h2 class="mobile-section-title">自建 / 社区节点</h2>
+
+      <div class="field">
+        <label class="label">主控地址</label>
+        <input
+          v-model="masterInput"
+          class="input"
+          spellcheck="false"
+          :placeholder="`留空 = 内置的 ${defaultMaster}`"
+        />
+        <p class="hint">
+          当前：<span class="mono">{{ clientState.masterUrl }}</span>
+          <template v-if="masterIsCustom">（你填的）</template>
+          <template v-else>（本包内置）</template>。
+          填自己的实例，例如 <span class="mono">https://mclink.example.com</span>。
+          <strong>换主控会退出当前登录</strong>，而且<strong>账号密码会发给那台主控</strong>，
+          只填你信任的实例。
+        </p>
+        <div class="row" style="gap: var(--s-2)">
+          <button class="btn btn-primary" type="button" @click="saveMaster">保存</button>
+          <button
+            v-if="masterIsCustom"
+            class="btn btn-ghost"
+            type="button"
+            @click="masterInput = ''; saveMaster()"
+          >
+            恢复默认
+          </button>
+        </div>
+        <p v-if="masterMessage" class="hint">{{ masterMessage }}</p>
+      </div>
+
+      <div class="field">
+        <label class="label">中继节点（可选，一行一个）</label>
+        <textarea
+          v-model="peersInput"
+          class="textarea"
+          rows="3"
+          spellcheck="false"
+          placeholder="public.easytier.cn:11010&#10;tcp://relay.example.com:11010"
+        />
+        <p class="hint">
+          主控没有可用中继时，把社区/自己搭的 EasyTier 节点填在这里：连房间时会被<b>追加</b>进 VPN 配置。
+          只写 <span class="mono">主机:端口</span> 会同时按 tcp 与 udp 各加一条。
+          社区公共节点列表（第三方，与本项目无关联）：
+          <span class="mono">info.qtet.cn/uptime/easytier</span>。
+          <strong>改完要退出房间重新进一次。</strong>
+        </p>
+        <p class="hint">
+          已识别 <b>{{ peerCount }}</b> 个合法地址<template v-if="peerBad.length > 0">
+            ；将跳过：<span class="mono">{{ peerBad.join('、') }}</span></template
+          >。
+        </p>
+        <div class="row" style="gap: var(--s-2)">
+          <button class="btn btn-primary" type="button" @click="savePeers">保存</button>
+          <button
+            v-if="peersInput.trim().length > 0"
+            class="btn btn-ghost"
+            type="button"
+            @click="peersInput = ''; savePeers()"
+          >
+            清空
+          </button>
+        </div>
+        <p v-if="peersMessage" class="hint">{{ peersMessage }}</p>
+      </div>
+    </section>
+
+    <!-- 新消息提醒。⚠️ 说明里必须写清楚"应用被杀掉之后收不到" —— 见 message-notify.ts 的硬限制 -->    <section class="card stack">
       <h2 class="mobile-section-title">提醒</h2>
       <label class="check-row">
         <input v-model="notify" type="checkbox" @change="toggleNotify()" />
