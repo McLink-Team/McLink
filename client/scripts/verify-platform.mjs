@@ -307,7 +307,11 @@ check('写了 GitLab CI 怎么触发', /build:macos/.test(doc) && /Run pipeline/
 check('写了未签名包的后果与绕过方式', /xattr -dr com\.apple\.quarantine/.test(doc) && /Gatekeeper/.test(doc));
 check('写了"CI 只能在推送后验证"这条边界', /推送/.test(doc) && /未验证|无法在本地验证|只能在/.test(doc));
 check('写了 GitHub Actions 这条备用路线（GitLab 配额用完时用）', /build-clients\.yml/.test(doc) && /Run workflow/.test(doc));
-check('写了镜像仓库地址与私有仓库的前提（额度 + 500MB 存储）', /github\.com\/example\/mclink/.test(doc) && /500\s?MB/.test(doc) && /2,000|2000/.test(doc));
+check(
+  '写了公开仓库地址与"公开仓库 Actions 免费"这条现状',
+  /github\.com\/McLink-Team\/McLink/.test(doc) && /公开仓库/.test(doc),
+);
+check('写了构建完会自动发 Release（标签 v<版本>）', /Release/.test(doc) && /publish_release/.test(doc));
 check('写了远端约定（GitHub 是 origin，GitLab 只读、不再推）', /远端约定/.test(doc) && /GitLab 的远端已改名/.test(doc));
 check('没有留下过时的 `git push github main` 指令（远端已改名成 origin）', !/git push github main/.test(doc));
 check('写了 runner 不能回退到已废弃的 macos-14', /macos-15/.test(doc) && /deprecated/.test(doc));

@@ -7,7 +7,7 @@ android {
         applicationId "link.cnnic.mclink"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 110
+        versionCode 111
         /*
          * 版本号与 android/package.json 的 version **必须一致**（那里是 App 内显示、
          * 也是主控比对"你有没有新版本"用的；这里是 Android 系统与升级用的）。
@@ -23,7 +23,7 @@ android {
          * 中继建议提醒（玩家自己点切换）、名字匹配的宽容化。
          * 1.1.0 = 与桌面端同一批：单节点中继 + 到线提示（横幅/系统通知/提示音）+ 延迟优先。
          */
-        versionName "1.1.0"
+        versionName "1.1.1"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         /*
          * 默认只打 arm64-v8a（真机都是它），但**可以用属性覆盖** —— 因为 PC 上的 Android 模拟器是 x86_64：

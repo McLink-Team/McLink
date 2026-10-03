@@ -45,7 +45,7 @@ import { trustedProxiesOf, type TrustedNet } from './util/net.ts';
  * ⚠️ 1.1.0 发版时**这里漏改了**（package.json 已经是 1.1.0，主控启动日志与落地页页脚还写 1.0.9）。
  * 现在有 `scripts/check-versions.mjs` 把 package.json / Android gradle / **这一处**一起钉住。
  */
-export const APP_VERSION = '1.1.0';
+export const APP_VERSION = '1.1.1';
 
 /**
  * 服务内部事件总线。

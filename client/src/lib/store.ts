@@ -22,7 +22,16 @@ import {
   type RelayLatencyHint,
 } from '@mclink/shared';
 import { REGIONS, reconnectDelayMs } from '@mclink/shared';
-import { api, friendlyError, getDeviceName, getMasterUrl, getToken, setDeviceName, setToken } from './api.ts';
+import {
+  api,
+  friendlyError,
+  getDeviceName,
+  getMasterUrl,
+  getToken,
+  setCustomMasterUrl,
+  setDeviceName,
+  setToken,
+} from './api.ts';
 import { probeKey, type ProbeTarget } from './bridge.ts';
 import type { CoreLogEntry, CoreStatus } from './core-types.ts';
 import { recordRecent } from './shortcuts.ts';
@@ -43,6 +52,9 @@ import {
   saveAutoFallback,
   saveForceRelay,
   withDisableP2p,
+  withExtraPeers,
+  splitPeerUris,
+  normalizePeerUri,
   type RelaySource,
   type RouteSample,
 } from './relay-fallback.ts';
@@ -58,6 +70,73 @@ export { parsePeers } from './easytier-parse.ts';
 
 /* peer list / node info 的解析都在 lib/easytier-parse.ts（纯函数，可离线校验），
  * 这里导入使用，并把 parsePeers 再导出给界面复用。 */
+
+/* -------------------------------------------- 玩家自填的中继节点（持久化） */
+
+/** 玩家自填中继节点的 localStorage 键（设置页可改） */
+const EXTRA_PEERS_KEY = 'mclink.extraPeers';
+
+function readStoredExtraPeers(): string {
+  try {
+    return localStorage.getItem(EXTRA_PEERS_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 保存玩家自填的中继节点。返回**规范化后**的地址条数（界面用它给一句反馈）。
+ *
+ * 语义：把文本原样存起来（保留玩家自己的写法，下次打开还在），
+ * 合法性在生成配置那一刻逐条判定（非法的会被跳过，见 `withExtraPeers`）。
+ */
+export function setExtraPeers(text: string): number {
+  const value = text.trim();
+  state.extraPeers = value;
+  try {
+    if (value.length === 0) localStorage.removeItem(EXTRA_PEERS_KEY);
+    else localStorage.setItem(EXTRA_PEERS_KEY, value);
+  } catch {
+    /* localStorage 不可用（隐私模式）：本次会话有效，不报错 */
+  }
+  return countPeers(value);
+}
+
+/** 数一下这段文本里有多少条**合法**地址（界面用来提示"将追加 N 个节点"） */
+export function countPeers(text: string): number {
+  const seen = new Set<string>();
+  for (const raw of splitPeerUris(text)) {
+    const uri = normalizePeerUri(raw);
+    if (uri !== null) seen.add(uri);
+  }
+  return seen.size;
+}
+
+/** 逐条列出玩家填的节点与是否合法（设置页用来标红） */
+export function inspectPeers(text: string): Array<{ raw: string; uri: string | null }> {
+  return text
+    .split(/[\s,;，、]+/)
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0)
+    .map((raw) => ({ raw, uri: normalizePeerUri(raw) }));
+}
+
+/**
+ * 改主控地址（空 = 回到打包时注入的默认地址）。
+ *
+ * 切主控必须**清掉本地登录态**：旧令牌是旧主控签的，拿去请求新主控只会得到 401，
+ * 界面却会显示"已登录"，玩家会以为客户端坏了。返回是否发生了切换。
+ */
+export function setMasterUrl(raw: string | null): boolean {
+  const changed = setCustomMasterUrl(raw);
+  if (changed) {
+    setToken(null);
+    state.user = null;
+    state.ready = false;
+    state.masterUrl = getMasterUrl();
+  }
+  return changed;
+}
 
 /* --------------------------------------------------------------- 状态 */
 
@@ -97,6 +176,13 @@ const state = reactive({
   /** 是否已连上主控并登录 */
   ready: false,
   masterUrl: getMasterUrl(),
+  /**
+   * 玩家自己填的中继节点（社区/自建），一行一个或逗号分隔。
+   *
+   * 为什么放在应用级：它要**在启动内核那一刻**被追加进票据 TOML（见 effectiveConfigToml），
+   * 而那一刻发生在房间页/重连流程里、不在设置页。存 localStorage 是为了重启后仍在。
+   */
+  extraPeers: readStoredExtraPeers(),
   deviceName: getDeviceName(),
   listenPort: 0,
   /** 由本机探测出的 EasyTier RPC 端口（只监听 127.0.0.1），见 bootstrap() 的说明 */
@@ -1105,7 +1191,15 @@ function effectiveConfigToml(): string {
   const session = state.session;
   if (!session) return '';
   const raw = String(session.ticket.configToml);
-  return state.forceRelay ? withDisableP2p(raw) : raw;
+  /**
+   * 追加玩家自填的中继节点（社区/自建）。
+   *
+   * 时机放在**这里**而不是票据生成时：票据是主控签的，玩家填的节点只属于本机，
+   * 主控既不知道也不该知道；放在交给内核前的最后一步，两个平台（桌面 / 安卓）
+   * 走的是同一条路径 —— 安卓的 `mobile-bridge` 也是拿这份 `configToml`。
+   */
+  const withPeers = withExtraPeers(raw, splitPeerUris(state.extraPeers));
+  return state.forceRelay ? withDisableP2p(withPeers) : withPeers;
 }
 
 async function startNetwork(): Promise<CoreStatus | null> {

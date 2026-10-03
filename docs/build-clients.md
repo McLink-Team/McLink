@@ -36,10 +36,14 @@ $ node scripts/dist.mjs --mac zip          # 在 Windows 上执行
 | 1.1 GitLab CI（备用） | GitLab 共享额度恢复后才可用；仓库**已停止往 GitLab 推**，要用得先把提交推回去 | `.gitlab-ci.yml` 的 `build:macos` | GitLab SaaS 的 macOS runner |
 | 1.3 Linux 服务器硬出（应急） | 两边 CI 都用不了，且只要发 Intel Mac | `deploy/build-macos-on-linux.sh` | 主控那台 Linux —— **没 dmg、没签名** |
 
-> **远端约定**：主仓库是 GitHub —— `origin` = `https://github.com/McLink-Team/McLink`（私有），
-> 平时 `git push` 就推到它；GitLab 的远端已改名成 `gitlab` 保留着，**不再推**。
+> **远端约定**：主仓库是 GitHub —— `origin` = `https://github.com/McLink-Team/McLink`
+> （**公开仓库**，2026-10-03 开源；`public` 远端也指向它），平时 `git push` 就推到它；
+> GitLab 的远端已改名成 `gitlab` 保留着，**不再推**。
 > 注意主控服务器上那份 clone 还指向 GitLab：下次要更新主控代码之前，得先把它改成 GitHub
-> （给仓库加只读 deploy key，或用带 token 的 HTTPS）—— 否则 `git pull` 拉不到新提交。
+> （公开仓库直接 HTTPS 就行）—— 否则 `git pull` 拉不到新提交。
+>
+> **公开仓库的 Actions 不计费**（之前私有仓库时 macOS 按 10 倍折算、一次 mac 构建要吃掉
+> 月度额度的 1/10，那条约束现在没有了）；产物长期留存靠 **Release**，不是 Artifacts。
 
 ### 1.1 GitLab CI（备用路线）
 
@@ -95,28 +99,30 @@ node client/scripts/verify-platform.mjs    # YAML 语法 + job/tags/artifacts/�
 
 ### 1.2 GitHub Actions（当前使用的路线）
 
-GitHub 现在是**主仓库**（私有），也是唯一在用的出包路线 —— GitLab SaaS 的 macOS runner
-吃每月共享额度、额度已经用完，而 GitHub 私有仓库有 2,000 分钟/月（macOS 按 10 倍折算）。
+GitHub 是**主仓库**（2026-10-03 起为**公开仓库** `McLink-Team/McLink`），也是唯一在用的出包路线。
 工作流 `.github/workflows/build-clients.yml` 的步骤与 GitLab 的 `build:macos` 一一对应
-（`--mac zip --arm64 --x64` → `assert-artifacts.mjs --macos` → `sign-macos-app.sh` → 上传产物）。
+（`--mac zip --arm64 --x64` → `assert-artifacts.mjs --macos` → `sign-macos-app.sh` → 上传产物），
+末尾多一个 **`release` job**：把产物挂到 GitHub Release。
 
 ```bash
-git push     # origin 已经是 GitHub（https://github.com/McLink-Team/McLink），不用再加远端
+git push     # origin / public 都指向 https://github.com/McLink-Team/McLink
 ```
 
 然后 GitHub → **Actions** →「构建客户端（Windows / macOS）」→ **Run workflow**（分支选 `main`）；
-跑完在这次的 **Artifacts → `mclink-macos`** 里下载，默认是**两个 dmg**（arm64 + x64）。
+跑完两处拿东西：这次的 **Artifacts → `mclink-macos`**（默认两个 dmg），以及
+**Releases → `v<client/package.json 的版本>`**（自动创建/追加资产）。
 
 | 事项 | 说明 |
 | --- | --- |
-| 从哪个提交构建 | **从 `main` 跑**：1.0.9 的 mac 包要带上「mac 的更新提示不该指向 Windows 安装包」这处修复，它是打 tag 之后才提交的。版本号取自 `client/package.json`（仍是 1.0.9），文件名不变，主控照旧认。 |
+| 从哪个提交构建 | **从 `main` 跑**。版本号取自 `client/package.json`，文件名与主控下载页的识别规则一致。 |
 | runner | pin 在 **`macos-15`**（arm64，仍在 GA）。**别改回 `macos-14`**：GitHub 已把它标记为 deprecated；也别用 `macos-latest`（会被自动迁移到新系统）或 `-intel` / `-large`（x64 / 收费的更大规格）。 |
-| Windows job | 手动跑时**默认跳过**（要出就勾上 input `windows`）—— mac 包不需要它，而私有仓库的额度按分钟扣（Windows 还按 2 倍折算）。 |
-| **只有手动触发** | 工作流里**故意没开** `push: tags` —— 往 GitHub 推 `v*` 标签**不会**触发构建，所以标签可以随便推、不会白花额度。（GitLab 那边是反的：推 tag 会自动跑 `build:windows` + `build:macos`，所以别往 GitLab 推。） |
-| 额度 | GitHub Free 的私有仓库是 **2,000 分钟/月**，macOS 按 **10 倍**折算：一次 mac 构建（十几分钟）≈ 100~200 分钟额度，一个月够十几次。 |
-| 存储 | 私有仓库的 Actions 存储只有 **500 MB**，而两个架构 × dmg + zip 差不多正好 500MB —— 所以工作流**默认只上传两个 dmg**（≈260MB，保留 7 天）。要 zip 就勾 input `full_artifacts`（只留 1 天，且可能顶到上限）。 |
+| Windows job | 手动跑时**默认跳过**（要出就勾上 input `windows`）。 |
+| **只有手动触发** | 工作流里**故意没开** `push: tags` —— 推 `v*` 标签**不会**触发构建，标签可以随便推。（GitLab 那边是反的：推 tag 会自动跑 `build:windows` + `build:macos`，所以别往 GitLab 推。） |
+| 额度 | 公开仓库的 Actions **不计费**，所以"私有仓库 2,000 分钟/月、macOS 按 10 倍折算"那条约束已经不存在。 |
+| 存储 | Artifacts 在公开仓库同样免费，但仍有保留期（dmg 7 天、exe 30 天）。**长期留存请看 Release**（`release` job，标签 `v<版本>`，发版说明取 `docs/releases/<版本>.md`；已存在同名 Release 时只上传/覆盖资产，不会失败）。不需要 Release 就把 input `publish_release` 取消勾选。 |
 | 日志里的校验值 | 最后一步用 `shasum -a 256` 打印 dmg/zip 的校验值 —— 传完可以拿它核对有没有传错文件。 |
-| 认证 | 开发机不用装 `gh`、也不用重新授权：Windows 凭据管理器里存着 `example` 的 token（scope `repo` + `workflow`，后者是推 workflow 文件必需的），`git push` 会直接用它。 |
+| 认证 | 用 `gh auth login --web` 授权一次即可（**必须带 `workflow` scope**，否则推 `.github/workflows/**` 会被拒：`refusing to allow an OAuth App to create or update workflow`）。 |
+| 默认主控地址 | input `master`（默认 `https://cnnic.link`）会被**编译进包**当默认值；玩家可在客户端里自己改（登录页「连接的是哪台主控？」/ 设置页「自建 / 社区节点」）。 |
 
 ### 1.3 在 Linux 服务器上硬出（应急：没 dmg、没签名）
 
