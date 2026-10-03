@@ -249,6 +249,21 @@ export function withExtraPeers(toml: string, uris: readonly string[]): string {
 }
 
 /**
+ * 只按分隔符把一行拆成若干**原始 token**，不做任何协议展开。
+ *
+ * 为什么单独一层：界面要"把用户写错的那一段标红"，标红必须用**他写的原文**
+ * （`tcp://https://…` 这种展开后的形态标出来只会让人更糊涂）。
+ * `splitPeerUris` 在它之上做展开。
+ */
+export function splitPeerTokens(raw: string): string[] {
+  // 分隔符要含**全角**的逗号/分号/顿号：玩家从中文论坛抄地址时经常是这些
+  return raw
+    .split(/[\s,;，；、]+/)
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+}
+
+/**
  * 把玩家填的一行拆成一个或多个地址。
  *
  * 界面允许一行一个、也允许逗号/空格/分号分隔（玩家习惯性会写成 `a, b`）；
@@ -256,21 +271,14 @@ export function withExtraPeers(toml: string, uris: readonly string[]): string {
  * EasyTier 的 peer 是单协议的，只填 tcp 时 UDP 打洞就没有引导节点可用。
  */
 export function splitPeerUris(raw: string): string[] {
-  // 分隔符要含**全角**的逗号/分号/顿号：玩家从中文论坛抄地址时经常是这些
-  const parts = raw
-    .split(/[\s,;，；、]+/)
-    .map((p) => p.trim())
-    .filter((p) => p.length > 0);
   const out: string[] = [];
-  for (const part of parts) {
+  for (const part of splitPeerTokens(raw)) {
     if (/^(tcp|udp|ws|wss):\/\//i.test(part)) {
       out.push(part);
       continue;
     }
     // 没写协议：tcp 与 udp 各来一条（去重交给调用方）
-    const asTcp = `tcp://${part}`;
-    const asUdp = `udp://${part}`;
-    out.push(asTcp, asUdp);
+    out.push(`tcp://${part}`, `udp://${part}`);
   }
   return out;
 }

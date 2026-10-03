@@ -59,6 +59,17 @@ import {
   type RouteSample,
 } from './relay-fallback.ts';
 import { isMac, platform, supportsLanBroadcast, tunName } from './platform.ts';
+import {
+  encodeShareCode,
+  // ⚠️ 别名：本文件里已经有一个 `hostVirtualIp`（房间会话的 computed，见下方 export），
+  // 这里要的是"本地房间的房主地址"（纯函数），同名会撞车。
+  hostVirtualIp as localHostVirtualIp,
+  localRoomProblem,
+  newNetworkName,
+  newRoomSecret,
+  randomGuestVirtualIp,
+  renderLocalRoomToml,
+} from './local-room.ts';
 import { handleIncomingMessage, notifyPlatformHint } from './notify.ts';
 import { playNoticeSound } from './notice-sound.ts';
 import { relayHintCopy } from './relay-hint.ts';
@@ -183,6 +194,11 @@ const state = reactive({
    * 而那一刻发生在房间页/重连流程里、不在设置页。存 localStorage 是为了重启后仍在。
    */
   extraPeers: readStoredExtraPeers(),
+  /**
+   * **本地房间**（免主控联机，2026-10-03）：
+   * 记住上次的房间身份，下次打开可以"继续"；运行时它是当前正在用的房间。
+   */
+  localRoom: readStoredLocalRoom() as LocalRoomState | null,
   deviceName: getDeviceName(),
   listenPort: 0,
   /** 由本机探测出的 EasyTier RPC 端口（只监听 127.0.0.1），见 bootstrap() 的说明 */
@@ -1314,6 +1330,140 @@ export async function pollPeers(): Promise<void> {
   state.localRxBytes = rx;
   state.localTxBytes = tx;
   state.peers = peers;
+}
+
+/* ============================================ 本地联机（不需要主控） */
+
+/** 本地房间的 localStorage 键：记住它，下次打开还能"继续上次的房间" */
+const LOCAL_ROOM_KEY = 'mclink.localRoom';
+
+export interface LocalRoomState {
+  title: string;
+  networkName: string;
+  secret: string;
+  peers: string[];
+  isHost: boolean;
+  hostIp: string;
+  /** 本机在这个房间里的虚拟地址（带掩码） */
+  selfIp: string;
+}
+
+function readStoredLocalRoom(): LocalRoomState | null {
+  try {
+    const raw = localStorage.getItem(LOCAL_ROOM_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<LocalRoomState>;
+    if (typeof parsed.networkName !== 'string' || typeof parsed.secret !== 'string' || !Array.isArray(parsed.peers)) return null;
+    if (parsed.networkName.length === 0 || parsed.secret.length === 0) return null;
+    return {
+      title: typeof parsed.title === 'string' ? parsed.title : '本地房间',
+      networkName: parsed.networkName,
+      secret: parsed.secret,
+      peers: parsed.peers.filter((p): p is string => typeof p === 'string'),
+      isHost: parsed.isHost === true,
+      hostIp: typeof parsed.hostIp === 'string' ? parsed.hostIp : localHostVirtualIp(),
+      selfIp: typeof parsed.selfIp === 'string' ? parsed.selfIp : '',
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredLocalRoom(room: LocalRoomState | null): void {
+  try {
+    if (room === null) localStorage.removeItem(LOCAL_ROOM_KEY);
+    else localStorage.setItem(LOCAL_ROOM_KEY, JSON.stringify(room));
+  } catch {
+    /* localStorage 不可用时只是记不住，不影响本次使用 */
+  }
+}
+
+/**
+ * 开始（或加入）一个**本地房间**：不需要主控、不需要账号。
+ *
+ * 与"有主控"那条路的唯一交集是最后一步 —— 同样是把一份 EasyTier 配置交给本机内核
+ * （`window.mclink.core.start`）。区别都在配置从哪来：这里由 `renderLocalRoomToml` 本地生成。
+ *
+ * 返回一句给玩家看的提示（成功或失败原因），界面直接显示。
+ */
+export async function startLocalRoom(input: {
+  title: string;
+  peers: string[];
+  /** 从分享码加入时带上这三个字段（房间身份必须与房主完全一致） */
+  join?: { networkName: string; secret: string; hostIp?: string };
+  start?: boolean;
+}): Promise<string> {
+  const peers = input.peers;
+  const problem = localRoomProblem({ peers });
+  if (problem) return problem;
+
+  const isHost = !input.join;
+  const networkName = input.join?.networkName ?? newNetworkName(input.title);
+  const secret = input.join?.secret ?? newRoomSecret();
+  const selfIp = isHost ? localHostVirtualIp() : randomGuestVirtualIp();
+  const room: LocalRoomState = {
+    title: input.title.trim() || '本地房间',
+    networkName,
+    secret,
+    peers,
+    isHost,
+    hostIp: input.join?.hostIp ?? localHostVirtualIp(),
+    selfIp,
+  };
+
+  /**
+   * 监听端口：复用 bootstrap 里已经挑好的那个（避开 Hyper-V/WSL 的保留段）。
+   * 拿不到就交给内核默认值（配置里不写 listeners）。
+   */
+  const configToml = renderLocalRoomToml({
+    spec: { networkName, secret, peers, isHost },
+    hostname: state.deviceName || undefined,
+    instanceName: 'mclink-local',
+    listenPort: state.listenPort > 0 ? state.listenPort : undefined,
+    ipv4: selfIp,
+  });
+
+  try {
+    const status = await window.mclink.core.start({ configToml, launchArgs: [], instanceName: 'mclink-local' });
+    state.coreStatus = status;
+    if (status.state === 'error') {
+      return `本机联机内核启动失败：${status.lastError ?? '未知原因'}`;
+    }
+  } catch (err) {
+    return `本机联机内核启动失败：${friendlyError(err)}`;
+  }
+
+  state.localRoom = room;
+  writeStoredLocalRoom(room);
+  await pollPeers();
+  return isHost
+    ? `本地房间已就绪：把分享码发给朋友，他们粘进客户端就能进来（你是房主，游戏地址 ${room.hostIp.split('/')[0]}）`
+    : `已加入「${room.title}」：你的地址是 ${room.selfIp.split('/')[0]}，房主在 ${room.hostIp.split('/')[0]}`;
+}
+
+/** 停止本地房间（内核一起停）。**不删记忆** —— 下次还能"继续上次的房间" */
+export async function stopLocalRoom(): Promise<void> {
+  try {
+    await window.mclink.core.stop();
+  } catch {
+    /* 已经停了 */
+  }
+  state.localRoom = null;
+  state.peers = [];
+  state.coreStatus = await window.mclink.core.status();
+}
+
+/** 忘掉上次的本地房间（界面上的"删除记录"） */
+export function forgetLocalRoom(): void {
+  state.localRoom = null;
+  writeStoredLocalRoom(null);
+}
+
+/** 本地房间的分享码（房主发给朋友的那一串） */
+export function localRoomShareCode(): string | null {
+  const room = state.localRoom;
+  if (!room) return null;
+  return encodeShareCode({ title: room.title, networkName: room.networkName, secret: room.secret, peers: room.peers });
 }
 
 /* ==================================================== 强制走中继（玩家侧开关） */

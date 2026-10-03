@@ -17,6 +17,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { clearAuthNotice, clientState, login, register, setDevice, setMasterUrl } from '../lib/store.ts';
 import { customMasterUrl, friendlyError, HAS_BUILT_IN_MASTER, MASTER_URL } from '../lib/api.ts';
+import LocalRoomCard from '../components/LocalRoomCard.vue';
 import { emailProblem, displayNameProblem, passwordProblem } from '@mclink/shared';
 
 const mode = ref<'login' | 'register'>('login');
@@ -266,6 +267,12 @@ async function submit(): Promise<void> {
         <div v-if="masterMessage" class="hint">{{ masterMessage }}</div>
       </div>
       </template>
+
+      <!--
+        本地联机（不需要主控）——与"填主控地址"并列的第二条路。
+        两类玩家都会走到这里：没有主控的人（官方停服）、以及只想和固定几个朋友开黑的人。
+      -->
+      <LocalRoomCard />
     </div>
   </div>
 </template>
