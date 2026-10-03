@@ -689,7 +689,7 @@ export function registerAdminRoutes(router: Router, app: App): void {
     if (downloadUrl) patch.clientDownloadUrl = downloadUrl;
     const clientVersion = optStr(body, 'clientVersion', 40);
     if (clientVersion) patch.clientVersion = clientVersion;
-    if ('registrationOpen' in body) patch.registrationOpen = body.registrationOpen !== false;
+    // `registrationOpen` 在下面与 `registrationMode` 一起处理（模式是权威值，布尔值由它派生）
     if ('announcement' in body) patch.announcement = optStr(body, 'announcement', 300) ?? null;
     if ('clientSha256' in body) patch.clientSha256 = optStr(body, 'clientSha256', 128) ?? null;
     if ('defaultQuotaBytes' in body) {
@@ -712,6 +712,36 @@ export function registerAdminRoutes(router: Router, app: App): void {
         if (value !== undefined) patch[key] = value;
       }
     }
+
+    /* ---------------------------------------------------------- 注册与对外姿态 */
+    /*
+     * 注册模式三态（2026-10-03，私有化部署）：open / invite / closed。
+     *
+     * 与老的布尔开关 `registrationOpen` 的关系：**模式是权威值**，布尔值由它派生
+     * （`open|invite` → true，`closed` → false），这样 1.1.0 及更老的客户端继续读
+     * `/meta.registrationOpen` 也能拿到正确结果，不需要它们升级。
+     */
+    const mode = stringField(body, 'registrationMode', 16);
+    if (mode !== undefined) {
+      if (!['open', 'invite', 'closed'].includes(mode)) {
+        throw HttpError.badRequest('注册模式只能是 open / invite / closed', { registrationMode: '取值不合法' });
+      }
+      patch.registrationMode = mode as 'open' | 'invite' | 'closed';
+      patch.registrationOpen = mode !== 'closed';
+    } else if ('registrationOpen' in body) {
+      // 老字段仍然接受（老控制台/脚本），映射成模式：关 = closed，开 = open
+      patch.registrationOpen = body.registrationOpen !== false;
+      patch.registrationMode = patch.registrationOpen ? 'open' : 'closed';
+    }
+    if ('publicServiceOpen' in body) patch.publicServiceOpen = body.publicServiceOpen !== false;
+    if ('publicServiceClosedAt' in body) {
+      const raw = stringField(body, 'publicServiceClosedAt', 32) ?? '';
+      if (raw.length > 0 && !/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+        throw HttpError.badRequest('停止服务日期要写成 YYYY-MM-DD', { publicServiceClosedAt: '格式应为 YYYY-MM-DD' });
+      }
+      patch.publicServiceClosedAt = raw.length > 0 ? raw : null;
+    }
+    if ('repoUrl' in body) patch.repoUrl = stringField(body, 'repoUrl', 300) ?? '';
 
     /* ---------------------------------------------------------- 邮件设置 */
     if ('requireEmailVerification' in body) {

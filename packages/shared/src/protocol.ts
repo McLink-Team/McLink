@@ -231,6 +231,11 @@ export const ErrorCodes = {
   ROOM_PENDING: 'room_approval_pending',
   QUOTA_EXCEEDED: 'quota_exceeded',
   REGISTRATION_CLOSED: 'registration_closed',
+  /* 邀请注册（私有化部署）：注册页据此区分"要填邀请码/码不对/码过期/次数用完" */
+  INVITE_REQUIRED: 'invite_required',
+  INVITE_INVALID: 'invite_invalid',
+  INVITE_EXPIRED: 'invite_expired',
+  INVITE_USED: 'invite_used',
   /* 邮箱相关：客户端/网页靠这几个码决定"跳到验证邮箱界面"而不是弹一句看不懂的错 */
   EMAIL_REQUIRED: 'email_required',
   EMAIL_NOT_VERIFIED: 'email_not_verified',

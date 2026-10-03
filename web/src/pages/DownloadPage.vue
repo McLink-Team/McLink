@@ -40,10 +40,21 @@ interface DownloadsResponse {
  */
 interface MetaDownloads {
   clientDownloads?: { version: string; android: DownloadArtifact | null } | null;
+  /**
+   * 本实例是否还对公众开放。关掉后**下载页照常可用**（软件本身是开源的），
+   * 但要在最上面说清"这个包需要连到你自己的主控" —— 否则玩家装完发现登不上，
+   * 会以为是安装包坏了（我们确实在公告里说过停止对外服务，但下载页是更靠前的一步）。
+   */
+  publicServiceOpen?: boolean;
+  publicServiceClosedAt?: string | null;
+  repoUrl?: string;
 }
 
 const data = ref<DownloadsResponse | null>(null);
 const metaDownloads = ref<MetaDownloads['clientDownloads']>(null);
+const serviceClosed = ref(false);
+const closedAt = ref<string | null>(null);
+const repoUrl = ref('https://github.com/luo-die/mclink');
 const loading = ref(true);
 const error = ref<string | null>(null);
 
@@ -63,6 +74,9 @@ async function load(): Promise<void> {
     ]);
     data.value = list;
     metaDownloads.value = meta?.clientDownloads ?? null;
+    serviceClosed.value = meta?.publicServiceOpen === false;
+    closedAt.value = meta?.publicServiceClosedAt ?? null;
+    if (meta?.repoUrl) repoUrl.value = meta.repoUrl;
     error.value = null;
   } catch (err) {
     error.value = friendlyError(err);
@@ -76,7 +90,6 @@ onMounted(() => {
 });
 
 const artifacts = computed<DownloadArtifact[]>(() => asArray(data.value?.artifacts));
-
 const windowsArtifacts = computed(() => artifacts.value.filter((a) => a.platform === 'windows'));
 /**
  * 「未做玩家侧引导」的那一类产物。
@@ -223,6 +236,19 @@ const requirements: Array<{ label: string; value: string }> = [
       <div class="container head-inner">
         <span class="badge badge-brand">客户端 v{{ clientVersion }}</span>
         <h1>下载客户端</h1>
+        <!--
+          停止对外服务之后，下载页**照常可下载**（软件本身是开源的），但必须先把话说在前面：
+          这个包要连到你自己的主控。否则玩家装完登录失败，只会以为安装包坏了。
+        -->
+        <div v-if="serviceClosed" class="notice notice-warn dl-closed">
+          <span class="notice-body">
+            本实例已<template v-if="closedAt">自 {{ closedAt }}</template>停止对外提供联机服务，
+            不再提供官方中继，也不再接受公开注册。下面的安装包仍然可以下载，
+            但它需要连到<strong>你自己的主控</strong>（自建方式见
+            <a :href="repoUrl" rel="noreferrer noopener" target="_blank">项目仓库</a>）；
+            登录本实例需要管理员发的邀请码。
+          </span>
+        </div>
         <p class="muted">
           安装后登录 → 选择区域 → 输入加入码即可联机。客户端会向主控申请一张短时效票据，
           自动拉起本机 EasyTier 实例，无需手动配置网络名、密钥或中继地址。
@@ -532,6 +558,11 @@ const requirements: Array<{ label: string; value: string }> = [
 </template>
 
 <style scoped>
+/* 已停止对外服务时的提示：跟正文分开一点，别读成一行的延续 */
+.dl-closed {
+  margin: var(--s-4) 0;
+  text-align: left;
+}
 .dl {
   min-height: 100vh;
   display: flex;

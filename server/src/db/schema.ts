@@ -705,6 +705,52 @@ const V27_ROOM_RELAY_HINTS = `
 alter table rooms add column relay_latency_hints text;
 `;
 
+/**
+ * V28：**邀请注册**（私有化部署）。
+ *
+ * 背景（2026-10-03）：项目转私有化使用，主控不再对公网敞开注册，但也不该让管理员
+ * 手工替每个人建号 —— 所以加一张邀请码表 + 一个"注册模式"设置：
+ *   · `invites` 表：码、备注、谁生成、过期时间、可用次数、已用次数、是否停用；
+ *   · `registrationMode`：`open | invite | closed`（老部署补成 `open`，行为不变）；
+ *   · `publicServiceOpen` / `publicServiceClosedAt` / `repoUrl`：落地页"已停止对外服务"的文案与姿态。
+ *
+ * 纪律同前：`json_set` 只补**缺失**的字段，管理员已经改过的一律不碰
+ * （`json_extract(...) is null` 就是"没设过才写"）。
+ */
+const V28_INVITES = `
+create table if not exists invites (
+  code text primary key,
+  note text,
+  created_by text,
+  created_at text not null,
+  expires_at text,
+  max_uses integer not null default 1,
+  used_count integer not null default 0,
+  disabled integer not null default 0,
+  last_used_at text,
+  last_used_by text
+);
+create index if not exists idx_invites_created on invites(created_at desc);
+
+update settings
+   set value = json_set(value, '$.registrationMode', 'open'),
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ where key = 'platform'
+   and json_extract(value, '$.registrationMode') is null;
+
+update settings
+   set value = json_set(value, '$.publicServiceOpen', 1),
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ where key = 'platform'
+   and json_extract(value, '$.publicServiceOpen') is null;
+
+update settings
+   set value = json_set(value, '$.repoUrl', 'https://github.com/luo-die/mclink'),
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ where key = 'platform'
+   and json_extract(value, '$.repoUrl') is null;
+`;
+
 export const MIGRATIONS: readonly string[] = [
   V1_INITIAL,
   V2_RELAY_ROOM_MAP,
@@ -743,6 +789,7 @@ export const MIGRATIONS: readonly string[] = [
   V25_MEMBER_RELAY_NODE,
   V26_CLIENT_1_1_0,
   V27_ROOM_RELAY_HINTS,
+  V28_INVITES,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

@@ -132,6 +132,30 @@ export interface RelayNode {
 export type RoomStatus = 'open' | 'closed' | 'expired';
 /** open = 凭加入码直接进；password = 需要房间密码；approval = 房主审批 */
 export type RoomAccess = 'open' | 'password' | 'approval';
+
+/** 注册模式：开放 / 需要邀请码 / 完全关闭（见 `PlatformSettings.registrationMode`） */
+export type RegistrationMode = 'open' | 'invite' | 'closed';
+
+/** 一个邀请码（控制台「邀请注册」页用；`code` 本身就是主键） */
+export interface InviteCode {
+  code: string;
+  /** 备注：发给谁、为什么给（对着一长串码谁也认不出来） */
+  note: string | null;
+  /** 谁生成的（管理员用户名，便于追责） */
+  createdBy: string | null;
+  createdAt: string;
+  /** 过期时间；null = 永不过期 */
+  expiresAt: string | null;
+  /** 最多能用几次；0 = 不限次数 */
+  maxUses: number;
+  usedCount: number;
+  /** 已停用（停用后立刻失效，但记录留着，便于看"这个码发出去过、后来被停了"） */
+  disabled: boolean;
+  /** 最近一次被使用的时间；null = 还没人用过 */
+  lastUsedAt: string | null;
+  /** 最近一次被谁用了（用户名），便于追"这个码进了哪个账号" */
+  lastUsedBy: string | null;
+}
 /** public = 出现在大厅列表；hidden = 仅凭加入码可见 */
 export type RoomVisibility = 'public' | 'hidden';
 
@@ -525,8 +549,30 @@ export interface PlatformSettings {
    * 调小 → 更贴近"纯延迟优先"；调大 → 更看重负载均衡；0 = 完全按延迟（旧口径）。
    */
   relayLoadPenaltyMs: number;
-  /** 是否允许玩家注册（关闭则仅管理员建号） */
+  /** 是否允许玩家注册（关闭则仅管理员建号）。等价于 `registrationMode !== 'closed'` */
   registrationOpen: boolean;
+  /**
+   * 注册模式（2026-10-03 新增，私有化部署用）：
+   *   · `open`   —— 谁都能注册（公测期的老行为）
+   *   · `invite` —— **必须带有效邀请码**（私有实例的默认玩法：管理员在控制台生成邀请码/链接）
+   *   · `closed` —— 完全关闭注册，只能由管理员在控制台建号
+   *
+   * 为什么加这一档：项目转为私有化使用后，主控不该再对公网敞开注册；
+   * 而"完全关闭"又要求管理员手工建号（还得替对方想密码），所以中间这档最实用。
+   */
+  registrationMode: RegistrationMode;
+  /**
+   * 本实例是否**对公众开放**（2026-10-03 新增）。
+   *
+   * 关掉之后落地页不再招徕使用者（隐藏"立即使用/下载"这类引导，改为一句"本实例已停止
+   * 对外提供服务"），但接口与客户端照常可用 —— 它只影响**落地页的对外姿态**，
+   * 不是安全开关（真正的门在 `registrationMode` 与账号本身）。
+   */
+  publicServiceOpen: boolean;
+  /** 停止对外提供服务的日期（`YYYY-MM-DD`，可空）。只用于落地页与公告文案，不参与任何判定 */
+  publicServiceClosedAt: string | null;
+  /** 项目仓库地址（落地页在"已停止服务"状态下引导大家去自建/看源码） */
+  repoUrl: string;
   /** 中继的默认端口：子节点注册/建房不指定端口时用的就是它 */
   relayPort: number;
   /** 公告 */
