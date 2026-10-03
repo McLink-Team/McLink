@@ -109,20 +109,21 @@ git push     # origin / public 都指向 https://github.com/McLink-Team/McLink
 ```
 
 然后 GitHub → **Actions** →「构建客户端（Windows / macOS）」→ **Run workflow**（分支选 `main`）；
-跑完两处拿东西：这次的 **Artifacts → `mclink-macos`**（默认两个 dmg），以及
-**Releases → `v<client/package.json 的版本>`**（自动创建/追加资产）。
+跑完两处拿东西：这次的 **Artifacts**（`mclink-windows-x64` / `mclink-macos` / `mclink-android`），
+以及 **Releases → `v<client/package.json 的版本>`**（自动创建/追加资产）。
 
 | 事项 | 说明 |
 | --- | --- |
 | 从哪个提交构建 | **从 `main` 跑**。版本号取自 `client/package.json`，文件名与主控下载页的识别规则一致。 |
-| runner | pin 在 **`macos-15`**（arm64，仍在 GA）。**别改回 `macos-14`**：GitHub 已把它标记为 deprecated；也别用 `macos-latest`（会被自动迁移到新系统）或 `-intel` / `-large`（x64 / 收费的更大规格）。 |
+| runner | mac 那台 pin 在 **`macos-15`**（arm64，仍在 GA）。**别改回 `macos-14`**：GitHub 已把它标记为 deprecated；也别用 `macos-latest`（会被自动迁移到新系统）或 `-intel` / `-large`（x64 / 收费的更大规格）。 |
+| **安卓也在 CI 里** | `android` job 跑在 `ubuntu-latest`（runner 自带 Android SDK + JDK 21），按需补 `platforms;android-35` / `build-tools;35.0.0`，产出 `mclink-android-<版本>-debug.apk`。以前这一步只在开发机上做，SDK 一丢就出不了包。 |
 | Windows job | 手动跑时**默认跳过**（要出就勾上 input `windows`）。 |
 | **只有手动触发** | 工作流里**故意没开** `push: tags` —— 推 `v*` 标签**不会**触发构建，标签可以随便推。（GitLab 那边是反的：推 tag 会自动跑 `build:windows` + `build:macos`，所以别往 GitLab 推。） |
 | 额度 | 公开仓库的 Actions **不计费**，所以"私有仓库 2,000 分钟/月、macOS 按 10 倍折算"那条约束已经不存在。 |
-| 存储 | Artifacts 在公开仓库同样免费，但仍有保留期（dmg 7 天、exe 30 天）。**长期留存请看 Release**（`release` job，标签 `v<版本>`，发版说明取 `docs/releases/<版本>.md`；已存在同名 Release 时只上传/覆盖资产，不会失败）。不需要 Release 就把 input `publish_release` 取消勾选。 |
+| 存储 | Artifacts 在公开仓库同样免费，但仍有保留期（dmg 7 天、exe 30 天、apk 14 天）。**长期留存请看 Release**（`release` job，标签 `v<版本>`，发版说明取 `docs/releases/<版本>.md`；已存在同名 Release 时只上传/覆盖资产，不会失败）。不需要 Release 就把 input `publish_release` 取消勾选。 |
 | 日志里的校验值 | 最后一步用 `shasum -a 256` 打印 dmg/zip 的校验值 —— 传完可以拿它核对有没有传错文件。 |
 | 认证 | 用 `gh auth login --web` 授权一次即可（**必须带 `workflow` scope**，否则推 `.github/workflows/**` 会被拒：`refusing to allow an OAuth App to create or update workflow`）。 |
-| 默认主控地址 | input `master`（默认 `https://cnnic.link`）会被**编译进包**当默认值；玩家可在客户端里自己改（登录页「连接的是哪台主控？」/ 设置页「自建 / 社区节点」）。 |
+| 默认主控地址 | input `master`（默认 `https://cnnic.link`）会被**编译进包**当默认值；玩家可在客户端里自己改（登录页「连接的是哪台主控？」/ 设置页「自建 / 社区节点」，安卓设置页同名字段）。 |
 
 ### 1.3 在 Linux 服务器上硬出（应急：没 dmg、没签名）
 
