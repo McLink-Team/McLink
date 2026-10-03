@@ -1,16 +1,25 @@
 /**
  * 客户端侧的 API 封装。
  *
- * 主控地址是**编译期常量**：平台不开放自建主控，客户端只能连官方主控。
- * 打包时通过 `VITE_MCLINK_MASTER` 注入（见 client/.env.example 与 scripts/build.mjs），
- * 不注入时回退到本地开发地址。运行时没有任何修改入口 ——
- * 这既避免了玩家被诱导连到钓鱼主控，也让「票据只能来自官方主控」这条
- * 安全前提成立。
+ * 主控地址有两层：
+ *   1. **打包时注入**的默认值（`VITE_MCLINK_MASTER`，见 client/.env.example 与 scripts/build.mjs），
+ *      不注入时回退到本地开发地址；
+ *   2. **玩家自己填的覆盖值**（`localStorage['mclink.master']`，设置页可改、可清空）。
+ *
+ * 第 2 层是 2026-10-03 加的：官方服务停止后，玩家要能连**自己的主控**或社区的实例，
+ * 否则这版客户端就只能是废包。风险也如实写在界面上 ——
+ * 连到别人的主控意味着**账号密码会交给那台机器**，所以设置页把这句话写在输入框旁边，
+ * 并且切换主控时会**清掉本地登录态**（旧令牌对新主控无效，留着只会让人困惑）。
+ *
+ * 安全前提的变化：以前"票据只能来自官方主控"，现在"票据来自你自己选定的那台主控"——
+ * 房间内的权限模型不变（票据仍然由主控签发），只是信任对象从平台变成了你填的那台机器。
  */
 import { API_PREFIX, type ApiError } from '@mclink/shared';
 
 const TOKEN_KEY = 'mclink.token';
 const DEVICE_KEY = 'mclink.device';
+/** 玩家自填的主控地址（空/无效 = 用打包时注入的默认值） */
+const MASTER_KEY = 'mclink.master';
 /** 本地开发用回退地址；正式包一定会被 VITE_MCLINK_MASTER 覆盖 */
 const DEV_FALLBACK_MASTER = 'http://127.0.0.1:8787';
 
@@ -20,14 +29,42 @@ function readEnvMaster(): string {
   return DEV_FALLBACK_MASTER;
 }
 
-/** 主控地址（只读）。不要再往 localStorage 里存它 —— 那等于给了篡改入口。 */
+/** 打包时注入的主控地址（**只读**：界面上显示"官方/默认地址"用的就是它） */
 export const MASTER_URL = readEnvMaster();
 
 /** 是否使用了开发回退地址（界面据此提示「当前连的是本地主控」） */
 export const USING_DEV_MASTER = !import.meta.env.VITE_MCLINK_MASTER;
 
+/**
+ * 地址归一化在 `master-url.ts`（纯函数、无 Vite 依赖，可离线校验：
+ * `node client/scripts/verify-selfhost-fn.mjs`）。这里导入后**再用原路径导出一次**，
+ * 界面按原路径引用即可（`export ... from` 不会把名字带进本模块作用域，
+ * 而下面 setCustomMasterUrl 要用它 —— 所以是 import + export 两步）。
+ */
+import { normalizeMasterUrl } from './master-url.ts';
+export { normalizeMasterUrl };
+
+/** 玩家自己填的主控地址（没填返回 null） */
+export function customMasterUrl(): string | null {
+  const stored = readLocal(MASTER_KEY);
+  return stored === null ? null : normalizeMasterUrl(stored);
+}
+
+/**
+ * 设置/清除自填主控地址。**返回是否发生了改变**（调用方据此决定要不要清登录态）。
+ *
+ * 传空的/非法的值 = 清除覆盖，回到打包时注入的默认地址。
+ */
+export function setCustomMasterUrl(raw: string | null): boolean {
+  const before = getMasterUrl();
+  const next = raw === null || raw.trim().length === 0 ? null : normalizeMasterUrl(raw);
+  if (next === null) writeLocal(MASTER_KEY, null);
+  else writeLocal(MASTER_KEY, next);
+  return getMasterUrl() !== before;
+}
+
 export function getMasterUrl(): string {
-  return MASTER_URL;
+  return customMasterUrl() ?? MASTER_URL;
 }
 
 export class ApiRequestError extends Error {

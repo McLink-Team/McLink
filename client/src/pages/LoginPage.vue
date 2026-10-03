@@ -9,10 +9,14 @@
  *      会长到 900px（实测截图里就是这样，一眼就散了）。
  *
  * 刻意不显示任何服务器信息：玩家不需要知道、也无权修改它连的是哪台机器。
+ *
+ * ⚠️ 2026-10-03 改了这条：官方服务停止后，玩家**必须**能在这里换主控地址 ——
+ * 否则自建实例的用户卡在登录页（还没登录就没法进设置页）。
+ * 于是多了一行可展开的「连接的是哪台主控」，默认折叠、只在需要时出现。
  */
 import { computed, onMounted, ref } from 'vue';
-import { clearAuthNotice, clientState, login, register, setDevice } from '../lib/store.ts';
-import { friendlyError } from '../lib/api.ts';
+import { clearAuthNotice, clientState, login, register, setDevice, setMasterUrl } from '../lib/store.ts';
+import { customMasterUrl, friendlyError, MASTER_URL } from '../lib/api.ts';
 import { emailProblem, displayNameProblem, passwordProblem } from '@mclink/shared';
 
 const mode = ref<'login' | 'register'>('login');
@@ -24,6 +28,35 @@ const email = ref('');
 const device = ref(clientState.deviceName);
 const busy = ref(false);
 const error = ref('');
+
+/* ------------------------------------------------ 主控地址（自建实例入口） */
+
+/**
+ * 这一行是给"自建实例"的用户准备的：他们拿到的是自己的域名/IP，
+ * 而包里的默认地址是官方（已停服）那台 —— 不给他换的地方，他就登录不了。
+ *
+ * 默认折叠：普通玩家不需要看到它，也不该被诱导去改。
+ */
+const masterOpen = ref(false);
+const masterInput = ref(customMasterUrl() ?? '');
+const masterMessage = ref('');
+const masterIsCustom = computed(() => customMasterUrl() !== null);
+
+function applyMaster(): void {
+  masterMessage.value = '';
+  const changed = setMasterUrl(masterInput.value);
+  masterInput.value = customMasterUrl() ?? '';
+  if (!changed) {
+    masterMessage.value = `没变，仍是 ${clientState.masterUrl}`;
+    return;
+  }
+  /**
+   * 换主控要**重新走一遍初始化**：区域、平台信息、注册开关全部来自那台主控的 /meta。
+   * 与其在这里手动重拉一遍，不如让渲染层重载 —— 与 Electron 的 reload 等价，
+   * 玩家看到的就是"应用重启了一次"。
+   */
+  window.location.reload();
+}
 
 /** 平台是否要求验证邮箱（来自 /meta）：是的话注册表单把邮箱变成必填 */
 const emailRequired = computed(() => clientState.platform.requireEmailVerification);
@@ -155,6 +188,43 @@ async function submit(): Promise<void> {
       </button>
 
       <p class="hint center">登录即表示你同意仅将本平台用于合法的联机用途。</p>
+
+      <!--
+        自建实例入口（默认折叠）。
+        官方服务已停，包里内置的地址未必是你的实例 —— 不给这一行，自建的用户就卡在登录页。
+      -->
+      <div class="master-row">
+        <button class="master-toggle" type="button" @click="masterOpen = !masterOpen">
+          {{ masterOpen ? '收起' : '连接的是哪台主控？' }}
+        </button>
+        <span class="hint mono">{{ clientState.masterUrl }}</span>
+      </div>
+      <div v-if="masterOpen" class="field">
+        <label class="label">主控地址</label>
+        <input
+          v-model="masterInput"
+          class="input"
+          spellcheck="false"
+          :placeholder="`留空 = 用本包内置的 ${MASTER_URL}`"
+        />
+        <div class="hint">
+          自建实例就填你自己的地址（<span class="mono">https://mclink.example.com</span> 或
+          <span class="mono">http://192.168.1.10:8787</span>）。换完会自动重载应用。
+          <b>账号密码会发给这台主控</b>，只填你信任的实例。
+        </div>
+        <div class="ops">
+          <button class="btn btn-sm" type="button" @click="applyMaster">保存并重载</button>
+          <button
+            v-if="masterIsCustom"
+            class="btn btn-sm btn-ghost"
+            type="button"
+            @click="masterInput = ''; applyMaster()"
+          >
+            恢复默认
+          </button>
+        </div>
+        <div v-if="masterMessage" class="hint">{{ masterMessage }}</div>
+      </div>
     </div>
   </div>
 </template>
@@ -192,5 +262,28 @@ async function submit(): Promise<void> {
 }
 .warn-text {
   color: var(--fault);
+}
+/* 自建实例入口：一行小字 + 一个纯文字按钮，权重压到最低（普通玩家不该被它吸引） */
+.master-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: center;
+  gap: var(--s-2);
+  margin-top: var(--s-1);
+}
+.master-toggle {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--signal);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.master-row .hint {
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
 }
 </style>

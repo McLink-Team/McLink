@@ -148,6 +148,133 @@ export function withDisableP2p(toml: string): string {
   return lines.join('\n');
 }
 
+/* =========================================== 票据 TOML：追加玩家自己的中继节点 */
+
+/** `[[peer]]` 段头（数组表；票据里每台中继会写成两行 tcp/udp） */
+const PEER_HEADER_RE = /^\s*\[\[peer\]\]\s*(?:#.*)?$/;
+/** 段内 `uri = "..."` */
+const PEER_URI_RE = /^\s*uri\s*=\s*["']([^"']+)["']/;
+
+/**
+ * 归一化玩家手填的一个节点地址。返回 `null` 表示这行不合法（界面会标红）。
+ *
+ * 接受的形态（宽松一点，玩家抄来的地址什么形状都有）：
+ *   · `tcp://host:11010` / `udp://host:11010` / `ws://…` / `wss://…` —— 原样保留协议
+ *   · `host:11010`            —— 同时给 tcp 与 udp 两条（EasyTier 两个都要）
+ *   · `host`                  —— 用默认端口 11010
+ *
+ * 明确**拒绝**：带路径/查询串的（那是网页地址，不是节点）、端口越界、
+ * 以及任何不是主机名/IP 的字符（避免把乱七八糟的东西写进内核配置）。
+ */
+export function normalizePeerUri(raw: string, defaultPort = 11010): string | null {
+  const text = raw.trim();
+  if (text.length === 0) return null;
+
+  const withScheme = /^(tcp|udp|ws|wss):\/\/(.+)$/i.exec(text);
+  const scheme = withScheme ? withScheme[1]!.toLowerCase() : null;
+  const rest = (withScheme ? withScheme[2]! : text).trim();
+  if (rest.length === 0 || /[/?#]/.test(rest)) return null;
+
+  const [hostPart, portPart, ...extra] = rest.split(':');
+  if (extra.length > 0) return null;
+  const host = (hostPart ?? '').trim();
+  if (!/^[A-Za-z0-9._-]+$/.test(host)) return null;
+
+  let port = defaultPort;
+  if (portPart !== undefined && portPart !== '') {
+    /**
+     * ⚠️ 必须是**纯数字**：`Number.parseInt('11010；c.com')` 会返回 11010，
+     * 于是 `b.com:11010；c.com` 这种"两个地址粘在一起、中间是全角分号"的输入
+     * 会被悄悄截断成一条合法地址，后半截直接消失（离线校验里实测抓到）。
+     */
+    if (!/^\d+$/.test(portPart)) return null;
+    const parsed = Number.parseInt(portPart, 10);
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) return null;
+    port = parsed;
+  }
+  return `${scheme ?? 'tcp'}://${host}:${port}`;
+}
+
+/**
+ * 把玩家自填的节点追加进票据 TOML（社区/自建中继，方便没有官方节点时也能联机）。
+ *
+ * 为什么插在**最后一个 `[[peer]]` 段之后**而不是文件末尾：TOML 里表头之后的所有裸键
+ * 都属于那个表，追加到末尾虽然对新表也成立，但会和 `[acl…]`/`[file_logger]` 这些段混在一起，
+ * 事后人看配置很难分辨"哪些 peer 是平台给的、哪些是我自己加的"。插在 peer 段尾部，
+ * 两者相邻、一眼能对上；没有 peer 段时才退化成追加到末尾。
+ *
+ * 去重按**整行 URI**：同一个 `tcp://host:port` 平台已经给了就不再写一遍
+ * （EasyTier 对重复 peer 只是白连一次，但配置里出现两遍会让人以为写错了）。
+ * 非法地址**静默跳过**（界面在保存时就拦过一次，这里兜底不抛错 —— 一张坏地址
+ * 不该让整个房间起不来）。
+ */
+export function withExtraPeers(toml: string, uris: readonly string[]): string {
+  const wanted: string[] = [];
+  for (const raw of uris) {
+    for (const uri of splitPeerUris(raw)) {
+      const parsed = normalizePeerUri(uri);
+      if (parsed !== null && !wanted.includes(parsed)) wanted.push(parsed);
+    }
+  }
+  if (wanted.length === 0) return toml;
+
+  const existing = new Set<string>();
+  for (const line of toml.split('\n')) {
+    const m = PEER_URI_RE.exec(line);
+    if (m?.[1]) existing.add(m[1].trim());
+  }
+  const fresh = wanted.filter((uri) => !existing.has(uri));
+  if (fresh.length === 0) return toml;
+
+  const block = fresh.map((uri) => `[[peer]]\nuri = "${uri}"`).join('\n');
+  const body = toml.endsWith('\n') || toml.length === 0 ? toml : `${toml}\n`;
+  const lines = body.split('\n');
+
+  // 找最后一个 peer 段（含它自己的键行），插在它后面
+  let lastPeerLine = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (PEER_HEADER_RE.test(lines[i] ?? '')) lastPeerLine = i;
+  }
+  if (lastPeerLine < 0) return `${body}${body.length > 0 ? '\n' : ''}${block}\n`;
+
+  let insertAt = lastPeerLine + 1;
+  while (insertAt < lines.length) {
+    const line = lines[insertAt] ?? '';
+    // 空行与注释仍算这一段的一部分；遇到下一个表头就停
+    if (ANY_HEADER_RE.test(line)) break;
+    insertAt += 1;
+  }
+  lines.splice(insertAt, 0, ...block.split('\n'));
+  return lines.join('\n');
+}
+
+/**
+ * 把玩家填的一行拆成一个或多个地址。
+ *
+ * 界面允许一行一个、也允许逗号/空格/分号分隔（玩家习惯性会写成 `a, b`）；
+ * `host:port` 这种没有协议的会被展开成 tcp + udp 两条 ——
+ * EasyTier 的 peer 是单协议的，只填 tcp 时 UDP 打洞就没有引导节点可用。
+ */
+export function splitPeerUris(raw: string): string[] {
+  // 分隔符要含**全角**的逗号/分号/顿号：玩家从中文论坛抄地址时经常是这些
+  const parts = raw
+    .split(/[\s,;，；、]+/)
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+  const out: string[] = [];
+  for (const part of parts) {
+    if (/^(tcp|udp|ws|wss):\/\//i.test(part)) {
+      out.push(part);
+      continue;
+    }
+    // 没写协议：tcp 与 udp 各来一条（去重交给调用方）
+    const asTcp = `tcp://${part}`;
+    const asUdp = `udp://${part}`;
+    out.push(asTcp, asUdp);
+  }
+  return out;
+}
+
 /* ================================================================== 采样与判据 */
 
 /** 一个节点在某一时刻的最佳路径读数（A/B 对照用的基线就是它） */

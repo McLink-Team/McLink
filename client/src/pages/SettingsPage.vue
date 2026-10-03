@@ -26,17 +26,21 @@ import { currentTheme, displayNameProblem, emailProblem, passwordProblem, setThe
 import {
   changePassword,
   clientState,
+  countPeers,
+  inspectPeers,
   logout,
   openUpdatePage,
   refreshEmailStatus,
   relaunchElevated,
   setAutoFallback,
   setDevice,
+  setExtraPeers,
+  setMasterUrl,
   startEmailVerification,
   submitEmailCode,
   updateDisplayName,
 } from '../lib/store.ts';
-import { friendlyError } from '../lib/api.ts';
+import { customMasterUrl, friendlyError, MASTER_URL } from '../lib/api.ts';
 import { reopenOnboarding } from '../lib/onboarding.ts';
 import { adminAuthPrompt, closeActionLabel, isMac, needsAdmin, trayName, tunName } from '../lib/platform.ts';
 import { applyMessagesEnabled, messagesEnabled } from '../lib/notify.ts';
@@ -46,6 +50,75 @@ const info = ref<AppInfo | null>(null);
 const device = ref(clientState.deviceName);
 const listenPort = ref(clientState.listenPort);
 const saved = ref(false);
+
+/* ------------------------------------------------ 自建 / 社区节点（主控与中继） */
+
+/**
+ * 主控地址与中继节点这两个输入框。
+ *
+ * 主控：保存后**必须清登录态并重新连一次**（旧令牌是旧主控签的），
+ * 所以这里不做"静默保存"，而是明确告诉玩家"已切换，请重新登录"。
+ * 中继：只影响下次进房时生成的配置，改完提示"退出房间再进一次"。
+ */
+const masterInput = ref(customMasterUrl() ?? '');
+const masterBusy = ref(false);
+const masterMessage = ref('');
+const masterIsCustom = computed(() => customMasterUrl() !== null);
+const state = clientState;
+
+const peersInput = ref(clientState.extraPeers);
+const peersMessage = ref('');
+const peerCount = computed(() => countPeers(peersInput.value));
+const peerBad = computed(() =>
+  inspectPeers(peersInput.value)
+    .filter((p) => p.uri === null)
+    .map((p) => p.raw),
+);
+
+async function saveMaster(): Promise<void> {
+  masterBusy.value = true;
+  masterMessage.value = '';
+  try {
+    const changed = setMasterUrl(masterInput.value);
+    if (!changed) {
+      masterMessage.value = `主控地址没变，仍是 ${state.masterUrl}。`;
+      return;
+    }
+    /**
+     * 切换成功后回到登录页：`clientState.ready` 已被 setMasterUrl 置回 false，
+     * 但界面还停在设置页 —— 让玩家看到"该重新登录了"，比停在设置页更清楚。
+     */
+    masterMessage.value = `已切换到 ${state.masterUrl}，登录状态已清除，请重新登录。`;
+    device.value = clientState.deviceName;
+  } catch (err) {
+    masterMessage.value = friendlyError(err);
+  } finally {
+    masterBusy.value = false;
+  }
+}
+
+async function clearMaster(): Promise<void> {
+  masterInput.value = '';
+  await saveMaster();
+}
+
+function savePeers(): void {
+  const count = setExtraPeers(peersInput.value);
+  peersMessage.value =
+    count === 0
+      ? '已清空：以后只用平台下发的中继。'
+      : `已保存 ${count} 个节点，退出房间再进一次即可生效。`;
+  peersInput.value = clientState.extraPeers;
+}
+
+function clearPeers(): void {
+  peersInput.value = '';
+  savePeers();
+}
+
+/** 默认主控地址（只读展示：让玩家知道"留空"会连到哪里） */
+const defaultMaster = MASTER_URL;
+
 /** 启动时自动请求管理员权限（默认开；关掉后不再自动弹 UAC） */
 const autoElevate = ref(true);
 
@@ -639,6 +712,87 @@ function openDataDir(): void {
           <div v-else class="hint">
             主控还没有配置邮件服务（SMTP），现在无法绑定或换绑邮箱 —— 需要的话请联系管理员。
           </div>
+        </div>
+      </section>
+
+      <!--
+        自建 / 社区节点（2026-10-03）。
+        官方服务停止后，这一块是"这版客户端还能不能用"的开关：
+          · 主控地址 —— 换成你自己的实例；切换会清掉登录态（旧令牌对新主控无效）；
+          · 中继节点 —— 平台没有官方节点时，填社区/自建节点的地址，进房时追加进内核配置。
+        风险如实写在输入框下面：连到谁的主控，账号密码就交给谁。
+      -->
+      <section class="card stack">
+        <div class="section-head">
+          <span class="title">自建 / 社区节点</span>
+        </div>
+
+        <div class="field">
+          <label class="label">主控地址</label>
+          <input
+            v-model="masterInput"
+            class="input"
+            :placeholder="`留空 = 用本包内置的 ${defaultMaster}`"
+            spellcheck="false"
+          />
+          <div class="hint">
+            当前正在连：<b class="mono">{{ state.masterUrl }}</b>
+            <template v-if="masterIsCustom">（你填的）</template>
+            <template v-else>（本包内置）</template>
+            。填自己的实例地址即可（例如 <span class="mono">https://mclink.example.com</span> 或
+            <span class="mono">http://192.168.1.10:8787</span>）。
+            <b>切换主控会退出当前登录</b>——你的账号只存在于原来那台主控上。
+            另外请只填你信任的实例：<b>登录时账号密码会发给那台主控</b>。
+          </div>
+          <div class="ops">
+            <button class="btn btn-primary" type="button" :disabled="masterBusy" @click="saveMaster">
+              保存并重启连接
+            </button>
+            <button
+              v-if="masterIsCustom"
+              class="btn btn-ghost"
+              type="button"
+              :disabled="masterBusy"
+              @click="clearMaster"
+            >
+              恢复默认主控
+            </button>
+          </div>
+          <div v-if="masterMessage" class="hint">{{ masterMessage }}</div>
+        </div>
+
+        <div class="field">
+          <label class="label">中继节点（可选，一行一个）</label>
+          <textarea
+            v-model="peersInput"
+            class="textarea"
+            rows="4"
+            spellcheck="false"
+            placeholder="tcp://relay.example.com:11010&#10;udp://relay.example.com:11010&#10;或者只写 relay.example.com:11010（会同时按 tcp 与 udp 各加一条）"
+          />
+          <div class="hint">
+            平台没有可用中继时（官方服务已停、或你自建的主控还没接节点），
+            可以把社区/自己搭的 EasyTier 节点填在这里：进房时它们会被<b>追加</b>到平台下发的配置里，
+            房间仍然由主控签发票据，只是转发多几个可选出口。
+            社区公共节点列表见
+            <a href="https://info.qtet.cn/uptime/easytier" rel="noreferrer noopener" target="_blank">
+              info.qtet.cn/uptime/easytier
+            </a>
+            （第三方提供，与本项目无关联，请自行判断可用性与可信度）。
+            改完<b>退出房间再进一次</b>才会生效。
+          </div>
+          <div class="hint">
+            已识别 <b>{{ peerCount }}</b> 个合法地址<template v-if="peerBad.length > 0">
+              ；这些会被跳过：<span class="mono">{{ peerBad.join('、') }}</span></template
+            >。
+          </div>
+          <div class="ops">
+            <button class="btn btn-primary" type="button" @click="savePeers">保存</button>
+            <button v-if="peersInput.trim().length > 0" class="btn btn-ghost" type="button" @click="clearPeers">
+              清空
+            </button>
+          </div>
+          <div v-if="peersMessage" class="hint">{{ peersMessage }}</div>
         </div>
       </section>
 
