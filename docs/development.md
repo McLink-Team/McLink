@@ -412,6 +412,41 @@ git remote set-url private "https://example:<token>@github.com/example/backup.gi
 推 `v*` 标签**不会**触发构建：`.github/workflows/build-clients.yml` 只留了
 `workflow_dispatch`（要出包就去 Actions →「构建客户端」→ Run workflow）。
 
+#### 开源时重写过历史 —— 旧的 clone 会 pull 失败，这么修
+
+2026-10-03 开源时，为了让公开仓库里不含开发默认口令与旧邮箱，**整条历史被重写过**
+（`git filter-branch` 两遍：清敏感串 + 换作者邮箱）。后果是**所有提交的 SHA 都变了**，
+任何"重写之前 clone 的"目录（服务器上的部署副本、另一台开发机）都会变成这样：
+
+```
++ f05cd59...0c30107 main -> origin/main  (forced update)   ← 远端历史确实换了
+hint: You have divergent branches and need to specify how to reconcile them.
+fatal: Need to specify how to reconcile divergent branches.
+```
+
+`git pull` 之所以拒绝：本地那条线（旧 SHA）与远端那条线（新 SHA）**没有共同祖先**，
+git 不敢替你决定怎么合并。**在这种目录里不要去 rebase** ——
+把旧提交逐个重放到新历史上只会得到一堆重复提交（内容一样、SHA 不同）。
+
+正确做法是**让这个目录对齐远端**（它只是个部署副本，本地不该有独占提交）：
+
+```bash
+cd /opt/src/mclink            # 你那个 pull 失败的目录
+git status                    # ① 先确认没有未提交的改动；有就先备份
+git stash -u                  #    （有改动时：先存起来，对齐后再决定要不要 pop）
+git fetch origin --prune
+git log --oneline -3          # ② 看一眼本地 HEAD：还是旧 SHA（例如 f05cd59）就继续
+git reset --hard origin/main  # ③ 对齐到重写后的历史
+git log --oneline -3          # ④ 现在应该与远端一致（例如 0c30107）
+```
+
+* 服务器那份如果改过 `deploy/` 里的东西**没有提交**，`reset --hard` 会覆盖它们 ——
+  所以第 ① 步的 `git status` 必须看：**有改动就先 `git stash -u` 或另存一份**。
+* 想以后别再遇到这个提示，可以设 `git config pull.ff only`：
+  历史一旦分叉就直接报错，而不是试图自动合并出一个谁也看不懂的提交。
+* 顺带一提：`f05cd59`、`ad9f19f` 这些**旧 SHA 在本机已经取不到了**（重写后它们不再被任何引用指着）。
+  要在别处核对"重写前长什么样"，只能去私有备份仓库里找（见上表的 `private`）。
+
 ### 10.2 国内网络：GitHub 要挂代理（本机用 7890）
 
 不挂代理时的症状长这样（都是"连不上"，不是权限问题）：
