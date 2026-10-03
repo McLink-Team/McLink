@@ -2095,11 +2095,19 @@ describe('单节点换中继：到线动作与"该重连了"的判定', () => {
   });
 
   test('pickSwitchTargetForRoom：有建房的测速就走建房那套（延迟优先，10ms 内优先大管子）', () => {
-    const cand = (name: string, capacity_bps: number, utilization = 0): RelayCandidate => ({
+    /**
+     * ⚠️ 区域**显式传参**，不再按名字猜（`name.startsWith('广州')` 那种写法）。
+     *
+     * 2026-10-03 做隐私清理时把真实节点名换成了中性占位（华南-A / 华北-A…），
+     * 原来"按名字判断区域"的夹具立刻失效 —— 两个节点都落到 `oversea`，
+     * 于是"没有测速时国内优先"那条断言选出了海外节点、测试变红。
+     * 夹具不该依赖展示名，这条规律对以后改名字同样成立。
+     */
+    const cand = (name: string, capacity_bps: number, region: string, utilization = 0): RelayCandidate => ({
       row: {
         id: `n_${name}`,
         name,
-        region: name.startsWith('广州') || name.startsWith('河北') ? 'cn-south' : 'oversea',
+        region,
         capacity_bps,
         capacity_peers: 500,
         peers: 0,
@@ -2109,24 +2117,24 @@ describe('单节点换中继：到线动作与"该重连了"的判定', () => {
       utilization,
       shedUtil: 0.9,
     });
-    const nearSmall = cand('华南-A（5 Mbps）', 5_000_000);
-    const farBig = cand('华北-A（200 Mbps）', 200_000_000);
+    const nearSmall = cand('华南-A（5 Mbps）', 5_000_000, 'cn-south');
+    const farBig = cand('华北-A（200 Mbps）', 200_000_000, 'cn-north');
     // 差 29ms（> 10ms 档）→ 以近的为准，小管子也当选（"近的小管子也允许当换台目标"）
     assert.equal(
       pickSwitchTargetForRoom('cn-east', [nearSmall, farBig], [{ nodeId: nearSmall.row.id, ms: 21 }, { nodeId: farBig.row.id, ms: 50 }], 10_000_000)?.name,
       '华南-A（5 Mbps）',
     );
-    // 差 4ms（≤ 10ms 档）→ 档内大管子优先 → 河北
+    // 差 4ms（≤ 10ms 档）→ 档内大管子优先 → 华北那台
     assert.equal(
       pickSwitchTargetForRoom('cn-east', [nearSmall, farBig], [{ nodeId: nearSmall.row.id, ms: 21 }, { nodeId: farBig.row.id, ms: 25 }], 10_000_000)?.name,
       '华北-A（200 Mbps）',
     );
     // **没有测速**（老房间）→ 退回区域分档：国内优先于海外，绝不再是"数据库行序"
-    const de = { ...cand('海外-A（500 Mbps）', 500_000_000), row: { ...cand('海外-A（500 Mbps）', 500_000_000).row, region: 'oversea' } };
+    const overseas = cand('海外-A（500 Mbps）', 500_000_000, 'oversea');
     assert.equal(
-      pickSwitchTargetForRoom('cn-east', [de, farBig], [], 10_000_000)?.name,
+      pickSwitchTargetForRoom('cn-east', [overseas, farBig], [], 10_000_000)?.name,
       '华北-A（200 Mbps）',
-      '没有提示时不能退化成行序（德国在第一行也不选它）',
+      '没有提示时不能退化成行序（海外那台在第一行也不选它）',
     );
   });
 

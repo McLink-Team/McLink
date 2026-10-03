@@ -388,34 +388,23 @@ pnpm verify:lockfile     # 退出码 0 = lockfile 与所有 package.json 一致
 
 ## 10. 远端、网络与部署（运维笔记）
 
-### 10.1 远端：一个公开主仓库 + 一个私有备份
+### 10.1 远端：公开主仓库
 
 | 远端名 | 地址 | 用途 |
 | --- | --- | --- |
 | `origin` | `https://github.com/McLink-Team/McLink`（**公开**） | **主远端**：`git push` / `git pull` 都走它；CI 也在这个仓库出包 |
-| `private` | `https://github.com/example/backup`（**私有**） | 私有备份/存档。开源前的旧历史只在这里；**不要**把它当发布入口 |
-| `gitlab` | `git@gitlab.com:example/legacy-backup.git` | 更早的历史备份，**不再推**（GitLab CI 额度已用完） |
 
-**两个远端用两个账号**（`origin` 是 `McLink-Team`，`private` 是 `example`），
-而 git 的凭据助手是按**主机**存的 —— 所以本机把私有仓库那一个账号的凭据写在
-**远端 URL 里**（只在本机 `.git/config`，不入库）：
-
-```bash
-git remote set-url private "https://example:<token>@github.com/example/backup.git"
-```
-
-⚠️ 这是**本机凭据**：换机器、把仓库目录拷给别人之前记得清掉
-（`git remote set-url private https://github.com/example/backup.git`）。
-更干净的替代是给私有仓库配一把 **deploy key**（SSH，写权限），
-但国内网络下 SSH 常被挡、而 HTTPS 走代理是通的，所以这里选了 HTTPS。
+> 维护者本机可能还挂着**历史备份**用的其它远端（更早的私有仓库、GitLab 等）。
+> 那些地址、账号与凭据做法属于内部运维信息，**不写在这份会随公开仓库发布的文档里**
+> （维护者自己的那份笔记在仓库外）。参与者只需要知道 `origin` 是唯一发布入口。
 
 推 `v*` 标签**不会**触发构建：`.github/workflows/build-clients.yml` 只留了
 `workflow_dispatch`（要出包就去 Actions →「构建客户端」→ Run workflow）。
 
-#### 开源时重写过历史 —— 旧的 clone 会 pull 失败，这么修
+#### 开源时重写过历史 —— 旧 clone 会 pull 失败，这么修
 
 2026-10-03 开源时，为了让公开仓库里不含开发默认口令与旧邮箱，**整条历史被重写过**
-（`git filter-branch` 两遍：清敏感串 + 换作者邮箱）。后果是**所有提交的 SHA 都变了**，
+（`git filter-branch`：清敏感串 + 换作者邮箱）。后果是**所有提交的 SHA 都变了**，
 任何"重写之前 clone 的"目录（服务器上的部署副本、另一台开发机）都会变成这样：
 
 ```
@@ -437,15 +426,14 @@ git stash -u                  #    （有改动时：先存起来，对齐后再
 git fetch origin --prune
 git log --oneline -3          # ② 看一眼本地 HEAD：还是旧 SHA（例如 f05cd59）就继续
 git reset --hard origin/main  # ③ 对齐到重写后的历史
-git log --oneline -3          # ④ 现在应该与远端一致（例如 0c30107）
+git log --oneline -3          # ④ 现在应该与远端一致
 ```
 
 * 服务器那份如果改过 `deploy/` 里的东西**没有提交**，`reset --hard` 会覆盖它们 ——
   所以第 ① 步的 `git status` 必须看：**有改动就先 `git stash -u` 或另存一份**。
 * 想以后别再遇到这个提示，可以设 `git config pull.ff only`：
   历史一旦分叉就直接报错，而不是试图自动合并出一个谁也看不懂的提交。
-* 顺带一提：`f05cd59`、`ad9f19f` 这些**旧 SHA 在本机已经取不到了**（重写后它们不再被任何引用指着）。
-  要在别处核对"重写前长什么样"，只能去私有备份仓库里找（见上表的 `private`）。
+* 重写前的旧 SHA 已经取不到了（不再被任何引用指着）；需要核对旧版本请联系维护者。
 
 ### 10.2 国内网络：GitHub 要挂代理（本机用 7890）
 
