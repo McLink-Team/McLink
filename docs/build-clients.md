@@ -36,7 +36,7 @@ $ node scripts/dist.mjs --mac zip          # 在 Windows 上执行
 | 1.1 GitLab CI（备用） | GitLab 共享额度恢复后才可用；仓库**已停止往 GitLab 推**，要用得先把提交推回去 | `.gitlab-ci.yml` 的 `build:macos` | GitLab SaaS 的 macOS runner |
 | 1.3 Linux 服务器硬出（应急） | 两边 CI 都用不了，且只要发 Intel Mac | `deploy/build-macos-on-linux.sh` | 主控那台 Linux —— **没 dmg、没签名** |
 
-> **远端约定**：主仓库是 GitHub —— `origin` = `https://github.com/example/backup`（私有），
+> **远端约定**：主仓库是 GitHub —— `origin` = `https://github.com/McLink-Team/McLink`（私有），
 > 平时 `git push` 就推到它；GitLab 的远端已改名成 `gitlab` 保留着，**不再推**。
 > 注意主控服务器上那份 clone 还指向 GitLab：下次要更新主控代码之前，得先把它改成 GitHub
 > （给仓库加只读 deploy key，或用带 token 的 HTTPS）—— 否则 `git pull` 拉不到新提交。
@@ -101,7 +101,7 @@ GitHub 现在是**主仓库**（私有），也是唯一在用的出包路线 �
 （`--mac zip --arm64 --x64` → `assert-artifacts.mjs --macos` → `sign-macos-app.sh` → 上传产物）。
 
 ```bash
-git push     # origin 已经是 GitHub（https://github.com/example/backup），不用再加远端
+git push     # origin 已经是 GitHub（https://github.com/McLink-Team/McLink），不用再加远端
 ```
 
 然后 GitHub → **Actions** →「构建客户端（Windows / macOS）」→ **Run workflow**（分支选 `main`）；

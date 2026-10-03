@@ -403,7 +403,7 @@ const envWhitelist = computed(() => asPatternList(env.value?.relayNetworkWhiteli
               v-model="form.repoUrl"
               class="input"
               maxlength="300"
-              placeholder="https://github.com/example/backup"
+              placeholder="https://github.com/McLink-Team/McLink"
             />
             <span class="hint">停止服务后落地页引导大家去看源码 / 自建实例的地址。</span>
           </label>

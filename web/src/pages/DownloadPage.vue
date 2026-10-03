@@ -54,7 +54,7 @@ const data = ref<DownloadsResponse | null>(null);
 const metaDownloads = ref<MetaDownloads['clientDownloads']>(null);
 const serviceClosed = ref(false);
 const closedAt = ref<string | null>(null);
-const repoUrl = ref('https://github.com/example/backup');
+const repoUrl = ref('https://github.com/McLink-Team/McLink');
 const loading = ref(true);
 const error = ref<string | null>(null);
 

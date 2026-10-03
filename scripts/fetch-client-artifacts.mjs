@@ -91,7 +91,7 @@ const placed = [];
 if (source === 'github') {
   /* ---------------- 从 CI 产物收 ---------------- */
   const token = process.env.GITHUB_TOKEN ?? '';
-  const repo = process.env.MCLINK_REPO ?? 'example/backup';
+  const repo = process.env.MCLINK_REPO ?? 'McLink-Team/McLink';
   const proxy = process.env.HTTPS_PROXY ?? process.env.https_proxy ?? '';
   const curl = (args) => execFileSync('curl', ['-sS', ...(proxy ? ['--proxy', proxy] : []), ...args]).toString();
   const api = (p) => JSON.parse(curl(['-H', `Authorization: Bearer ${token}`, `https://api.github.com/repos/${repo}${p}`]));

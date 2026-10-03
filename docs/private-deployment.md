@@ -9,7 +9,7 @@
 ## 一、装主控
 
 ```bash
-git clone https://github.com/example/backup.git
+git clone https://github.com/McLink-Team/McLink.git
 cd mclink
 sudo bash deploy/install-server.sh
 ```

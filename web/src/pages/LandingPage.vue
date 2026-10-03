@@ -110,7 +110,7 @@ const closedAtLabel = computed(() => {
   // 只做最朴素的 YYYY-MM-DD 展示：后端存的就是这个形状，不引入日期库
   return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw.replace(/-/g, '.') : raw;
 });
-const repoUrl = computed(() => meta.value?.repoUrl ?? 'https://github.com/example/backup');
+const repoUrl = computed(() => meta.value?.repoUrl ?? 'https://github.com/McLink-Team/McLink');
 /** 需要邀请码时，落地页给"受邀的人"留一个注册入口（其余人不必看到） */
 const inviteOnly = computed(() => meta.value?.registrationMode === 'invite');
 
