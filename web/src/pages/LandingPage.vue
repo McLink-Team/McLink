@@ -227,8 +227,20 @@ const steps = [
           <a href="#faq">常见问题</a>
         </nav>
 
-        <div class="row" style="gap: var(--s-2)">
+        <div class="row topbar-actions" style="gap: var(--s-2)">
           <ThemeSwitch />
+          <!--
+            GitHub 按钮（用户 2026-10-03 明确要的）：服务停止后，这一页最该被点的就是"看源码"，
+            所以它在顶栏里一直有位置，不随页面状态消失。
+          -->
+          <a class="btn btn-ghost btn-sm nav-github" :href="repoUrl" rel="noreferrer noopener" target="_blank">
+            <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="currentColor">
+              <path
+                d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"
+              />
+            </svg>
+            GitHub
+          </a>
           <RouterLink to="/login" class="btn btn-ghost btn-sm">管理控制台</RouterLink>
           <!--
             导航里不猜平台：直接进下载页，两种平台在那里各自一张卡。
@@ -254,68 +266,97 @@ const steps = [
     </div>
 
     <!-- ==================================================== 已停止对外服务
-         这是一套**替代性**的首屏：当主控不再对外提供服务时，落地页要做的不是营销，
-         而是三件事——说清现状（自某日起停止）、给出源码与自建入口、说明"受邀的人怎么进来"。
-         面向新玩家的那几段（三步、功能、区域表、FAQ）整段不渲染。 -->
+         这一屏是"官方服务停止之后"的门面（2026-10-03 按用户给的参考样式重做）：
+           · 大字标题 + 一句话说明（说清现状：官方中继已停、代码开源、转为自建/社区）
+           · 三张卡片 = 三条路：自建实例 / 参与社区 / 客户端
+           · 一个 **GitHub 按钮**（用户明确要的）+ 受邀者的注册入口
+        刻意**不显示**任何实时数据（在线中继、开放房间、在线玩家、区域表）——
+        官方已经不再提供服务，还挂着这些读数既没有意义，也会让人以为"还能用"。 -->
     <section v-if="serviceClosed" class="closed">
-      <div class="container-narrow">
-        <p class="closed-tag">本实例已停止对外服务</p>
-        <h1 class="closed-title">这个主控不再对外提供联机服务</h1>
-        <p class="closed-lead">
-          <template v-if="closedAtLabel">自 <strong>{{ closedAtLabel }}</strong> 起，</template>
-          本实例不再提供官方中继与公益转发服务器，也不再接受公开注册。
-          项目代码与客户端仍以开源方式维护，软件本体的功能与 bug 修复照常进行。
-        </p>
-        <p class="closed-lead">
-          想继续用这套联机工具，请<strong>自建一套实例</strong>（一台普通的云服务器就够），
-          或接入社区共建的节点。客户端仍然可以下载，但它需要连到<strong>你自己的主控</strong>才能建房。
-        </p>
+      <div class="container closed-grid">
+        <div class="closed-copy">
+          <p class="closed-kicker">OPEN SOURCE</p>
+          <h1 class="closed-wordmark">McLink</h1>
+          <p class="closed-lead">
+            基于 EasyTier 的局域网联机工具。官方中继与公益转发服务器
+            <template v-if="closedAtLabel">已于 <strong>{{ closedAtLabel }}</strong> </template>
+            <template v-else>已经</template>
+            停止提供服务，项目转为<strong>开源与社区驱动</strong>：
+            代码完整开放，软件本体的功能维护与 bug 修复照常进行。
+          </p>
+          <p class="closed-lead closed-lead-sub">
+            想继续用？自己搭一套实例（一台普通云服务器就够），或者接入社区共建的节点。
+          </p>
 
-        <dl class="closed-facts">
-          <div v-if="closedAtLabel">
-            <dt>停止对外服务</dt>
-            <dd class="mono">{{ closedAtLabel }}</dd>
+          <div class="closed-actions">
+            <a :href="repoUrl" class="btn btn-primary btn-lg" rel="noreferrer noopener" target="_blank">
+              <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"
+                />
+              </svg>
+              GitHub 开源仓库
+            </a>
+            <!-- 受邀的人走这里：主控在邀请模式下给的就是这个入口（可以带 ?invite=码） -->
+            <RouterLink v-if="inviteOnly" to="/register" class="btn btn-lg">我有邀请码</RouterLink>
+            <RouterLink to="/login" class="btn btn-ghost btn-lg">管理控制台</RouterLink>
           </div>
-          <div>
-            <dt>项目仓库</dt>
-            <dd><a :href="repoUrl" rel="noreferrer noopener" target="_blank">{{ repoUrl }}</a></dd>
-          </div>
-          <div>
-            <dt>当前注册模式</dt>
-            <dd>{{ inviteOnly ? '仅邀请码' : meta?.registrationOpen === false ? '已关闭' : '开放' }}</dd>
-          </div>
-          <div>
-            <dt>本机主控版本</dt>
-            <dd class="mono">v{{ meta?.version ?? '—' }}</dd>
-          </div>
-        </dl>
-
-        <div class="closed-actions">
-          <a :href="repoUrl" class="btn btn-primary btn-lg" rel="noreferrer noopener" target="_blank">
-            查看源码 / 自建实例
-          </a>
-          <!-- 受邀的人走这里：主控在邀请模式下给的就是这个入口（可以带 ?invite=码） -->
-          <RouterLink v-if="inviteOnly" to="/register" class="btn btn-lg">我有邀请码</RouterLink>
-          <RouterLink to="/login" class="btn btn-ghost btn-lg">管理控制台</RouterLink>
         </div>
 
-        <details class="closed-how">
-          <summary>自建一套要做什么</summary>
-          <ol>
-            <li>
-              克隆仓库：<code class="mono">git clone {{ repoUrl }}.git</code>，
-              按 <code class="mono">docs/private-deployment.md</code> 装主控（一条安装脚本）。
-            </li>
-            <li>
-              注册你自己的中继节点：<code class="mono">pnpm run register:self-node</code>
-              （节点即转发服务器，一个房间一台，按延迟就近挑）。
-            </li>
-            <li>
-              把「注册模式」设成<b>仅邀请码</b>，在控制台生成邀请码发给朋友；
-              再把本页的「对外提供服务」关掉，落地页就会变成你现在看到的这个样子。
-            </li>
-          </ol>
-        </details>
+        <div class="closed-cards">
+          <a
+            class="closed-card"
+            :href="`${repoUrl}/blob/main/docs/private-deployment.md`"
+            rel="noreferrer noopener"
+            target="_blank"
+          >
+            <span class="closed-card-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+                <rect x="3" y="4" width="18" height="7" rx="1.5" />
+                <rect x="3" y="14" width="18" height="6" rx="1.5" />
+                <path d="M7 7.5h.01M7 17h.01" />
+              </svg>
+            </span>
+            <span class="closed-card-title">自建实例</span>
+            <span class="closed-card-body">
+              装主控 → 注册你自己的中继节点 → 把注册模式设成<b>仅邀请码</b>，
+              生成邀请码发给朋友。一条安装脚本，一台普通云服务器就够。
+            </span>
+            <span class="closed-card-more">看部署指南 →</span>
+          </a>
+
+          <a class="closed-card" :href="repoUrl" rel="noreferrer noopener" target="_blank">
+            <span class="closed-card-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+                <path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H10l2 2h6.5A1.5 1.5 0 0 1 20 7.5v10A1.5 1.5 0 0 1 18.5 19h-13A1.5 1.5 0 0 1 4 17.5Z" />
+                <path d="M8 12h8M8 15h5" />
+              </svg>
+            </span>
+            <span class="closed-card-title">参与社区</span>
+            <span class="closed-card-body">
+              源码、文档与 issue 都在 GitHub。欢迎贡献节点、修 bug、写文档，
+              也欢迎把自建实例的经验写回来。
+            </span>
+            <span class="closed-card-more">{{ repoUrl.replace(/^https?:\/\//, '') }} →</span>
+          </a>
+
+          <div class="closed-card closed-card-static">
+            <span class="closed-card-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+                <path d="M12 3v12m0 0 4-4m-4 4-4-4" />
+                <path d="M4 17v2.5A1.5 1.5 0 0 0 5.5 21h13a1.5 1.5 0 0 0 1.5-1.5V17" />
+              </svg>
+            </span>
+            <span class="closed-card-title">客户端</span>
+            <span class="closed-card-body">
+              安装包仍可下载（开源、可自行构建），但它需要连到<b>你自己的主控</b>才能建房；
+              受邀用户可以用邀请码在本站注册，再在客户端登录。
+            </span>
+            <span class="closed-card-more">
+              <RouterLink to="/download">去下载页 →</RouterLink>
+            </span>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -668,88 +709,129 @@ const steps = [
 }
 
 /* ------------------------------------------------------ 已停止对外服务
- * 这一屏不做营销：只用留白、发丝线与一个等宽标签把事实说清楚。
- * 唯一的"强调色"给主操作（看源码 / 自建），因为停止服务之后那才是用户该走的路。 */
+ * 一屏"门面"：左边是大字与说明 + 主按钮，右边三张卡片。
+ * 视觉上刻意**朴素**：不再有实时读数、进度条、区域表 —— 服务已经停了，
+ * 页面的任务是把人引到"自建 / 源码"上去，而不是继续招徕使用者。
+ * 唯一的强调色给 "GitHub 开源仓库" 那个主按钮。 */
 .closed {
-  padding: clamp(var(--s-10), 12vh, calc(var(--s-12) * 2)) 0 var(--s-12);
+  padding: clamp(var(--s-10), 9vh, var(--s-12)) 0 var(--s-12);
 }
-.closed-tag {
-  display: inline-block;
-  margin: 0 0 var(--s-4);
-  padding: 2px var(--s-3);
-  border: 1px solid var(--rule-strong);
-  border-radius: 999px;
+.closed-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+  gap: clamp(var(--s-6), 5vw, var(--s-10));
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .closed-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.closed-kicker {
+  margin: 0 0 var(--s-2);
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
-  letter-spacing: 0.04em;
-  color: var(--paper-dim);
+  letter-spacing: 0.32em;
+  color: var(--paper-faint);
 }
-.closed-title {
+.closed-wordmark {
   margin: 0 0 var(--s-4);
-  font-size: clamp(1.6rem, 4vw, 2.4rem);
-  line-height: 1.25;
+  font-size: clamp(2.6rem, 7vw, 4.4rem);
+  line-height: 1.05;
+  letter-spacing: -0.01em;
 }
 .closed-lead {
   margin: 0 0 var(--s-3);
-  max-width: 62ch;
+  max-width: 34rem;
   color: var(--paper-dim);
-  line-height: 1.85;
+  line-height: 1.9;
 }
 .closed-lead strong {
   color: var(--paper);
 }
-.closed-facts {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
-  gap: var(--s-4) var(--s-6);
-  margin: var(--s-8) 0;
-  padding: var(--s-5) 0;
-  border-top: 1px solid var(--rule);
-  border-bottom: 1px solid var(--rule);
-}
-.closed-facts dt {
-  margin-bottom: 2px;
-  font-size: var(--fs-xs);
+.closed-lead-sub {
   color: var(--paper-faint);
-}
-.closed-facts dd {
-  margin: 0;
-  color: var(--paper);
-  overflow-wrap: anywhere;
 }
 .closed-actions {
   display: flex;
   flex-wrap: wrap;
   gap: var(--s-3);
-  margin-bottom: var(--s-8);
+  margin-top: var(--s-6);
 }
-.closed-how {
-  max-width: 66ch;
-  padding: var(--s-4) var(--s-5);
+.closed-actions .btn svg {
+  margin-right: 6px;
+  vertical-align: -2px;
+}
+
+.closed-cards {
+  display: grid;
+  gap: var(--s-4);
+}
+@media (min-width: 901px) {
+  /* 右边三张卡：前两张并排，第三张（客户端）通栏 —— 它是个补充说明，不是主路 */
+  .closed-cards {
+    grid-template-columns: 1fr 1fr;
+  }
+  .closed-card-static {
+    grid-column: 1 / -1;
+  }
+}
+.closed-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-5);
   border: 1px solid var(--rule);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-md);
   background: var(--ink-800);
+  color: inherit;
+  text-decoration: none;
+  transition: border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
 }
-.closed-how > summary {
-  cursor: pointer;
+a.closed-card:hover {
+  border-color: var(--rule-strong);
+  transform: translateY(-2px);
+}
+.closed-card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  margin-bottom: var(--s-1);
+  border-radius: var(--r-sm);
+  background: var(--ink-700);
+  color: var(--signal);
+}
+.closed-card-icon svg {
+  width: 20px;
+  height: 20px;
+}
+.closed-card-title {
+  font-size: var(--fs-lg);
   color: var(--paper);
 }
-.closed-how ol {
-  margin: var(--s-3) 0 0;
-  padding-left: 1.2em;
+.closed-card-body {
+  font-size: var(--fs-sm);
   color: var(--paper-dim);
   line-height: 1.85;
 }
-.closed-how li + li {
-  margin-top: var(--s-2);
-}
-.closed-how code {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+.closed-card-body b {
   color: var(--paper);
-  background: var(--ink-700);
-  padding: 1px 4px;
-  border-radius: 3px;
+}
+.closed-card-more {
+  margin-top: auto;
+  padding-top: var(--s-2);
+  font-size: var(--fs-xs);
+  color: var(--signal);
+  overflow-wrap: anywhere;
+}
+
+/* 顶栏里那个 GitHub 按钮：与"下载客户端"并列，但它是**文字 + 图标**的次级样式 */
+.nav-github {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 /* ------------------------------------------------------------ 公告条
@@ -793,6 +875,14 @@ const steps = [
   display: flex;
   align-items: center;
   gap: var(--s-6);
+}
+/**
+ * ⚠️ 顶栏右侧那组按钮必须自己顶到最右：`.topbar-inner` 用的是 `gap` 而不是
+ * `justify-content: space-between`，所以中间那个锚点导航（`nav`）一旦不渲染
+ * （停止服务那一态就没有锚点），右侧按钮会**贴着品牌名**排在左边（截图里一眼能看出来）。
+ */
+.topbar-actions {
+  margin-left: auto;
 }
 .wordmark {
   display: inline-flex;
